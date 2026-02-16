@@ -560,9 +560,13 @@ body.qr-scan-active .scan-hide-target {
   }
 
   /* Keep last content visible above the floating mobile nav.
-     Apply spacing at content layer (not scroll-container layer) to avoid
-     painting a background strip under the nav. */
-  [data-page-scroll-container][data-with-mobile-nav-offset="true"] main[data-ptr-content] {
+     Put clearance on the last content block so it inherits route/page visuals
+     instead of creating a plain painted strip under the nav. */
+  [data-page-scroll-container][data-with-mobile-nav-offset="true"] [data-page-content="true"] {
+    padding-bottom: 0 !important;
+  }
+
+  [data-page-scroll-container][data-with-mobile-nav-offset="true"] [data-page-content="true"] > :last-child {
     padding-bottom: calc(var(--mobile-nav-ui-height) + max(var(--mobile-nav-gap), env(safe-area-inset-bottom))) !important;
   }
 
