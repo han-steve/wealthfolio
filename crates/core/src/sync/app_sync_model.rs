@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Canonical list of local tables that participate in app-side device sync.
-pub const APP_SYNC_TABLES: [&str; 12] = [
+pub const APP_SYNC_TABLES: [&str; 13] = [
     "accounts",
     "assets",
     "asset_taxonomy_assignments",
@@ -16,6 +16,7 @@ pub const APP_SYNC_TABLES: [&str; 12] = [
     "ai_thread_tags",
     "contribution_limits",
     "platforms",
+    "holdings_snapshots",
 ];
 
 /// Entity names used by incremental sync events.

@@ -170,7 +170,7 @@ fn entity_storage_mapping(entity: &SyncEntity) -> Option<(&'static str, &'static
         SyncEntity::AiThreadTag => Some(("ai_thread_tags", "id")),
         SyncEntity::ContributionLimit => Some(("contribution_limits", "id")),
         SyncEntity::Platform => Some(("platforms", "id")),
-        SyncEntity::Snapshot => None,
+        SyncEntity::Snapshot => Some(("holdings_snapshots", "id")),
     }
 }
 
@@ -1123,6 +1123,13 @@ impl AppSyncRepository {
     }
 
     pub async fn export_snapshot_sqlite_image(&self, tables: Vec<String>) -> Result<Vec<u8>> {
+        /// Per-table WHERE filters applied during snapshot export.
+        /// Tables not listed here are exported unfiltered.
+        const SYNC_TABLE_EXPORT_FILTERS: &[(&str, &str)] = &[(
+            "holdings_snapshots",
+            "source NOT IN ('CALCULATED', 'SYNTHETIC')",
+        )];
+
         let pool = Arc::clone(&self.pool);
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
             let mut conn = get_connection(&pool)?;
@@ -1150,11 +1157,19 @@ impl AppSyncRepository {
 
                 let run_export = (|| -> Result<()> {
                     for table in &table_set {
-                        let copy_sql = format!(
-                            "CREATE TABLE {snapshot_alias}.{} AS SELECT * FROM main.{}",
-                            quote_identifier(table),
-                            quote_identifier(table)
-                        );
+                        let table_ident = quote_identifier(table);
+                        let filter = SYNC_TABLE_EXPORT_FILTERS
+                            .iter()
+                            .find(|(t, _)| *t == table.as_str())
+                            .map(|(_, f)| *f);
+                        let copy_sql = match filter {
+                            Some(where_clause) => format!(
+                                "CREATE TABLE {snapshot_alias}.{table_ident} AS SELECT * FROM main.{table_ident} WHERE {where_clause}"
+                            ),
+                            None => format!(
+                                "CREATE TABLE {snapshot_alias}.{table_ident} AS SELECT * FROM main.{table_ident}"
+                            ),
+                        };
                         diesel::sql_query(copy_sql)
                             .execute(tx)
                             .map_err(StorageError::from)?;

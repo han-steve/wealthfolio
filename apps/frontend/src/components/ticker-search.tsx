@@ -329,14 +329,13 @@ const TickerSearchInput = forwardRef<HTMLButtonElement, SearchProps>(
 
     // Handle "Create custom asset" click
     const handleCreateCustomAsset = useCallback(() => {
-      if (isControlled) {
-        onOpenChange?.(false);
-      } else {
-        setUncontrolledOpen(false);
-      }
-      debouncedSearch.cancel(); // Cancel pending debounced calls
-      setCustomAssetDialogOpen(true); // Open the custom asset dialog
-    }, [debouncedSearch, isControlled, onOpenChange]);
+      // Don't close the popover here — in controlled mode, closing triggers the
+      // parent's onOpenChange which may unmount this component (and the dialog
+      // rendered inside it) before it can appear.  The dialog overlays on top;
+      // once an asset is created, handleSelectResult closes the popover normally.
+      debouncedSearch.cancel();
+      setCustomAssetDialogOpen(true);
+    }, [debouncedSearch]);
 
     // Handle custom asset created from dialog
     const handleCustomAssetCreated = useCallback(

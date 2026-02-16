@@ -335,6 +335,9 @@ pub async fn save_manual_holdings_handler(
             quantity,
             currency: holding.currency,
             average_cost,
+            name: holding.name,
+            data_source: holding.data_source,
+            asset_kind: holding.asset_kind,
         });
     }
 
@@ -351,6 +354,7 @@ pub async fn save_manual_holdings_handler(
         state.asset_service.clone(),
         state.fx_service.clone(),
         state.snapshot_service.clone(),
+        state.quote_service.clone(),
     )
     .with_event_sink(state.domain_event_sink.clone());
 
@@ -583,6 +587,9 @@ async fn import_single_snapshot_impl(
             quantity,
             currency: pos_input.currency.clone(),
             average_cost,
+            name: None,
+            data_source: None,
+            asset_kind: None,
         });
     }
 
@@ -601,6 +608,7 @@ async fn import_single_snapshot_impl(
         state.asset_service.clone(),
         state.fx_service.clone(),
         state.snapshot_service.clone(),
+        state.quote_service.clone(),
     )
     .with_event_sink(state.domain_event_sink.clone());
 

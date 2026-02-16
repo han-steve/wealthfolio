@@ -61,5 +61,9 @@ pub fn default_adapter_descriptors() -> Vec<EntityAdapterDescriptor> {
             entity: SyncEntity::Platform,
             table_name: "platforms",
         },
+        EntityAdapterDescriptor {
+            entity: SyncEntity::Snapshot,
+            table_name: "holdings_snapshots",
+        },
     ]
 }

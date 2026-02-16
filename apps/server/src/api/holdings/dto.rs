@@ -84,6 +84,12 @@ pub struct HoldingInput {
     pub average_cost: Option<String>,
     /// Exchange MIC code for new holdings (e.g., "XNAS", "XTSE"). Used when asset_id is not provided.
     pub exchange_mic: Option<String>,
+    /// Asset name for new custom assets
+    pub name: Option<String>,
+    /// Data source (e.g., "MANUAL" for custom assets) — sets quote mode to manual
+    pub data_source: Option<String>,
+    /// Asset kind (e.g., "INVESTMENT", "OTHER")
+    pub asset_kind: Option<String>,
 }
 
 /// Request body for saving manual holdings

@@ -357,6 +357,12 @@ pub struct HoldingInput {
     pub average_cost: Option<String>,
     /// Exchange MIC code for new holdings (e.g., "XNAS", "XTSE"). Used when asset_id is not provided.
     pub exchange_mic: Option<String>,
+    /// Asset name for new custom assets
+    pub name: Option<String>,
+    /// Data source (e.g., "MANUAL" for custom assets) — sets quote mode to manual
+    pub data_source: Option<String>,
+    /// Asset kind (e.g., "INVESTMENT", "OTHER")
+    pub asset_kind: Option<String>,
 }
 
 /// Saves manual holdings for a HOLDINGS-mode account.
@@ -416,6 +422,9 @@ pub async fn save_manual_holdings(
             quantity,
             currency: holding.currency,
             average_cost,
+            name: holding.name,
+            data_source: holding.data_source,
+            asset_kind: holding.asset_kind,
         });
     }
 
@@ -431,6 +440,7 @@ pub async fn save_manual_holdings(
         state.asset_service(),
         state.fx_service(),
         state.snapshot_service(),
+        state.quote_service(),
     );
 
     let asset_ids = manual_snapshot_service
@@ -783,6 +793,9 @@ async fn import_single_snapshot(
             quantity,
             currency: pos_input.currency.clone(),
             average_cost,
+            name: None,
+            data_source: None,
+            asset_kind: None,
         });
     }
 
@@ -801,6 +814,7 @@ async fn import_single_snapshot(
         state.asset_service(),
         state.fx_service(),
         state.snapshot_service(),
+        state.quote_service(),
     );
 
     manual_snapshot_service
