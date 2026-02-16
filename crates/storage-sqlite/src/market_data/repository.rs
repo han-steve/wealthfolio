@@ -108,6 +108,23 @@ impl QuoteStore for MarketDataRepository {
             .await
     }
 
+    async fn delete_provider_quotes_for_asset(&self, asset_id: &AssetId) -> Result<usize> {
+        let asset_id_str = asset_id.as_str().to_string();
+
+        self.writer
+            .exec(move |conn: &mut SqliteConnection| -> Result<usize> {
+                let count = diesel::delete(
+                    quotes_dsl::quotes
+                        .filter(quotes_dsl::asset_id.eq(asset_id_str))
+                        .filter(quotes_dsl::source.ne("MANUAL")),
+                )
+                .execute(conn)
+                .map_err(StorageError::QueryFailed)?;
+                Ok(count)
+            })
+            .await
+    }
+
     // =========================================================================
     // Single Asset Queries (Strong Types)
     // =========================================================================
