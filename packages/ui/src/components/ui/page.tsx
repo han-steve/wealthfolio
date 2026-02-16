@@ -27,7 +27,6 @@ export const PageScrollContainer = React.forwardRef<HTMLDivElement, PageScrollCo
   function PageScrollContainer({ className, children, withMobileNavOffset = false, style, ...props }, ref) {
     const computedStyle = withMobileNavOffset
       ? {
-          paddingBottom: MOBILE_NAV_SCROLL_OFFSET,
           scrollPaddingBottom: MOBILE_NAV_SCROLL_OFFSET,
           ...style,
         }
