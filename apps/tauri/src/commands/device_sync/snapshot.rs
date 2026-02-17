@@ -359,7 +359,8 @@ pub async fn generate_snapshot_now_internal(
     // module operates on UTF-8 strings (encrypt/decrypt take &str). Binary-mode
     // encryption would avoid this overhead but isn't supported by the current API.
     let encoded_snapshot = BASE64_STANDARD.encode(sqlite_bytes);
-    let encrypted_snapshot_payload = encrypt_sync_payload(&encoded_snapshot, &identity, key_version)?;
+    let encrypted_snapshot_payload =
+        encrypt_sync_payload(&encoded_snapshot, &identity, key_version)?;
     let payload = encrypted_snapshot_payload.into_bytes();
     let checksum = sha256_checksum(&payload);
     let metadata_payload = encrypt_sync_payload(
@@ -442,7 +443,10 @@ pub(super) async fn maybe_generate_snapshot_for_policy(context: Arc<ServiceConte
     let cursor = match context.app_sync_repository().get_cursor() {
         Ok(value) => value,
         Err(err) => {
-            log::warn!("[DeviceSync] Failed reading cursor for snapshot policy: {}", err);
+            log::warn!(
+                "[DeviceSync] Failed reading cursor for snapshot policy: {}",
+                err
+            );
             return;
         }
     };

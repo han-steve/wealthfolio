@@ -935,9 +935,9 @@ impl MarketDataProvider for AlphaVantageProvider {
 
     fn rate_limit(&self) -> RateLimit {
         RateLimit {
-            requests_per_minute: 25,            // Free tier: 25 requests/day
-            max_concurrency: 1,                 // Sequential requests only
-            min_delay: Duration::from_secs(3),  // ~25 requests per minute
+            requests_per_minute: 25,           // Free tier: 25 requests/day
+            max_concurrency: 1,                // Sequential requests only
+            min_delay: Duration::from_secs(3), // ~25 requests per minute
         }
     }
 

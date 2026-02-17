@@ -514,9 +514,9 @@ impl AssetRepositoryTrait for AssetRepository {
                     if !notes.trim().is_empty() {
                         let updated =
                             diesel::update(assets::table.filter(assets::id.eq(&target_id_owned)))
-                            .set(assets::notes.eq(notes))
-                            .get_result::<AssetDB>(conn)
-                            .map_err(StorageError::from)?;
+                                .set(assets::notes.eq(notes))
+                                .get_result::<AssetDB>(conn)
+                                .map_err(StorageError::from)?;
                         write_outbox_event(
                             conn,
                             OutboxWriteRequest::new(

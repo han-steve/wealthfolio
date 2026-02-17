@@ -321,6 +321,7 @@ fn to_entity_metadata(row: SyncEntityMetadataDB) -> Result<SyncEntityMetadata> {
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_remote_event_lww_tx(
     conn: &mut SqliteConnection,
     entity: SyncEntity,
@@ -761,6 +762,7 @@ impl AppSyncRepository {
         row.map(to_entity_metadata).transpose()
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn apply_remote_event_lww(
         &self,
         entity: SyncEntity,
@@ -821,9 +823,9 @@ impl AppSyncRepository {
                     {
                         if apply_remote_event_lww_tx(
                             conn,
-                            entity.clone(),
+                            entity,
                             entity_id.clone(),
-                            op.clone(),
+                            op,
                             event_id.clone(),
                             client_timestamp.clone(),
                             seq,

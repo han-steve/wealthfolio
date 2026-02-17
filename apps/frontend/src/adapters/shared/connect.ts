@@ -121,10 +121,9 @@ export const deviceSyncStopBackgroundEngine =
     return invoke<BackendSyncBackgroundEngineResult>("device_sync_stop_background_engine");
   };
 
-export const deviceSyncGenerateSnapshotNow =
-  async (): Promise<BackendSyncSnapshotUploadResult> => {
-    return invoke<BackendSyncSnapshotUploadResult>("device_sync_generate_snapshot_now");
-  };
+export const deviceSyncGenerateSnapshotNow = async (): Promise<BackendSyncSnapshotUploadResult> => {
+  return invoke<BackendSyncSnapshotUploadResult>("device_sync_generate_snapshot_now");
+};
 
 export const deviceSyncCancelSnapshotUpload =
   async (): Promise<BackendSyncBackgroundEngineResult> => {

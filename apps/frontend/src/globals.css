@@ -566,8 +566,12 @@ body.qr-scan-active .scan-hide-target {
     padding-bottom: 0 !important;
   }
 
-  [data-page-scroll-container][data-with-mobile-nav-offset="true"] [data-page-content="true"] > :last-child {
-    padding-bottom: calc(var(--mobile-nav-ui-height) + max(var(--mobile-nav-gap), env(safe-area-inset-bottom))) !important;
+  [data-page-scroll-container][data-with-mobile-nav-offset="true"]
+    [data-page-content="true"]
+    > :last-child {
+    padding-bottom: calc(
+      var(--mobile-nav-ui-height) + max(var(--mobile-nav-gap), env(safe-area-inset-bottom))
+    ) !important;
   }
 
   .touch-manipulation {

@@ -1152,9 +1152,9 @@ pub async fn delete_snapshot(
         .get_snapshots_by_account(&account_id, None, None)
         .map_err(|e| format!("Failed to check remaining snapshots: {}", e))?;
 
-    let has_user_snapshots = remaining.iter().any(|s| {
-        s.source != SnapshotSource::Calculated && s.source != SnapshotSource::Synthetic
-    });
+    let has_user_snapshots = remaining
+        .iter()
+        .any(|s| s.source != SnapshotSource::Calculated && s.source != SnapshotSource::Synthetic);
 
     if !has_user_snapshots {
         let synthetic_dates: Vec<NaiveDate> = remaining

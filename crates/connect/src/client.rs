@@ -194,7 +194,6 @@ impl ConnectApiClient {
     /// Parse an HTTP response, handling errors appropriately.
     async fn parse_response<T: DeserializeOwned>(&self, response: reqwest::Response) -> Result<T> {
         let status = response.status();
-        let url = response.url().to_string();
         let body = response
             .text()
             .await

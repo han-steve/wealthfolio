@@ -1232,13 +1232,14 @@ impl ActivityRepositoryTrait for ActivityRepository {
                 }
 
                 let now = chrono::Utc::now().to_rfc3339();
-                let count = diesel::update(activities::table.filter(activities::asset_id.eq(&old_id)))
-                    .set((
-                        activities::asset_id.eq(&new_id),
-                        activities::updated_at.eq(&now),
-                    ))
-                    .execute(conn)
-                    .map_err(StorageError::from)?;
+                let count =
+                    diesel::update(activities::table.filter(activities::asset_id.eq(&old_id)))
+                        .set((
+                            activities::asset_id.eq(&new_id),
+                            activities::updated_at.eq(&now),
+                        ))
+                        .execute(conn)
+                        .map_err(StorageError::from)?;
 
                 let updated_rows = activities::table
                     .filter(activities::id.eq_any(&affected_ids))

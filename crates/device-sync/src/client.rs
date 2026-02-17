@@ -714,7 +714,10 @@ impl DeviceSyncClient {
             ));
         }
         let computed_checksum = compute_sha256_checksum(&payload);
-        if !upload_headers.checksum.eq_ignore_ascii_case(&computed_checksum) {
+        if !upload_headers
+            .checksum
+            .eq_ignore_ascii_case(&computed_checksum)
+        {
             return Err(DeviceSyncError::invalid_request(
                 "Snapshot checksum does not match payload bytes",
             ));
@@ -773,7 +776,9 @@ impl DeviceSyncClient {
                 .map(|flag| flag.load(Ordering::Relaxed))
                 .unwrap_or(false)
             {
-                return Err(DeviceSyncError::invalid_request("Snapshot upload cancelled"));
+                return Err(DeviceSyncError::invalid_request(
+                    "Snapshot upload cancelled",
+                ));
             }
 
             attempt = attempt.saturating_add(1);
@@ -792,9 +797,9 @@ impl DeviceSyncClient {
             }
             headers.insert(
                 "x-snapshot-schema-version",
-                HeaderValue::from_str(&upload_headers.schema_version.to_string()).map_err(|_| {
-                    DeviceSyncError::invalid_request("Invalid snapshot schema version")
-                })?,
+                HeaderValue::from_str(&upload_headers.schema_version.to_string()).map_err(
+                    |_| DeviceSyncError::invalid_request("Invalid snapshot schema version"),
+                )?,
             );
             headers.insert(
                 "x-snapshot-covers-tables",
@@ -847,7 +852,9 @@ impl DeviceSyncClient {
 
                     let body = response.text().await?;
                     Self::log_response(status, &body);
-                    let error = if let Ok(api_error) = serde_json::from_str::<ApiErrorResponse>(&body) {
+                    let error = if let Ok(api_error) =
+                        serde_json::from_str::<ApiErrorResponse>(&body)
+                    {
                         DeviceSyncError::api(
                             status.as_u16(),
                             format!("{}: {}", api_error.code, api_error.message),
@@ -1143,7 +1150,10 @@ mod tests {
     }
 
     fn api_error_body(code: &str, message: &str) -> String {
-        format!(r#"{{"error":"error","code":"{}","message":"{}"}}"#, code, message)
+        format!(
+            r#"{{"error":"error","code":"{}","message":"{}"}}"#,
+            code, message
+        )
     }
 
     fn build_upload_headers(event_id: Option<String>, payload: &[u8]) -> SnapshotUploadHeaders {
@@ -1261,30 +1271,26 @@ mod tests {
                 let captured_inner = Arc::clone(&captured_clone);
                 let scripted_inner = Arc::clone(&scripted_clone);
                 tokio::spawn(async move {
-                    let Some((headers, _content_length)) = read_http_request(&mut stream).await else {
+                    let Some((headers, _content_length)) = read_http_request(&mut stream).await
+                    else {
                         return;
                     };
                     let event_id = headers.get("x-snapshot-event-id").cloned();
                     let content_length = headers.get("content-length").cloned();
                     let snapshot_size_bytes = headers.get("x-snapshot-size-bytes").cloned();
-                    captured_inner
-                        .lock()
-                        .await
-                        .push(CapturedUploadRequest {
-                            event_id,
-                            content_length,
-                            snapshot_size_bytes,
-                        });
+                    captured_inner.lock().await.push(CapturedUploadRequest {
+                        event_id,
+                        content_length,
+                        snapshot_size_bytes,
+                    });
 
-                    let outcome = scripted_inner
-                        .lock()
-                        .await
-                        .pop_front()
-                        .unwrap_or(MockUploadOutcome::Respond {
+                    let outcome = scripted_inner.lock().await.pop_front().unwrap_or(
+                        MockUploadOutcome::Respond {
                             status: 500,
                             body: api_error_body("INTERNAL", "unexpected request"),
                             delay_ms: 0,
-                        });
+                        },
+                    );
 
                     match outcome {
                         MockUploadOutcome::DropConnection => {}
@@ -1375,20 +1381,27 @@ mod tests {
         assert_eq!(result.snapshot_id, "snap-2");
         let requests = captured.lock().await.clone();
         assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].event_id.as_deref(), Some(stable_event_id.as_str()));
-        assert_eq!(requests[1].event_id.as_deref(), Some(stable_event_id.as_str()));
+        assert_eq!(
+            requests[0].event_id.as_deref(),
+            Some(stable_event_id.as_str())
+        );
+        assert_eq!(
+            requests[1].event_id.as_deref(),
+            Some(stable_event_id.as_str())
+        );
 
         server.abort();
     }
 
     #[tokio::test]
     async fn snapshot_upload_accepts_idempotent_200_response() {
-        let (base_url, _captured, server) = start_mock_upload_server(vec![MockUploadOutcome::Respond {
-            status: 200,
-            body: success_upload_body("snap-idempotent"),
-            delay_ms: 0,
-        }])
-        .await;
+        let (base_url, _captured, server) =
+            start_mock_upload_server(vec![MockUploadOutcome::Respond {
+                status: 200,
+                body: success_upload_body("snap-idempotent"),
+                delay_ms: 0,
+            }])
+            .await;
 
         let client = DeviceSyncClient::new(&base_url);
         let payload = b"snapshot-payload-idempotent".to_vec();
@@ -1408,12 +1421,13 @@ mod tests {
 
     #[tokio::test]
     async fn snapshot_upload_blocks_duplicate_concurrent_payload_uploads() {
-        let (base_url, captured, server) = start_mock_upload_server(vec![MockUploadOutcome::Respond {
-            status: 201,
-            body: success_upload_body("snap-concurrent"),
-            delay_ms: 450,
-        }])
-        .await;
+        let (base_url, captured, server) =
+            start_mock_upload_server(vec![MockUploadOutcome::Respond {
+                status: 201,
+                body: success_upload_body("snap-concurrent"),
+                delay_ms: 450,
+            }])
+            .await;
 
         let client = DeviceSyncClient::new(&base_url);
         let payload = b"snapshot-concurrency-payload".to_vec();
@@ -1451,7 +1465,10 @@ mod tests {
             other => panic!("expected duplicate-in-flight guard error, got {:?}", other),
         }
 
-        let first_result = first.await.expect("first task join").expect("first upload ok");
+        let first_result = first
+            .await
+            .expect("first task join")
+            .expect("first upload ok");
         assert_eq!(first_result.snapshot_id, "snap-concurrent");
         let requests = captured.lock().await.clone();
         assert_eq!(requests.len(), 1);

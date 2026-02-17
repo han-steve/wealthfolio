@@ -92,10 +92,8 @@ impl QuoteStore for MarketDataRepository {
                     if provider_pairs.is_empty() {
                         db_rows
                     } else {
-                        let asset_ids: Vec<&str> =
-                            provider_pairs.iter().map(|(a, _)| *a).collect();
-                        let days: Vec<&str> =
-                            provider_pairs.iter().map(|(_, d)| *d).collect();
+                        let asset_ids: Vec<&str> = provider_pairs.iter().map(|(a, _)| *a).collect();
+                        let days: Vec<&str> = provider_pairs.iter().map(|(_, d)| *d).collect();
 
                         let manual_days: HashSet<(String, String)> = quotes_dsl::quotes
                             .filter(quotes_dsl::source.eq("MANUAL"))

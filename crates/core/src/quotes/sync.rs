@@ -638,10 +638,7 @@ where
                             .delete_provider_quotes_for_asset(&asset_id)
                             .await
                         {
-                            warn!(
-                                "Failed to purge provider quotes for {}: {:?}",
-                                asset.id, e
-                            );
+                            warn!("Failed to purge provider quotes for {}: {:?}", asset.id, e);
                         }
                     }
 

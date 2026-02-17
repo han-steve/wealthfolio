@@ -63,31 +63,29 @@ fn get_sync_identity_from_store() -> Option<SyncIdentity> {
     const SYNC_IDENTITY_KEY: &str = "sync_identity";
 
     match KeyringSecretStore.get_secret(SYNC_IDENTITY_KEY) {
-        Ok(Some(json)) => {
-            match serde_json::from_str::<SyncIdentity>(&json) {
-                Ok(identity) => {
-                    if let Some(ref device_id) = identity.device_id {
-                        debug!(
+        Ok(Some(json)) => match serde_json::from_str::<SyncIdentity>(&json) {
+            Ok(identity) => {
+                if let Some(ref device_id) = identity.device_id {
+                    debug!(
                             "[DeviceSync] Loaded sync_identity (device_id={}, has_root_key={}, key_version={})",
                             device_id,
                             identity.root_key.is_some(),
                             identity.key_version.unwrap_or_default()
                         );
-                    } else {
-                        debug!(
+                } else {
+                    debug!(
                             "[DeviceSync] sync_identity exists but deviceId is not set (has_root_key={}, key_version={})",
                             identity.root_key.is_some(),
                             identity.key_version.unwrap_or_default()
                         );
-                    }
-                    Some(identity)
                 }
-                Err(e) => {
-                    log::warn!("[DeviceSync] Failed to parse sync_identity: {}", e);
-                    None
-                }
+                Some(identity)
             }
-        }
+            Err(e) => {
+                log::warn!("[DeviceSync] Failed to parse sync_identity: {}", e);
+                None
+            }
+        },
         Ok(None) => {
             debug!("[DeviceSync] No sync_identity found in keyring");
             None
@@ -118,10 +116,7 @@ async fn persist_device_config_from_identity(
             )
             .await
         {
-            log::warn!(
-                "[DeviceSync] Failed to persist device config: {}",
-                err
-            );
+            log::warn!("[DeviceSync] Failed to persist device config: {}", err);
         }
     }
 }
@@ -555,7 +550,10 @@ pub async fn update_device(
     display_name: Option<String>,
     _state: State<'_, Arc<ServiceContext>>,
 ) -> Result<SuccessResponse, String> {
-    info!("[DeviceSync] Updating device {}: name={:?}", device_id, display_name);
+    info!(
+        "[DeviceSync] Updating device {}: name={:?}",
+        device_id, display_name
+    );
 
     let token = get_access_token()?;
 

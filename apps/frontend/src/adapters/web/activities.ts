@@ -56,7 +56,9 @@ export const parseCsv = async (file: File, config: ParseConfig): Promise<ParsedC
     if (!response.ok) {
       const details = await extractErrorMessage(response);
       const fallback = `Request failed (${response.status}${response.statusText ? ` ${response.statusText}` : ""})`;
-      throw new Error(details ? `Failed to parse CSV: ${details}` : `Failed to parse CSV: ${fallback}`);
+      throw new Error(
+        details ? `Failed to parse CSV: ${details}` : `Failed to parse CSV: ${fallback}`,
+      );
     }
 
     const parsed = (await response.json()) as ParsedCsvResult;

@@ -469,7 +469,10 @@ pub fn run() {
         .expect("Failed to build Wealthfolio application")
         .run(|handle, event| {
             #[cfg(desktop)]
-            if matches!(event, tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit) {
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
                 if let Some(context) = handle.try_state::<Arc<context::ServiceContext>>() {
                     let context = Arc::clone(context.inner());
                     tauri::async_runtime::block_on(async move {

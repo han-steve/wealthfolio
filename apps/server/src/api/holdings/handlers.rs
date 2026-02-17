@@ -25,9 +25,8 @@ use crate::{error::ApiResult, main_lib::AppState};
 use super::dto::{
     AllocationHoldingsQuery, AssetHoldingsQuery, CheckHoldingsImportRequest,
     CheckHoldingsImportResult, DeleteSnapshotQuery, HistoryQuery, HoldingItemQuery, HoldingsQuery,
-    HoldingsSnapshotInput,
-    ImportHoldingsCsvRequest, ImportHoldingsCsvResult, SaveManualHoldingsRequest,
-    SnapshotDateQuery, SnapshotInfo, SnapshotsQuery, SymbolCheckResult,
+    HoldingsSnapshotInput, ImportHoldingsCsvRequest, ImportHoldingsCsvResult,
+    SaveManualHoldingsRequest, SnapshotDateQuery, SnapshotInfo, SnapshotsQuery, SymbolCheckResult,
 };
 use super::mappers::{parse_date, parse_date_optional, snapshot_source_to_string};
 

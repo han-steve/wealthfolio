@@ -13,9 +13,9 @@ use wealthfolio_device_sync::{ApiRetryClass, SyncPushEventRequest, SyncPushReque
 
 use super::{
     allow_unsupported_entity_sync, create_client, decrypt_sync_payload, encrypt_sync_payload,
-    get_access_token, get_sync_identity_from_store, millis_until_rfc3339,
-    parse_event_operation, persist_device_config_from_identity, remote_supports_entity,
-    retry_class_code, sync_entity_name, sync_operation_name, SyncCycleResult,
+    get_access_token, get_sync_identity_from_store, millis_until_rfc3339, parse_event_operation,
+    persist_device_config_from_identity, remote_supports_entity, retry_class_code,
+    sync_entity_name, sync_operation_name, SyncCycleResult,
 };
 
 use super::snapshot::maybe_generate_snapshot_for_policy;
@@ -53,8 +53,7 @@ impl CycleContext {
             .mark_engine_error(message)
             .await
             .map_err(|e| e.to_string())?;
-        let retry_at =
-            retry_secs.map(|s| (Utc::now() + chrono::Duration::seconds(s)).to_rfc3339());
+        let retry_at = retry_secs.map(|s| (Utc::now() + chrono::Duration::seconds(s)).to_rfc3339());
         let _ = self
             .sync_repo
             .mark_cycle_outcome(
@@ -393,9 +392,7 @@ pub(super) async fn run_sync_cycle(
                 Ok(value) => value,
                 Err(err) => {
                     if err.retry_class() == ApiRetryClass::ReauthRequired {
-                        log::warn!(
-                            "[DeviceSync] Auth error during pull — token may need refresh"
-                        );
+                        log::warn!("[DeviceSync] Auth error during pull — token may need refresh");
                         return ctx
                             .fail(
                                 "auth_error",
@@ -432,7 +429,7 @@ pub(super) async fn run_sync_cycle(
                 if remote_event.device_id == device_id {
                     continue;
                 }
-                let local_entity = remote_event.entity.clone();
+                let local_entity = remote_event.entity;
                 if local_entity == SyncEntity::Snapshot {
                     debug!(
                         "[DeviceSync] Skipping snapshot control event during replay: event_id={} event_type={} seq={}",
@@ -463,7 +460,8 @@ pub(super) async fn run_sync_cycle(
                     None => {
                         log::warn!(
                             "[DeviceSync] Replay blocked: unsupported event type '{}' for event {}",
-                            remote_event.event_type, remote_event.event_id
+                            remote_event.event_type,
+                            remote_event.event_id
                         );
                         return ctx
                             .fail(
@@ -496,7 +494,8 @@ pub(super) async fn run_sync_cycle(
                             .await;
                     }
                 };
-                let payload_json: serde_json::Value = match serde_json::from_str(&decrypted_payload) {
+                let payload_json: serde_json::Value = match serde_json::from_str(&decrypted_payload)
+                {
                     Ok(payload) => payload,
                     Err(err) => {
                         return ctx
@@ -525,7 +524,17 @@ pub(super) async fn run_sync_cycle(
 
             let batch_tuples: Vec<_> = decoded_events
                 .into_iter()
-                .map(|e| (e.entity, e.entity_id, e.op, e.event_id, e.client_timestamp, e.seq, e.payload))
+                .map(|e| {
+                    (
+                        e.entity,
+                        e.entity_id,
+                        e.op,
+                        e.event_id,
+                        e.client_timestamp,
+                        e.seq,
+                        e.payload,
+                    )
+                })
                 .collect();
             let applied_count = match sync_repo.apply_remote_events_lww_batch(batch_tuples).await {
                 Ok(applied) => applied,
@@ -619,7 +628,9 @@ pub async fn ensure_background_engine_started(context: Arc<ServiceContext>) -> R
                     // Check if device was revoked (has device_id but no root_key)
                     if let Some(identity) = get_sync_identity_from_store() {
                         if identity.root_key.is_none() && identity.device_id.is_some() {
-                            info!("[DeviceSync] Device appears revoked. Stopping background engine.");
+                            info!(
+                                "[DeviceSync] Device appears revoked. Stopping background engine."
+                            );
                             break;
                         }
                     }
@@ -642,11 +653,12 @@ pub async fn ensure_background_engine_started(context: Arc<ServiceContext>) -> R
 
             let jitter_bound = DEVICE_SYNC_INTERVAL_JITTER_SECS.saturating_mul(1000);
             let jitter_ms = if jitter_bound > 0 {
-                (Utc::now().timestamp_millis().unsigned_abs() % jitter_bound) as u64
+                Utc::now().timestamp_millis().unsigned_abs() % jitter_bound
             } else {
                 0
             };
-            let mut delay_ms = DEVICE_SYNC_FOREGROUND_INTERVAL_SECS.saturating_mul(1000) + jitter_ms;
+            let mut delay_ms =
+                DEVICE_SYNC_FOREGROUND_INTERVAL_SECS.saturating_mul(1000) + jitter_ms;
 
             if let Ok(engine_status) = context.app_sync_repository().get_engine_status() {
                 if let Some(next_retry_at) = engine_status.next_retry_at.as_deref() {
