@@ -16,6 +16,8 @@ import {
   getSyncEngineStatus as getSyncEngineStatusApi,
   syncBootstrapSnapshotIfNeeded as syncBootstrapSnapshotIfNeededApi,
   syncTriggerCycle as syncTriggerCycleApi,
+  deviceSyncStartBackgroundEngine as deviceSyncStartBackgroundEngineApi,
+  deviceSyncStopBackgroundEngine as deviceSyncStopBackgroundEngineApi,
   getDevice as getDeviceApi,
   listDevices as listDevicesApi,
   updateDevice as updateDeviceApi,
@@ -30,7 +32,6 @@ import {
   claimPairing as claimPairingApi,
   getPairingMessages as getPairingMessagesApi,
   confirmPairing as confirmPairingApi,
-  isDesktop,
 } from "@/adapters";
 import { syncStorage } from "../storage/keyring";
 import * as crypto from "../crypto";
@@ -193,20 +194,6 @@ class SyncService {
     backgroundRunning: boolean;
     bootstrapRequired: boolean;
   }> {
-    if (!isDesktop) {
-      return {
-        cursor: 0,
-        lastPushAt: null,
-        lastPullAt: null,
-        lastError: null,
-        consecutiveFailures: 0,
-        nextRetryAt: null,
-        lastCycleStatus: "web_stub",
-        lastCycleDurationMs: null,
-        backgroundRunning: false,
-        bootstrapRequired: false,
-      };
-    }
     return getSyncEngineStatusApi();
   }
 
@@ -216,14 +203,6 @@ class SyncService {
     snapshotId: string | null;
     cursor: number | null;
   }> {
-    if (!isDesktop) {
-      return {
-        status: "skipped",
-        message: "Snapshot bootstrap is desktop-only",
-        snapshotId: null,
-        cursor: null,
-      };
-    }
     return syncBootstrapSnapshotIfNeededApi();
   }
 
@@ -235,17 +214,15 @@ class SyncService {
     cursor: number;
     needsBootstrap: boolean;
   }> {
-    if (!isDesktop) {
-      return {
-        status: "skipped",
-        lockVersion: 0,
-        pushedCount: 0,
-        pulledCount: 0,
-        cursor: 0,
-        needsBootstrap: false,
-      };
-    }
     return syncTriggerCycleApi();
+  }
+
+  async startBackgroundEngine(): Promise<{ status: string; message: string }> {
+    return deviceSyncStartBackgroundEngineApi();
+  }
+
+  async stopBackgroundEngine(): Promise<{ status: string; message: string }> {
+    return deviceSyncStopBackgroundEngineApi();
   }
 
   // ═══════════════════════════════════════════════════════════════════════════

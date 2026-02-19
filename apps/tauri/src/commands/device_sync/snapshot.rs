@@ -1,4 +1,4 @@
-//! Snapshot generation, upload, bootstrap, and policy evaluation.
+//! Snapshot generation, upload, and bootstrap flows.
 
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::Utc;
@@ -11,9 +11,7 @@ use uuid::Uuid;
 use crate::context::ServiceContext;
 use crate::events::{emit_portfolio_trigger_recalculate, PortfolioRequestPayload};
 use wealthfolio_core::quotes::MarketSyncMode;
-use wealthfolio_core::sync::{
-    APP_SYNC_TABLES, DEVICE_SYNC_SNAPSHOT_EVENT_THRESHOLD, DEVICE_SYNC_SNAPSHOT_INTERVAL_SECS,
-};
+use wealthfolio_core::sync::APP_SYNC_TABLES;
 use wealthfolio_device_sync::SyncState;
 
 use super::{
@@ -437,68 +435,4 @@ pub async fn generate_snapshot_now_internal(
         oplog_seq: Some(response.oplog_seq),
         message: "Snapshot uploaded".to_string(),
     })
-}
-
-pub(super) async fn maybe_generate_snapshot_for_policy(context: Arc<ServiceContext>) {
-    let cursor = match context.app_sync_repository().get_cursor() {
-        Ok(value) => value,
-        Err(err) => {
-            log::warn!(
-                "[DeviceSync] Failed reading cursor for snapshot policy: {}",
-                err
-            );
-            return;
-        }
-    };
-
-    let now = Utc::now();
-    let runtime = context.device_sync_runtime();
-    let (due_by_time, due_by_seq, last_uploaded_cursor) = {
-        let state = runtime.snapshot_policy.lock().await;
-        let due_by_time = state
-            .last_uploaded_at
-            .map(|at| (now - at).num_seconds() >= DEVICE_SYNC_SNAPSHOT_INTERVAL_SECS as i64)
-            .unwrap_or(true);
-        let last_uploaded_cursor = state.last_uploaded_cursor;
-        let due_by_seq =
-            cursor.saturating_sub(last_uploaded_cursor) >= DEVICE_SYNC_SNAPSHOT_EVENT_THRESHOLD;
-        (due_by_time, due_by_seq, last_uploaded_cursor)
-    };
-    let delta_seq = cursor.saturating_sub(last_uploaded_cursor);
-    debug!(
-        "[DeviceSync] Snapshot policy eval cursor={} last_uploaded_cursor={} delta_seq={} due_by_time={} due_by_seq={} threshold_seq={} threshold_secs={}",
-        cursor,
-        last_uploaded_cursor,
-        delta_seq,
-        due_by_time,
-        due_by_seq,
-        DEVICE_SYNC_SNAPSHOT_EVENT_THRESHOLD,
-        DEVICE_SYNC_SNAPSHOT_INTERVAL_SECS
-    );
-
-    if !due_by_time && !due_by_seq {
-        debug!("[DeviceSync] Snapshot policy skipped: neither time nor seq threshold met");
-        return;
-    }
-
-    match generate_snapshot_now_internal(None, Arc::clone(&context)).await {
-        Ok(result) if result.status == "uploaded" => {
-            let mut state = runtime.snapshot_policy.lock().await;
-            state.last_uploaded_at = Some(now);
-            state.last_uploaded_cursor = result.oplog_seq.unwrap_or(cursor);
-        }
-        Ok(_) => {}
-        Err(err) => {
-            let key_version = get_sync_identity_from_store()
-                .and_then(|identity| identity.key_version)
-                .unwrap_or(1)
-                .max(1);
-            log::warn!(
-                "[DeviceSync] Snapshot policy upload failed cursor={} key_version={} error={}",
-                cursor,
-                key_version,
-                err
-            );
-        }
-    }
 }

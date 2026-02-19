@@ -44,8 +44,14 @@ fn validate_sync_table(table: &str) -> Result<()> {
     ))))
 }
 
-fn payload_columns_cache() -> &'static Mutex<HashMap<String, HashSet<String>>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, HashSet<String>>>> = OnceLock::new();
+#[derive(Clone)]
+struct PayloadColumnCatalog {
+    writable: HashSet<String>,
+    readonly: HashSet<String>,
+}
+
+fn payload_column_catalog_cache() -> &'static Mutex<HashMap<String, PayloadColumnCatalog>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, PayloadColumnCatalog>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -107,6 +113,60 @@ fn load_table_columns(
     Ok(columns)
 }
 
+fn load_payload_column_catalog(
+    conn: &mut SqliteConnection,
+    table_name: &str,
+) -> Result<PayloadColumnCatalog> {
+    let known_columns = {
+        let cache = payload_column_catalog_cache().lock().map_err(|_| {
+            Error::Database(DatabaseError::Internal(
+                "Sync payload column cache is poisoned".to_string(),
+            ))
+        })?;
+        cache.get(table_name).cloned()
+    };
+    if let Some(cached) = known_columns {
+        return Ok(cached);
+    }
+
+    let pragma_xinfo_sql = format!(
+        "PRAGMA main.table_xinfo('{}')",
+        escape_sqlite_str(table_name)
+    );
+    let xinfo_result = diesel::sql_query(pragma_xinfo_sql)
+        .load::<PragmaTableXInfoRow>(conn)
+        .map_err(StorageError::from);
+
+    let catalog = match xinfo_result {
+        Ok(rows) => {
+            let mut writable = HashSet::new();
+            let mut readonly = HashSet::new();
+            for row in rows {
+                if row.hidden == 0 {
+                    writable.insert(row.name);
+                } else {
+                    readonly.insert(row.name);
+                }
+            }
+            PayloadColumnCatalog { writable, readonly }
+        }
+        Err(_) => PayloadColumnCatalog {
+            writable: load_table_columns(conn, "main", table_name)?
+                .into_iter()
+                .collect::<HashSet<_>>(),
+            readonly: HashSet::new(),
+        },
+    };
+
+    let mut cache = payload_column_catalog_cache().lock().map_err(|_| {
+        Error::Database(DatabaseError::Internal(
+            "Sync payload column cache is poisoned".to_string(),
+        ))
+    })?;
+    cache.insert(table_name.to_string(), catalog.clone());
+    Ok(catalog)
+}
+
 fn payload_value_matches_entity_id(value: &serde_json::Value, entity_id: &str) -> bool {
     match value {
         serde_json::Value::String(v) => v == entity_id,
@@ -116,44 +176,138 @@ fn payload_value_matches_entity_id(value: &serde_json::Value, entity_id: &str) -
     }
 }
 
-fn validate_payload_columns(
-    conn: &mut SqliteConnection,
-    table_name: &str,
-    fields: &[(String, serde_json::Value)],
-) -> Result<()> {
-    let known_columns = {
-        let cache = payload_columns_cache().lock().map_err(|_| {
-            Error::Database(DatabaseError::Internal(
-                "Sync payload column cache is poisoned".to_string(),
-            ))
-        })?;
-        cache.get(table_name).cloned()
-    };
-    let known_columns = if let Some(columns) = known_columns {
-        columns
-    } else {
-        let columns = load_table_columns(conn, "main", table_name)?
-            .into_iter()
-            .collect::<HashSet<_>>();
-        let mut cache = payload_columns_cache().lock().map_err(|_| {
-            Error::Database(DatabaseError::Internal(
-                "Sync payload column cache is poisoned".to_string(),
-            ))
-        })?;
-        cache.insert(table_name.to_string(), columns.clone());
-        columns
-    };
+fn normalize_payload_key_to_snake_case(key: &str) -> String {
+    let mut normalized = String::with_capacity(key.len());
+    let chars = key.chars().collect::<Vec<_>>();
 
-    for (column, _) in fields {
-        if !known_columns.contains(column) {
-            return Err(Error::Database(DatabaseError::Internal(format!(
-                "Sync payload column '{}' is not valid for table '{}'",
-                column, table_name
-            ))));
+    for (idx, ch) in chars.iter().enumerate() {
+        if ch.is_ascii_uppercase() {
+            let prev = idx.checked_sub(1).and_then(|i| chars.get(i));
+            let next = chars.get(idx + 1);
+            let prev_is_lower_or_digit =
+                prev.is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+            let prev_is_upper = prev.is_some_and(|c| c.is_ascii_uppercase());
+            let next_is_lower = next.is_some_and(|c| c.is_ascii_lowercase());
+
+            if !normalized.is_empty()
+                && !normalized.ends_with('_')
+                && (prev_is_lower_or_digit || (prev_is_upper && next_is_lower))
+            {
+                normalized.push('_');
+            }
+            normalized.push(ch.to_ascii_lowercase());
+            continue;
+        }
+
+        if ch.is_ascii_alphanumeric() {
+            normalized.push(*ch);
+            continue;
+        }
+
+        if !normalized.is_empty() && !normalized.ends_with('_') {
+            normalized.push('_');
         }
     }
 
-    Ok(())
+    normalized.trim_matches('_').to_string()
+}
+
+enum PayloadColumnResolution {
+    Writable(String),
+    Readonly,
+}
+
+fn resolve_payload_column(
+    raw_key: &str,
+    catalog: &PayloadColumnCatalog,
+) -> Option<PayloadColumnResolution> {
+    if catalog.writable.contains(raw_key) {
+        return Some(PayloadColumnResolution::Writable(raw_key.to_string()));
+    }
+    if catalog.readonly.contains(raw_key) {
+        return Some(PayloadColumnResolution::Readonly);
+    }
+
+    let normalized = normalize_payload_key_to_snake_case(raw_key);
+    if normalized != raw_key {
+        if catalog.writable.contains(&normalized) {
+            return Some(PayloadColumnResolution::Writable(normalized));
+        }
+        if catalog.readonly.contains(&normalized) {
+            return Some(PayloadColumnResolution::Readonly);
+        }
+    }
+
+    None
+}
+
+fn normalize_payload_fields(
+    conn: &mut SqliteConnection,
+    table_name: &str,
+    fields: Vec<(String, serde_json::Value)>,
+) -> Result<Vec<(String, serde_json::Value)>> {
+    let catalog = load_payload_column_catalog(conn, table_name)?;
+    let mut normalized_fields = Vec::with_capacity(fields.len());
+    let mut seen_columns: HashMap<String, serde_json::Value> = HashMap::new();
+
+    for (raw_key, value) in fields {
+        let resolution = resolve_payload_column(&raw_key, &catalog).ok_or_else(|| {
+            Error::Database(DatabaseError::Internal(format!(
+                "Sync payload column '{}' is not valid for table '{}'",
+                raw_key, table_name
+            )))
+        })?;
+
+        let column = match resolution {
+            PayloadColumnResolution::Writable(column) => column,
+            PayloadColumnResolution::Readonly => continue,
+        };
+
+        if let Some(existing_value) = seen_columns.get(&column) {
+            if existing_value != &value {
+                return Err(Error::Database(DatabaseError::Internal(format!(
+                    "Sync payload maps multiple values to column '{}' for table '{}'",
+                    column, table_name
+                ))));
+            }
+            continue;
+        }
+
+        seen_columns.insert(column.clone(), value.clone());
+        normalized_fields.push((column, value));
+    }
+
+    Ok(normalized_fields)
+}
+
+fn normalize_outbox_payload(payload: serde_json::Value) -> Result<serde_json::Value> {
+    let serde_json::Value::Object(fields) = payload else {
+        return Ok(payload);
+    };
+
+    let mut normalized = serde_json::Map::new();
+    for (raw_key, value) in fields {
+        let normalized_key = normalize_payload_key_to_snake_case(&raw_key);
+        let column = if normalized_key.is_empty() {
+            raw_key
+        } else {
+            normalized_key
+        };
+
+        if let Some(existing) = normalized.get(&column) {
+            if existing != &value {
+                return Err(Error::Database(DatabaseError::Internal(format!(
+                    "Outbox payload maps multiple values to column '{}'",
+                    column
+                ))));
+            }
+            continue;
+        }
+
+        normalized.insert(column, value);
+    }
+
+    Ok(serde_json::Value::Object(normalized))
 }
 
 fn entity_storage_mapping(entity: &SyncEntity) -> Option<(&'static str, &'static str)> {
@@ -254,35 +408,32 @@ fn resolve_local_device_id(conn: &mut SqliteConnection) -> Option<String> {
         .unwrap_or(None)
 }
 
-fn is_connect_configured() -> bool {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .is_some()
-}
-
-pub fn write_outbox_event(
+pub fn insert_outbox_event(
     conn: &mut SqliteConnection,
     request: OutboxWriteRequest,
 ) -> Result<String> {
-    if !is_connect_configured() {
-        return Ok(String::new());
-    }
+    let OutboxWriteRequest {
+        event_id,
+        entity,
+        entity_id,
+        op,
+        client_timestamp,
+        payload,
+        payload_key_version,
+    } = request;
 
-    let event_id = request
-        .event_id
-        .unwrap_or_else(|| Uuid::now_v7().to_string());
-    let payload = serde_json::to_string(&request.payload)?;
+    let event_id = event_id.unwrap_or_else(|| Uuid::now_v7().to_string());
+    let payload = serde_json::to_string(&normalize_outbox_payload(payload)?)?;
     let now = Utc::now().to_rfc3339();
 
-    let payload_key_version = resolve_payload_key_version(conn, request.payload_key_version)?;
+    let payload_key_version = resolve_payload_key_version(conn, payload_key_version)?;
     let device_id = resolve_local_device_id(conn);
     let row = SyncOutboxEventDB {
         event_id: event_id.clone(),
-        entity: enum_to_db(&request.entity)?,
-        entity_id: request.entity_id,
-        op: enum_to_db(&request.op)?,
-        client_timestamp: request.client_timestamp,
+        entity: enum_to_db(&entity)?,
+        entity_id,
+        op: enum_to_db(&op)?,
+        client_timestamp,
         payload,
         payload_key_version,
         sent: 0,
@@ -391,26 +542,25 @@ fn apply_remote_event_lww_tx(
                             "Sync payload must be a JSON object".to_string(),
                         ))
                     })?;
-                    if let Some(payload_pk) = payload_obj.get(pk_name) {
+
+                    let fields: Vec<(String, serde_json::Value)> = payload_obj
+                        .iter()
+                        .map(|(k, v)| (k.clone(), v.clone()))
+                        .collect();
+                    let mut fields = normalize_payload_fields(conn, table_name, fields)?;
+                    if let Some((_, payload_pk)) = fields.iter().find(|(k, _)| k == pk_name) {
                         if !payload_value_matches_entity_id(payload_pk, &entity_id_value) {
                             return Err(Error::Database(DatabaseError::Internal(format!(
                                 "Sync payload PK '{}' does not match entity_id '{}'",
                                 pk_name, entity_id_value
                             ))));
                         }
-                    }
-
-                    let mut fields: Vec<(String, serde_json::Value)> = payload_obj
-                        .iter()
-                        .map(|(k, v)| (k.clone(), v.clone()))
-                        .collect();
-                    if !fields.iter().any(|(k, _)| k == pk_name) {
+                    } else {
                         fields.push((
                             pk_name.to_string(),
                             serde_json::Value::String(entity_id_value.clone()),
                         ));
                     }
-                    validate_payload_columns(conn, table_name, &fields)?;
 
                     let columns = fields
                         .iter()
@@ -1140,7 +1290,7 @@ impl AppSyncRepository {
         /// Tables not listed here are exported unfiltered.
         const SYNC_TABLE_EXPORT_FILTERS: &[(&str, &str)] = &[(
             "holdings_snapshots",
-            "source NOT IN ('CALCULATED', 'SYNTHETIC')",
+            "source IN ('MANUAL_ENTRY', 'SYNTHETIC')",
         )];
 
         let pool = Arc::clone(&self.pool);
@@ -1392,11 +1542,13 @@ impl AppSyncRepository {
 mod tests {
     use super::*;
     use diesel::dsl::count_star;
+    use std::collections::BTreeSet;
     use tempfile::tempdir;
 
     use crate::db::{create_pool, get_connection, init, run_migrations, write_actor::spawn_writer};
     use crate::schema::{
-        accounts, assets, platforms, sync_applied_events, sync_entity_metadata, sync_outbox,
+        accounts, activity_import_profiles, assets, goals, platforms, sync_applied_events,
+        sync_entity_metadata, sync_outbox,
     };
 
     fn setup_db() -> (
@@ -1502,6 +1654,22 @@ mod tests {
             .expect("count")
     }
 
+    fn snake_to_camel_case(input: &str) -> String {
+        let mut parts = input.split('_');
+        let Some(first) = parts.next() else {
+            return String::new();
+        };
+        let mut output = first.to_string();
+        for part in parts {
+            let mut chars = part.chars();
+            if let Some(first_char) = chars.next() {
+                output.push(first_char.to_ascii_uppercase());
+                output.extend(chars);
+            }
+        }
+        output
+    }
+
     #[tokio::test]
     async fn creates_sync_foundation_tables() {
         let (pool, _writer) = setup_db();
@@ -1546,8 +1714,8 @@ mod tests {
                     serde_json::json!({ "id": "acc-sync-rollback" }),
                 );
                 req.event_id = Some("fixed-event-id".to_string());
-                write_outbox_event(conn, req.clone())?;
-                let _ = write_outbox_event(conn, req)?;
+                insert_outbox_event(conn, req.clone())?;
+                let _ = insert_outbox_event(conn, req)?;
                 Ok(())
             })
             .await;
@@ -1560,6 +1728,41 @@ mod tests {
         let mut conn = get_connection(&pool).expect("conn");
         let account_count: i64 = accounts::table
             .filter(accounts::id.eq("acc-sync-rollback"))
+            .select(count_star())
+            .first(&mut conn)
+            .expect("count");
+        assert_eq!(account_count, 0, "account insert should be rolled back");
+    }
+
+    #[tokio::test]
+    async fn projected_outbox_rollback_keeps_mutation_atomic() {
+        let (pool, writer) = setup_db();
+
+        let tx_result = writer
+            .exec_projected(|conn, projection| {
+                insert_account_for_test(conn, "acc-sync-projected-rollback")?;
+
+                let mut req = OutboxWriteRequest::new(
+                    SyncEntity::Account,
+                    "acc-sync-projected-rollback",
+                    SyncOperation::Create,
+                    serde_json::json!({ "id": "acc-sync-projected-rollback" }),
+                );
+                req.event_id = Some("fixed-projected-event-id".to_string());
+                projection.queue_outbox(req.clone());
+                projection.queue_outbox(req);
+                Ok(())
+            })
+            .await;
+
+        assert!(
+            tx_result.is_err(),
+            "expected duplicate outbox event_id failure"
+        );
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let account_count: i64 = accounts::table
+            .filter(accounts::id.eq("acc-sync-projected-rollback"))
             .select(count_star())
             .first(&mut conn)
             .expect("count");
@@ -1652,7 +1855,7 @@ mod tests {
 
         {
             let mut conn = get_connection(&pool).expect("conn");
-            write_outbox_event(
+            insert_outbox_event(
                 &mut conn,
                 OutboxWriteRequest::new(
                     SyncEntity::Account,
@@ -1721,7 +1924,7 @@ mod tests {
 
         writer
             .exec(|conn| {
-                write_outbox_event(
+                insert_outbox_event(
                     conn,
                     OutboxWriteRequest::new(
                         SyncEntity::Account,
@@ -1738,6 +1941,112 @@ mod tests {
         let pending = repo.list_pending_outbox(10).expect("list pending");
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].payload_key_version, 3);
+    }
+
+    #[test]
+    fn normalize_outbox_payload_keys_to_snake_case() {
+        let payload = normalize_outbox_payload(serde_json::json!({
+            "id": "goal-outbox-camel",
+            "targetAmount": 5000.0,
+            "isAchieved": false
+        }))
+        .expect("normalize payload");
+        assert!(payload.get("target_amount").is_some());
+        assert!(payload.get("is_achieved").is_some());
+        assert!(payload.get("targetAmount").is_none());
+        assert!(payload.get("isAchieved").is_none());
+    }
+
+    #[test]
+    fn normalize_outbox_payload_rejects_conflicting_aliases() {
+        let result = normalize_outbox_payload(serde_json::json!({
+            "id": "goal-outbox-conflict",
+            "isAchieved": false,
+            "is_achieved": true
+        }));
+        assert!(
+            result.is_err(),
+            "expected conflicting payload aliases to be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn payload_normalization_supports_camel_case_for_all_sync_tables() {
+        let (pool, _writer) = setup_db();
+        let mut conn = get_connection(&pool).expect("conn");
+
+        for table_name in APP_SYNC_TABLES {
+            let catalog = load_payload_column_catalog(&mut conn, table_name).expect("catalog");
+
+            let camel_case_fields = catalog
+                .writable
+                .iter()
+                .map(|column| {
+                    (
+                        snake_to_camel_case(column),
+                        serde_json::Value::String("v".to_string()),
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let normalized = normalize_payload_fields(&mut conn, table_name, camel_case_fields)
+                .unwrap_or_else(|err| {
+                    panic!("normalize failed for table '{}': {}", table_name, err)
+                });
+
+            let normalized_columns = normalized
+                .iter()
+                .map(|(column, _)| column.clone())
+                .collect::<BTreeSet<_>>();
+            let expected_columns = catalog.writable.iter().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(
+                normalized_columns, expected_columns,
+                "normalized columns mismatch for table '{}'",
+                table_name
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn entity_mapping_targets_valid_tables_and_primary_keys() {
+        let (pool, _writer) = setup_db();
+        let mut conn = get_connection(&pool).expect("conn");
+
+        let entities = [
+            SyncEntity::Account,
+            SyncEntity::Asset,
+            SyncEntity::AssetTaxonomyAssignment,
+            SyncEntity::Activity,
+            SyncEntity::ActivityImportProfile,
+            SyncEntity::Goal,
+            SyncEntity::GoalsAllocation,
+            SyncEntity::AiThread,
+            SyncEntity::AiMessage,
+            SyncEntity::AiThreadTag,
+            SyncEntity::ContributionLimit,
+            SyncEntity::Platform,
+            SyncEntity::Snapshot,
+        ];
+
+        for entity in entities {
+            let (table_name, pk_name) =
+                entity_storage_mapping(&entity).expect("entity storage mapping");
+            assert!(
+                APP_SYNC_TABLES.contains(&table_name),
+                "entity {:?} mapped to non-sync table '{}'",
+                entity,
+                table_name
+            );
+
+            let catalog = load_payload_column_catalog(&mut conn, table_name).expect("catalog");
+            assert!(
+                catalog.writable.contains(pk_name) || catalog.readonly.contains(pk_name),
+                "entity {:?} PK '{}' not found in table '{}'",
+                entity,
+                pk_name,
+                table_name
+            );
+        }
     }
 
     #[tokio::test]
@@ -1821,6 +2130,76 @@ mod tests {
             .expect("platform row");
         assert_eq!(name_value.as_deref(), Some("Renamed Platform"));
         assert_eq!(url_value, "https://broker.example/updated");
+    }
+
+    #[tokio::test]
+    async fn replay_accepts_camel_case_goal_payload() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::Goal,
+                "goal-camel-case".to_string(),
+                SyncOperation::Create,
+                "evt-goal-camel".to_string(),
+                "2026-02-19T00:00:00Z".to_string(),
+                1,
+                serde_json::json!({
+                    "id": "goal-camel-case",
+                    "title": "Emergency Fund",
+                    "description": "6 months expenses",
+                    "targetAmount": 50000.0,
+                    "isAchieved": true
+                }),
+            )
+            .await
+            .expect("apply goal create");
+        assert!(applied, "expected goal create to apply");
+
+        let mut conn = get_connection(&pool).expect("conn");
+        let (target_amount_value, is_achieved_value): (f64, bool) = goals::table
+            .filter(goals::id.eq("goal-camel-case"))
+            .select((goals::target_amount, goals::is_achieved))
+            .first(&mut conn)
+            .expect("goal row");
+        assert_eq!(target_amount_value, 50000.0);
+        assert!(is_achieved_value);
+    }
+
+    #[tokio::test]
+    async fn replay_accepts_camel_case_non_id_primary_key_payload() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+        insert_account_for_test(&mut conn, "acc-import-profile").expect("insert account");
+
+        let applied = repo
+            .apply_remote_event_lww(
+                SyncEntity::ActivityImportProfile,
+                "acc-import-profile".to_string(),
+                SyncOperation::Create,
+                "evt-import-profile-camel".to_string(),
+                "2026-02-19T00:00:00Z".to_string(),
+                1,
+                serde_json::json!({
+                    "accountId": "acc-import-profile",
+                    "name": "Broker Mapping",
+                    "config": "{\"rules\":[]}",
+                    "createdAt": "2026-02-19 00:00:00",
+                    "updatedAt": "2026-02-19 00:00:00"
+                }),
+            )
+            .await
+            .expect("apply import profile create");
+        assert!(applied, "expected import profile create to apply");
+
+        let name_value: String = activity_import_profiles::table
+            .filter(activity_import_profiles::account_id.eq("acc-import-profile"))
+            .select(activity_import_profiles::name)
+            .first(&mut conn)
+            .expect("import profile row");
+        assert_eq!(name_value, "Broker Mapping");
     }
 
     #[tokio::test]
@@ -1947,6 +2326,42 @@ mod tests {
         assert!(
             err_msg.contains("nonexistent_column"),
             "error should mention the bad column: {}",
+            err_msg
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_rejects_conflicting_alias_columns() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool, writer);
+
+        let result = repo
+            .apply_remote_event_lww(
+                SyncEntity::Goal,
+                "goal-conflict".to_string(),
+                SyncOperation::Create,
+                "evt-goal-conflict".to_string(),
+                "2026-02-19T00:00:00Z".to_string(),
+                1,
+                serde_json::json!({
+                    "id": "goal-conflict",
+                    "title": "Conflicting Goal",
+                    "description": serde_json::Value::Null,
+                    "targetAmount": 10.0,
+                    "isAchieved": false,
+                    "is_achieved": true
+                }),
+            )
+            .await;
+
+        assert!(
+            result.is_err(),
+            "expected conflicting aliases to be rejected"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("multiple values"),
+            "error should mention conflicting alias values: {}",
             err_msg
         );
     }

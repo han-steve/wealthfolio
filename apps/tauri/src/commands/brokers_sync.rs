@@ -229,13 +229,9 @@ pub async fn get_subscription_plans(
 pub async fn get_subscription_plans_public() -> Result<PlansResponse, String> {
     info!("Fetching subscription plans from cloud API (public)...");
 
-    let base_url = std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| {
-            "CONNECT_API_URL not configured. Connect API operations are disabled.".to_string()
-        })?;
+    let base_url = crate::services::cloud_api_base_url().ok_or_else(|| {
+        "CONNECT_API_URL not configured. Connect API operations are disabled.".to_string()
+    })?;
 
     match fetch_subscription_plans_public(&base_url).await {
         Ok(response) => {
@@ -278,7 +274,7 @@ pub async fn get_user_info(state: State<'_, Arc<ServiceContext>>) -> Result<User
 #[tauri::command]
 pub async fn get_broker_sync_states(
     state: State<'_, Arc<ServiceContext>>,
-) -> Result<Vec<wealthfolio_core::sync::BrokerSyncState>, String> {
+) -> Result<Vec<wealthfolio_connect::BrokerSyncState>, String> {
     debug!("Fetching all broker sync states...");
     state
         .sync_service()
@@ -290,7 +286,7 @@ pub async fn get_broker_sync_states(
 #[tauri::command]
 pub async fn get_broker_ingest_states(
     state: State<'_, Arc<ServiceContext>>,
-) -> Result<Vec<wealthfolio_core::sync::BrokerSyncState>, String> {
+) -> Result<Vec<wealthfolio_connect::BrokerSyncState>, String> {
     get_broker_sync_states(state).await
 }
 
@@ -301,7 +297,7 @@ pub async fn get_import_runs(
     limit: Option<i64>,
     offset: Option<i64>,
     state: State<'_, Arc<ServiceContext>>,
-) -> Result<Vec<wealthfolio_core::sync::ImportRun>, String> {
+) -> Result<Vec<wealthfolio_connect::ImportRun>, String> {
     let limit = limit.unwrap_or(50);
     let offset = offset.unwrap_or(0);
     debug!(
@@ -322,7 +318,7 @@ pub async fn get_data_import_runs(
     limit: Option<i64>,
     offset: Option<i64>,
     state: State<'_, Arc<ServiceContext>>,
-) -> Result<Vec<wealthfolio_core::sync::ImportRun>, String> {
+) -> Result<Vec<wealthfolio_connect::ImportRun>, String> {
     get_import_runs(run_type, limit, offset, state).await
 }
 

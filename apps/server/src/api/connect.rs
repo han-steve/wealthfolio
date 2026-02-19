@@ -14,6 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use tracing::{debug, error, info};
 
+use super::device_sync_engine;
 use crate::error::{ApiError, ApiResult};
 use crate::events::{
     EventBus, ServerEvent, BROKER_SYNC_COMPLETE, BROKER_SYNC_ERROR, BROKER_SYNC_START,
@@ -29,7 +30,7 @@ use wealthfolio_connect::{
     SyncProgressPayload, SyncProgressReporter, SyncResult, DEFAULT_CLOUD_API_URL,
 };
 use wealthfolio_core::accounts::TrackingMode;
-use wealthfolio_device_sync::{EnableSyncResult, SyncStateResult};
+use wealthfolio_device_sync::{EnableSyncResult, SyncState, SyncStateResult};
 
 // Storage keys (without prefix - the SecretStore adds "wealthfolio_" prefix)
 const CLOUD_REFRESH_TOKEN_KEY: &str = "sync_refresh_token";
@@ -40,9 +41,6 @@ const TOKEN_EXPIRY_BUFFER_SECS: u64 = 60;
 /// Default TTL assumed when storing a token received from the frontend (no expires_in available).
 const DEFAULT_TOKEN_TTL_SECS: u64 = 55 * 60;
 
-/// Default Supabase auth URL for token refresh
-const DEFAULT_SUPABASE_AUTH_URL: &str = "https://vvalcadcvxqwligwzxaw.supabase.co";
-
 fn cloud_api_base_url() -> String {
     std::env::var("CONNECT_API_URL")
         .ok()
@@ -51,15 +49,14 @@ fn cloud_api_base_url() -> String {
         .unwrap_or_else(|| DEFAULT_CLOUD_API_URL.to_string())
 }
 
-fn supabase_auth_url() -> String {
+fn connect_auth_url() -> Option<String> {
     std::env::var("CONNECT_AUTH_URL")
         .ok()
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_SUPABASE_AUTH_URL.to_string())
 }
 
-fn supabase_api_key() -> Option<String> {
+fn connect_auth_api_key() -> Option<String> {
     std::env::var("CONNECT_AUTH_PUBLISHABLE_KEY").ok()
 }
 
@@ -83,14 +80,14 @@ pub struct StoreSyncSessionRequest {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
-struct SupabaseTokenResponse {
+struct ConnectAuthTokenResponse {
     access_token: String,
     refresh_token: String,
     expires_in: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
-struct SupabaseErrorResponse {
+struct ConnectAuthErrorResponse {
     error: Option<String>,
     error_description: Option<String>,
 }
@@ -210,7 +207,7 @@ async fn store_sync_session(
         .map_err(|e| ApiError::Internal(format!("Failed to store refresh token: {}", e)))?;
 
     // Also persist the access token so DeviceEnrollService (which reads it directly from the
-    // store) can function immediately without a round-trip to Supabase.
+    // store) can function immediately without a round-trip to the auth provider.
     if let Some(ref access_token) = body.access_token {
         if !access_token.is_empty() {
             state
@@ -219,7 +216,7 @@ async fn store_sync_session(
                 .map_err(|e| ApiError::Internal(format!("Failed to store access token: {}", e)))?;
 
             // Populate in-memory cache. The frontend doesn't send expires_in, so use a
-            // conservative default (55 min) that keeps us safely within Supabase's 1-hour TTL.
+            // conservative default (55 min) that keeps us safely within the 1-hour TTL.
             let expires_at = Instant::now() + Duration::from_secs(DEFAULT_TOKEN_TTL_SECS);
             let mut cache = state.token_cache.write().await;
             *cache = Some(crate::main_lib::CachedAccessToken {
@@ -266,14 +263,14 @@ async fn get_sync_session_status(
 /// Return a valid access token, using the in-memory cache when possible.
 ///
 /// - Cache hit (token not yet expired): returns immediately, no network call.
-/// - Cache miss / expired: exchanges the stored refresh token with Supabase, then:
-///   - Persists the rotated refresh token (Supabase invalidates the old one on each use).
+/// - Cache miss / expired: exchanges the stored refresh token with the auth provider, then:
+///   - Persists the rotated refresh token (the auth provider invalidates the old one on each use).
 ///   - Persists the new access token so `DeviceEnrollService` (which reads it from the store
 ///     directly) stays in sync after a background refresh.
 ///   - Updates the in-memory cache for subsequent requests.
 ///
-/// A write-lock is held across the Supabase call to prevent concurrent refresh storms.
-pub(super) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
+/// A write-lock is held across the auth call to prevent concurrent refresh storms.
+pub(crate) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
     // Fast path: check cache under a read lock.
     {
         let cache = state.token_cache.read().await;
@@ -300,8 +297,9 @@ pub(super) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
             ApiError::Unauthorized("No refresh token configured. Please sign in first.".to_string())
         })?;
 
-    let auth_url = supabase_auth_url();
-    let api_key = supabase_api_key().ok_or_else(|| {
+    let auth_url = connect_auth_url()
+        .ok_or_else(|| ApiError::Internal("CONNECT_AUTH_URL not configured".to_string()))?;
+    let api_key = connect_auth_api_key().ok_or_else(|| {
         ApiError::Internal("CONNECT_AUTH_PUBLISHABLE_KEY not configured".to_string())
     })?;
 
@@ -311,7 +309,7 @@ pub(super) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
         .map_err(|e| ApiError::Internal(format!("Failed to create HTTP client: {}", e)))?;
 
     let token_url = format!("{}/auth/v1/token?grant_type=refresh_token", auth_url);
-    debug!("[Connect] Refreshing access token from Supabase");
+    debug!("[Connect] Refreshing access token from auth provider");
 
     let response = client
         .post(&token_url)
@@ -329,7 +327,7 @@ pub(super) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
         .map_err(|e| ApiError::Internal(format!("Failed to read response: {}", e)))?;
 
     if !status.is_success() {
-        if let Ok(err) = serde_json::from_str::<SupabaseErrorResponse>(&body) {
+        if let Ok(err) = serde_json::from_str::<ConnectAuthErrorResponse>(&body) {
             let msg = err
                 .error_description
                 .or(err.error)
@@ -349,10 +347,10 @@ pub(super) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
         ));
     }
 
-    let token_response: SupabaseTokenResponse = serde_json::from_str(&body)
+    let token_response: ConnectAuthTokenResponse = serde_json::from_str(&body)
         .map_err(|e| ApiError::Internal(format!("Failed to parse token response: {}", e)))?;
 
-    // Persist the rotated refresh token — Supabase invalidates the old one on each use.
+    // Persist the rotated refresh token — the auth provider invalidates the old one on each use.
     state
         .secret_store
         .set_secret(CLOUD_REFRESH_TOKEN_KEY, &token_response.refresh_token)
@@ -800,7 +798,7 @@ async fn get_platforms(
 /// Get all broker sync states from local database
 async fn get_broker_sync_states(
     State(state): State<Arc<AppState>>,
-) -> ApiResult<Json<Vec<wealthfolio_core::sync::BrokerSyncState>>> {
+) -> ApiResult<Json<Vec<wealthfolio_connect::BrokerSyncState>>> {
     debug!("[Connect] Getting broker sync states from local database...");
 
     let states = state
@@ -815,7 +813,7 @@ async fn get_broker_sync_states(
 async fn get_import_runs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetImportRunsQuery>,
-) -> ApiResult<Json<Vec<wealthfolio_core::sync::ImportRun>>> {
+) -> ApiResult<Json<Vec<wealthfolio_connect::ImportRun>>> {
     let limit = query.limit.unwrap_or(50);
     let offset = query.offset.unwrap_or(0);
     debug!(
@@ -865,6 +863,10 @@ async fn enable_device_sync(
         .await
         .map_err(|e| ApiError::Internal(e.message))?;
 
+    if result.state == SyncState::Ready {
+        let _ = device_sync_engine::ensure_background_engine_started(Arc::clone(&state)).await;
+    }
+
     info!("[Connect] Device sync enabled successfully");
     Ok(Json(result))
 }
@@ -877,6 +879,7 @@ async fn clear_device_sync_data(State(state): State<Arc<AppState>>) -> ApiResult
         .device_enroll_service
         .clear_sync_data()
         .map_err(|e| ApiError::Internal(e.message))?;
+    let _ = device_sync_engine::ensure_background_engine_stopped(Arc::clone(&state)).await;
 
     info!("[Connect] Device sync data cleared");
     Ok(Json(()))
@@ -895,75 +898,123 @@ async fn reinitialize_device_sync(
         .await
         .map_err(|e| ApiError::Internal(e.message))?;
 
+    if result.state == SyncState::Ready {
+        let _ = device_sync_engine::ensure_background_engine_started(Arc::clone(&state)).await;
+    }
+
     info!("[Connect] Device sync reinitialized successfully");
     Ok(Json(result))
 }
 
-/// Web runtime stub for device sync engine status (desktop engine owns authoritative state).
-async fn get_device_sync_engine_status() -> ApiResult<Json<DeviceSyncEngineStatusResponse>> {
+async fn get_device_sync_engine_status(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncEngineStatusResponse>> {
+    let status = device_sync_engine::get_engine_status(&state)
+        .await
+        .map_err(ApiError::Internal)?;
     Ok(Json(DeviceSyncEngineStatusResponse {
-        cursor: 0,
-        last_push_at: None,
-        last_pull_at: None,
-        last_error: None,
-        consecutive_failures: 0,
-        next_retry_at: None,
-        last_cycle_status: Some("web_stub".to_string()),
-        last_cycle_duration_ms: None,
-        background_running: false,
-        bootstrap_required: false,
+        cursor: status.cursor,
+        last_push_at: status.last_push_at,
+        last_pull_at: status.last_pull_at,
+        last_error: status.last_error,
+        consecutive_failures: status.consecutive_failures,
+        next_retry_at: status.next_retry_at,
+        last_cycle_status: status.last_cycle_status,
+        last_cycle_duration_ms: status.last_cycle_duration_ms,
+        background_running: status.background_running,
+        bootstrap_required: status.bootstrap_required,
     }))
 }
 
-/// Web runtime stub for device snapshot bootstrap.
-async fn bootstrap_device_snapshot() -> ApiResult<Json<DeviceSyncBootstrapResponse>> {
+async fn bootstrap_device_snapshot(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncBootstrapResponse>> {
+    let result = device_sync_engine::sync_bootstrap_snapshot_if_needed(Arc::clone(&state))
+        .await
+        .map_err(ApiError::Internal)?;
+
+    if result.status == "applied" {
+        let _ = device_sync_engine::ensure_background_engine_started(Arc::clone(&state)).await;
+    }
+
     Ok(Json(DeviceSyncBootstrapResponse {
-        status: "skipped".to_string(),
-        message: "Snapshot bootstrap is desktop-only".to_string(),
-        snapshot_id: None,
-        cursor: None,
+        status: result.status,
+        message: result.message,
+        snapshot_id: result.snapshot_id,
+        cursor: result.cursor,
     }))
 }
 
-/// Web runtime stub for one sync cycle trigger.
-async fn trigger_device_sync_cycle() -> ApiResult<Json<DeviceSyncCycleResponse>> {
+async fn trigger_device_sync_cycle(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncCycleResponse>> {
+    let result = device_sync_engine::run_sync_cycle(state)
+        .await
+        .map_err(ApiError::Internal)?;
     Ok(Json(DeviceSyncCycleResponse {
-        status: "skipped".to_string(),
-        lock_version: 0,
-        pushed_count: 0,
-        pulled_count: 0,
-        cursor: 0,
-        needs_bootstrap: false,
+        status: result.status,
+        lock_version: result.lock_version,
+        pushed_count: result.pushed_count,
+        pulled_count: result.pulled_count,
+        cursor: result.cursor,
+        needs_bootstrap: result.needs_bootstrap,
     }))
 }
 
-async fn start_device_sync_background_engine() -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+async fn start_device_sync_background_engine(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+    device_sync_engine::ensure_background_engine_started(Arc::clone(&state))
+        .await
+        .map_err(ApiError::Internal)?;
+    let background_running = state.device_sync_runtime.is_background_running().await;
     Ok(Json(DeviceSyncBackgroundResponse {
-        status: "started".to_string(),
-        message: "Web runtime keeps sync engine as stub".to_string(),
+        status: if background_running {
+            "started".to_string()
+        } else {
+            "skipped".to_string()
+        },
+        message: if background_running {
+            "Device sync background engine started".to_string()
+        } else {
+            "Background engine not started because sync identity is not configured".to_string()
+        },
     }))
 }
 
-async fn stop_device_sync_background_engine() -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+async fn stop_device_sync_background_engine(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+    device_sync_engine::ensure_background_engine_stopped(state)
+        .await
+        .map_err(ApiError::Internal)?;
     Ok(Json(DeviceSyncBackgroundResponse {
         status: "stopped".to_string(),
-        message: "Web runtime keeps sync engine as stub".to_string(),
+        message: "Device sync background engine stopped".to_string(),
     }))
 }
 
-async fn generate_device_snapshot_now() -> ApiResult<Json<DeviceSyncSnapshotUploadResponse>> {
+async fn generate_device_snapshot_now(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncSnapshotUploadResponse>> {
+    let result = device_sync_engine::generate_snapshot_now(state)
+        .await
+        .map_err(ApiError::Internal)?;
     Ok(Json(DeviceSyncSnapshotUploadResponse {
-        status: "skipped".to_string(),
-        snapshot_id: None,
-        oplog_seq: None,
-        message: "Snapshot upload is desktop-only".to_string(),
+        status: result.status,
+        snapshot_id: result.snapshot_id,
+        oplog_seq: result.oplog_seq,
+        message: result.message,
     }))
 }
 
-async fn cancel_device_snapshot_upload() -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+async fn cancel_device_snapshot_upload(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+    device_sync_engine::cancel_snapshot_upload(state).await;
     Ok(Json(DeviceSyncBackgroundResponse {
         status: "cancel_requested".to_string(),
-        message: "Web runtime keeps snapshot upload cancellation as stub".to_string(),
+        message: "Snapshot upload cancellation requested".to_string(),
     }))
 }
 
@@ -1031,4 +1082,14 @@ pub fn router() -> Router<Arc<AppState>> {
             "/connect/device/cancel-snapshot",
             post(cancel_device_snapshot_upload),
         )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn connect_router_includes_device_engine_routes() {
+        let _router = router();
+    }
 }

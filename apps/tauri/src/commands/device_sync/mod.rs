@@ -15,7 +15,7 @@ use tauri::{AppHandle, State};
 use crate::context::ServiceContext;
 use crate::secret_store::KeyringSecretStore;
 use wealthfolio_core::secrets::SecretStore;
-use wealthfolio_core::sync::{SyncEntity, SyncOperation, APP_SYNC_TABLES};
+use wealthfolio_core::sync::APP_SYNC_TABLES;
 use wealthfolio_device_sync::{
     ClaimPairingRequest, ClaimPairingResponse, CommitInitializeKeysRequest,
     CommitInitializeKeysResponse, CommitRotateKeysRequest, CommitRotateKeysResponse,
@@ -36,13 +36,9 @@ pub use engine::{ensure_background_engine_started, ensure_background_engine_stop
 const CLOUD_ACCESS_TOKEN_KEY: &str = "sync_access_token";
 
 fn cloud_api_base_url() -> Result<String, String> {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .ok_or_else(|| {
-            "CONNECT_API_URL not configured. Connect API operations are disabled.".to_string()
-        })
+    crate::services::cloud_api_base_url().ok_or_else(|| {
+        "CONNECT_API_URL not configured. Connect API operations are disabled.".to_string()
+    })
 }
 
 fn get_access_token() -> Result<String, String> {
@@ -191,65 +187,6 @@ fn is_sqlite_image(bytes: &[u8]) -> bool {
 
 fn sha256_checksum(bytes: &[u8]) -> String {
     wealthfolio_device_sync::crypto::sha256_checksum(bytes)
-}
-
-fn sync_entity_name(entity: &SyncEntity) -> &'static str {
-    match entity {
-        SyncEntity::Account => "account",
-        SyncEntity::Asset => "asset",
-        SyncEntity::AssetTaxonomyAssignment => "asset_taxonomy_assignment",
-        SyncEntity::Activity => "activity",
-        SyncEntity::ActivityImportProfile => "activity_import_profile",
-        SyncEntity::Goal => "goal",
-        SyncEntity::GoalsAllocation => "goals_allocation",
-        SyncEntity::AiThread => "ai_thread",
-        SyncEntity::AiMessage => "ai_message",
-        SyncEntity::AiThreadTag => "ai_thread_tag",
-        SyncEntity::ContributionLimit => "contribution_limit",
-        SyncEntity::Platform => "platform",
-        SyncEntity::Snapshot => "snapshot",
-    }
-}
-
-fn sync_operation_name(op: &SyncOperation) -> &'static str {
-    match op {
-        SyncOperation::Create => "create",
-        SyncOperation::Update => "update",
-        SyncOperation::Delete => "delete",
-        SyncOperation::Request => "request",
-    }
-}
-
-use wealthfolio_device_sync::ApiRetryClass;
-
-fn retry_class_code(class: ApiRetryClass) -> &'static str {
-    match class {
-        ApiRetryClass::Retryable => "retryable",
-        ApiRetryClass::Permanent => "permanent",
-        ApiRetryClass::ReauthRequired => "reauth_required",
-    }
-}
-
-fn parse_event_operation(event_type: &str) -> Option<SyncOperation> {
-    let mut parts = event_type.split('.');
-    let _entity = parts.next()?;
-    match parts.next()? {
-        "create" => Some(SyncOperation::Create),
-        "update" => Some(SyncOperation::Update),
-        "delete" => Some(SyncOperation::Delete),
-        "request" => Some(SyncOperation::Request),
-        _ => None,
-    }
-}
-
-fn millis_until_rfc3339(target: &str) -> Option<u64> {
-    let target = chrono::DateTime::parse_from_rfc3339(target).ok()?;
-    let now = chrono::Utc::now();
-    let diff = target.with_timezone(&chrono::Utc) - now;
-    if diff <= chrono::Duration::zero() {
-        return Some(0);
-    }
-    Some(diff.num_milliseconds() as u64)
 }
 
 fn encrypt_sync_payload(
@@ -707,7 +644,7 @@ pub async fn sync_engine_status(
         None => true,
     };
     let runtime = state.inner().device_sync_runtime();
-    let background_running = runtime.background_task.lock().await.is_some();
+    let background_running = runtime.is_background_running().await;
 
     Ok(SyncEngineStatusResult {
         cursor: status.cursor,
@@ -735,9 +672,22 @@ pub async fn device_sync_start_background_engine(
     state: State<'_, Arc<ServiceContext>>,
 ) -> Result<SyncBackgroundEngineResult, String> {
     ensure_background_engine_started(Arc::clone(state.inner())).await?;
+    let background_running = state
+        .inner()
+        .device_sync_runtime()
+        .is_background_running()
+        .await;
     Ok(SyncBackgroundEngineResult {
-        status: "started".to_string(),
-        message: "Device sync background engine started".to_string(),
+        status: if background_running {
+            "started".to_string()
+        } else {
+            "skipped".to_string()
+        },
+        message: if background_running {
+            "Device sync background engine started".to_string()
+        } else {
+            "Background engine not started because sync identity is not configured".to_string()
+        },
     })
 }
 
@@ -787,10 +737,17 @@ pub async fn device_sync_bootstrap_snapshot_if_needed(
     handle: AppHandle,
     state: State<'_, Arc<ServiceContext>>,
 ) -> Result<SyncBootstrapResult, String> {
-    let result = snapshot::sync_bootstrap_snapshot_if_needed(handle, state.inner()).await?;
+    let context = Arc::clone(state.inner());
+    let result = snapshot::sync_bootstrap_snapshot_if_needed(handle, &context).await?;
+    let should_start_engine = context
+        .device_enroll_service()
+        .get_sync_state()
+        .await
+        .map(|sync_state| sync_state.state == wealthfolio_device_sync::SyncState::Ready)
+        .unwrap_or(false);
 
-    // Start the background sync engine after successful bootstrap.
-    if result.status == "applied" {
+    // Start the background sync engine whenever this device is READY.
+    if should_start_engine {
         let engine_context = Arc::clone(state.inner());
         tauri::async_runtime::spawn(async move {
             if let Err(err) = ensure_background_engine_started(engine_context).await {

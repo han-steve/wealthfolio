@@ -25,6 +25,7 @@ mod alternative_assets;
 mod assets;
 pub mod connect;
 mod device_sync;
+pub(crate) mod device_sync_engine;
 mod exchange_rates;
 mod goals;
 mod health;

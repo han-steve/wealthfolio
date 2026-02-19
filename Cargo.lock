@@ -7613,6 +7613,7 @@ name = "wealthfolio-app"
 version = "3.0.0-beta.5"
 dependencies = [
  "anyhow",
+ "async-trait",
  "base64 0.22.1",
  "chacha20poly1305",
  "chrono",
@@ -7660,9 +7661,7 @@ version = "3.0.0-beta.5"
 dependencies = [
  "async-trait",
  "chrono",
- "diesel",
  "log",
- "r2d2",
  "reqwest 0.12.28",
  "rust_decimal",
  "serde",
@@ -7671,7 +7670,6 @@ dependencies = [
  "tokio",
  "uuid",
  "wealthfolio-core",
- "wealthfolio-storage-sqlite",
 ]
 
 [[package]]
@@ -7719,6 +7717,7 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "chacha20poly1305",
+ "chrono",
  "hkdf",
  "log",
  "rand 0.8.5",
@@ -7762,6 +7761,7 @@ version = "3.0.0-beta.5"
 dependencies = [
  "anyhow",
  "argon2",
+ "async-trait",
  "axum 0.8.8",
  "base64 0.21.7",
  "chacha20poly1305",
@@ -7820,7 +7820,9 @@ dependencies = [
  "tokio",
  "uuid",
  "wealthfolio-ai",
+ "wealthfolio-connect",
  "wealthfolio-core",
+ "wealthfolio-device-sync",
 ]
 
 [[package]]

@@ -13,18 +13,14 @@ use wealthfolio_core::secrets::SecretStore;
 /// Note: SecretStore adds "wealthfolio_" prefix automatically.
 const CLOUD_ACCESS_TOKEN_KEY: &str = "sync_access_token";
 
-/// Returns true when the Connect API URL is configured via environment.
+/// Returns true when the Connect API URL was set at compile time.
 pub fn is_connect_configured() -> bool {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
-        .is_some()
+    cloud_api_base_url().is_some()
 }
 
-/// Returns the cloud API base URL from environment when configured.
-fn cloud_api_base_url() -> Option<String> {
-    std::env::var("CONNECT_API_URL")
-        .ok()
+/// Returns the cloud API base URL baked in at compile time.
+pub fn cloud_api_base_url() -> Option<String> {
+    option_env!("CONNECT_API_URL")
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
 }

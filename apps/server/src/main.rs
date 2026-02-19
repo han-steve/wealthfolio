@@ -14,12 +14,31 @@ use api::app_router;
 use config::Config;
 use main_lib::{build_state, init_tracing};
 use tower_http::services::{ServeDir, ServeFile};
+use tracing::warn;
+use wealthfolio_device_sync::SyncState;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
     init_tracing();
     let state = build_state(&config).await?;
+
+    if state
+        .device_enroll_service
+        .get_sync_state()
+        .await
+        .map(|sync_state| sync_state.state == SyncState::Ready)
+        .unwrap_or(false)
+    {
+        if let Err(err) =
+            api::device_sync_engine::ensure_background_engine_started(state.clone()).await
+        {
+            warn!(
+                "Failed to auto-start device sync background engine: {}",
+                err
+            );
+        }
+    }
 
     // Start background broker sync scheduler (4-hour interval)
     scheduler::start_broker_sync_scheduler(state.clone());

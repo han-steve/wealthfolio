@@ -9,17 +9,20 @@ use super::models::{
     AccountUniversalActivity, BrokerAccount, BrokerConnection, HoldingsBalance, HoldingsPosition,
     NewAccountInfo, SyncAccountsResponse, SyncConnectionsResponse,
 };
-use super::traits::BrokerSyncServiceTrait;
-use crate::platform::{Platform, PlatformRepository};
-use crate::state::BrokerSyncState;
-use crate::state::BrokerSyncStateRepository;
+use super::traits::{BrokerSyncServiceTrait, PlatformRepositoryTrait};
+use crate::broker_ingest::{
+    BrokerSyncState, BrokerSyncStateRepositoryTrait, ImportRun, ImportRunMode,
+    ImportRunRepositoryTrait, ImportRunStatus, ImportRunSummary, ImportRunType, ReviewMode,
+};
+use crate::platform::Platform;
 use chrono::{DateTime, Months, Utc};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use wealthfolio_core::accounts::{Account, AccountServiceTrait, NewAccount, TrackingMode};
 use wealthfolio_core::activities::{
-    compute_idempotency_key, ActivityServiceTrait, ActivityUpsert, NewActivity,
+    compute_idempotency_key, ActivityRepositoryTrait, ActivityServiceTrait, ActivityUpsert,
+    NewActivity,
 };
 use wealthfolio_core::assets::{
     parse_crypto_pair_symbol, parse_symbol_with_exchange_suffix, AssetKind, AssetServiceTrait,
@@ -30,16 +33,7 @@ use wealthfolio_core::events::{DomainEvent, DomainEventSink, NoOpDomainEventSink
 use wealthfolio_core::portfolio::snapshot::{
     AccountStateSnapshot, Position, SnapshotRepositoryTrait, SnapshotServiceTrait, SnapshotSource,
 };
-use wealthfolio_core::sync::{
-    ImportRun, ImportRunMode, ImportRunStatus, ImportRunSummary, ImportRunType, ReviewMode,
-};
 use wealthfolio_core::utils::time_utils::valuation_date_today;
-use wealthfolio_storage_sqlite::activities::ActivityRepository;
-use wealthfolio_storage_sqlite::db::{DbPool, WriteHandle};
-use wealthfolio_storage_sqlite::errors::StorageError;
-use wealthfolio_storage_sqlite::portfolio::snapshot::AccountStateSnapshotDB;
-use wealthfolio_storage_sqlite::schema;
-use wealthfolio_storage_sqlite::sync::ImportRunRepository;
 
 const DEFAULT_BROKERAGE_PROVIDER: &str = "snaptrade";
 
@@ -48,14 +42,13 @@ pub struct BrokerSyncService {
     account_service: Arc<dyn AccountServiceTrait>,
     asset_service: Arc<dyn AssetServiceTrait>,
     activity_service: Arc<dyn ActivityServiceTrait>,
-    activity_repository: Arc<ActivityRepository>,
-    platform_repository: Arc<PlatformRepository>,
-    brokers_sync_state_repository: Arc<BrokerSyncStateRepository>,
-    import_run_repository: Arc<ImportRunRepository>,
-    snapshot_repository: Arc<wealthfolio_storage_sqlite::portfolio::snapshot::SnapshotRepository>,
+    activity_repository: Arc<dyn ActivityRepositoryTrait>,
+    platform_repository: Arc<dyn PlatformRepositoryTrait>,
+    brokers_sync_state_repository: Arc<dyn BrokerSyncStateRepositoryTrait>,
+    import_run_repository: Arc<dyn ImportRunRepositoryTrait>,
+    snapshot_repository: Arc<dyn SnapshotRepositoryTrait>,
     snapshot_service: Option<Arc<dyn SnapshotServiceTrait>>,
     event_sink: Arc<dyn DomainEventSink>,
-    writer: WriteHandle,
 }
 
 impl BrokerSyncService {
@@ -63,30 +56,23 @@ impl BrokerSyncService {
         account_service: Arc<dyn AccountServiceTrait>,
         asset_service: Arc<dyn AssetServiceTrait>,
         activity_service: Arc<dyn ActivityServiceTrait>,
-        platform_repository: Arc<PlatformRepository>,
-        pool: Arc<DbPool>,
-        writer: WriteHandle,
+        activity_repository: Arc<dyn ActivityRepositoryTrait>,
+        platform_repository: Arc<dyn PlatformRepositoryTrait>,
+        brokers_sync_state_repository: Arc<dyn BrokerSyncStateRepositoryTrait>,
+        import_run_repository: Arc<dyn ImportRunRepositoryTrait>,
+        snapshot_repository: Arc<dyn SnapshotRepositoryTrait>,
     ) -> Self {
         Self {
             account_service,
             asset_service,
             activity_service,
-            activity_repository: Arc::new(ActivityRepository::new(pool.clone(), writer.clone())),
+            activity_repository,
             platform_repository,
-            brokers_sync_state_repository: Arc::new(BrokerSyncStateRepository::new(
-                pool.clone(),
-                writer.clone(),
-            )),
-            import_run_repository: Arc::new(ImportRunRepository::new(pool.clone(), writer.clone())),
-            snapshot_repository: Arc::new(
-                wealthfolio_storage_sqlite::portfolio::snapshot::SnapshotRepository::new(
-                    pool,
-                    writer.clone(),
-                ),
-            ),
+            brokers_sync_state_repository,
+            import_run_repository,
+            snapshot_repository,
             snapshot_service: None,
             event_sink: Arc::new(NoOpDomainEventSink),
-            writer,
         }
     }
 
@@ -482,12 +468,13 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<ImportRun>> {
-        match run_type {
+        let runs = match run_type {
             Some(rt) => self
                 .import_run_repository
                 .get_by_run_type(rt, limit, offset),
             None => self.import_run_repository.get_all(limit, offset),
-        }
+        }?;
+        Ok(runs)
     }
 
     async fn create_import_run(&self, account_id: &str, mode: ImportRunMode) -> Result<ImportRun> {
@@ -737,7 +724,7 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
 
         // Build the snapshot
         let snapshot = AccountStateSnapshot {
-            id: format!("{}_{}", account_id, today.format("%Y-%m-%d")),
+            id: AccountStateSnapshot::stable_id(&account_id, today),
             account_id: account_id.clone(),
             snapshot_date: today,
             currency: account_currency,
@@ -770,43 +757,15 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
             }
         }
 
-        // Save snapshot via SnapshotService if available (it emits HoldingsChanged internally)
-        // Otherwise fall back to raw SQL and emit events manually
+        // Save snapshot via SnapshotService if available (it emits HoldingsChanged internally).
+        // Otherwise persist via repository and emit events manually.
         if let Some(ref snapshot_service) = self.snapshot_service {
             snapshot_service
                 .save_manual_snapshot(&account_id, snapshot)
                 .await?;
         } else {
-            let snapshot_db: AccountStateSnapshotDB = snapshot.into();
-            let writer = self.writer.clone();
-            writer
-                .exec(move |conn| {
-                    use diesel::prelude::*;
-                    diesel::insert_into(schema::holdings_snapshots::table)
-                        .values(&snapshot_db)
-                        .on_conflict(schema::holdings_snapshots::id)
-                        .do_update()
-                        .set((
-                            schema::holdings_snapshots::positions.eq(&snapshot_db.positions),
-                            schema::holdings_snapshots::cash_balances
-                                .eq(&snapshot_db.cash_balances),
-                            schema::holdings_snapshots::cost_basis.eq(&snapshot_db.cost_basis),
-                            schema::holdings_snapshots::net_contribution
-                                .eq(&snapshot_db.net_contribution),
-                            schema::holdings_snapshots::net_contribution_base
-                                .eq(&snapshot_db.net_contribution_base),
-                            schema::holdings_snapshots::cash_total_account_currency
-                                .eq(&snapshot_db.cash_total_account_currency),
-                            schema::holdings_snapshots::cash_total_base_currency
-                                .eq(&snapshot_db.cash_total_base_currency),
-                            schema::holdings_snapshots::calculated_at
-                                .eq(&snapshot_db.calculated_at),
-                            schema::holdings_snapshots::source.eq(&snapshot_db.source),
-                        ))
-                        .execute(conn)
-                        .map_err(StorageError::from)?;
-                    Ok::<_, wealthfolio_core::errors::Error>(())
-                })
+            self.snapshot_repository
+                .save_or_update_snapshot(&snapshot)
                 .await?;
 
             self.event_sink.emit(DomainEvent::HoldingsChanged {
@@ -921,7 +880,7 @@ impl BrokerSyncService {
 
         // Clone the earliest snapshot with new date and source
         let synthetic = AccountStateSnapshot {
-            id: format!("{}_{}", account_id, synthetic_date.format("%Y-%m-%d")),
+            id: AccountStateSnapshot::stable_id(account_id, synthetic_date),
             account_id: account_id.to_string(),
             snapshot_date: synthetic_date,
             source: SnapshotSource::Synthetic,

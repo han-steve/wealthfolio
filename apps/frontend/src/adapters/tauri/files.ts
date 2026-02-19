@@ -1,6 +1,6 @@
 // File Dialogs
 import { open, save } from "@tauri-apps/plugin-dialog";
-import { BaseDirectory, writeFile } from "@tauri-apps/plugin-fs";
+import { writeFile } from "@tauri-apps/plugin-fs";
 
 export const openCsvFileDialog = async (): Promise<null | string | string[]> => {
   return open({ filters: [{ name: "CSV", extensions: ["csv"] }] });
@@ -11,8 +11,11 @@ export const openFolderDialog = async (): Promise<string | null> => {
 };
 
 export const openDatabaseFileDialog = async (): Promise<string | null> => {
-  const result = await open();
-  return Array.isArray(result) ? (result[0] ?? null) : result;
+  const result = (await open()) as string | string[] | null;
+  if (Array.isArray(result)) {
+    return result[0] ?? null;
+  }
+  return typeof result === "string" ? result : null;
 };
 
 export const openFileSaveDialog = async (
@@ -43,7 +46,18 @@ export const openFileSaveDialog = async (
     contentToSave = fileContent;
   }
 
-  await writeFile(filePath, contentToSave, { baseDir: BaseDirectory.Document });
+  // Save dialog returns an absolute path/URI; avoid forcing a baseDir, which can break mobile.
+  const normalizedPath = filePath.startsWith("file://")
+    ? (() => {
+        try {
+          return decodeURIComponent(filePath.replace(/^file:\/\//, ""));
+        } catch {
+          return filePath.replace(/^file:\/\//, "");
+        }
+      })()
+    : filePath;
+
+  await writeFile(normalizedPath, contentToSave);
 
   return true;
 };

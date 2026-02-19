@@ -23,16 +23,26 @@ const webNotes = [
   "Create backups regularly, especially before bulk imports or migrations.",
 ] as const;
 
-export const BackupRestoreForm = () => {
-  const { performBackup, performRestore, isBackingUp, isRestoring, isDesktop } = useBackupRestore();
+const mobileNotes = [
+  "Backups include WAL and SHM files for complete data integrity.",
+  "When you tap backup, you choose destination and filename in the native save sheet.",
+  "Restores are only available in the desktop application.",
+  "Create backups regularly, especially before bulk imports or migrations.",
+] as const;
 
-  return isDesktop ? (
+export const BackupRestoreForm = () => {
+  const { performBackup, performRestore, isBackingUp, isRestoring, platformMode } =
+    useBackupRestore();
+
+  return platformMode === "desktop" ? (
     <DesktopBackupPanel
       performBackup={performBackup}
       performRestore={performRestore}
       isBackingUp={isBackingUp}
       isRestoring={isRestoring}
     />
+  ) : platformMode === "mobile" ? (
+    <MobileBackupPanel performBackup={performBackup} isBackingUp={isBackingUp} />
   ) : (
     <WebBackupPanel performBackup={performBackup} isBackingUp={isBackingUp} />
   );
@@ -124,6 +134,25 @@ const WebBackupPanel = ({ performBackup, isBackingUp }: WebPanelProps) => {
       />
 
       <ImportantNotes notes={webNotes} />
+    </div>
+  );
+};
+
+const MobileBackupPanel = ({ performBackup, isBackingUp }: WebPanelProps) => {
+  return (
+    <div className="space-y-6">
+      <PanelIntro />
+
+      <BackupCard
+        title="Create Backup"
+        description="Create a complete backup and choose destination/location in the native save sheet."
+        isLoading={isBackingUp}
+        disabled={isBackingUp}
+        actionLabel="Backup Database"
+        onAction={performBackup}
+      />
+
+      <ImportantNotes notes={mobileNotes} />
     </div>
   );
 };

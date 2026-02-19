@@ -1,24 +1,37 @@
 import {
-  isDesktop,
+  isWeb,
   logger,
   backupDatabase,
   backupDatabaseToPath,
   restoreDatabase,
   openDatabaseFileDialog,
   openFolderDialog,
+  openFileSaveDialog,
 } from "@/adapters";
+import { getPlatform as getRuntimePlatform, usePlatform } from "@/hooks/use-platform";
 import { toast } from "@wealthfolio/ui/components/ui/use-toast";
 import { useMutation } from "@tanstack/react-query";
 
 export function useBackupRestore() {
-  const isDesktopEnv = isDesktop;
+  const { platform } = usePlatform();
+  const platformMode: "desktop" | "mobile" | "web" = isWeb
+    ? "web"
+    : platform?.is_mobile
+      ? "mobile"
+      : "desktop";
 
   const { mutateAsync: backupWithDirectorySelection, isPending: isBackingUp } = useMutation<{
     location: "local" | "server";
     value: string;
   } | null>({
     mutationFn: async () => {
-      if (isDesktopEnv) {
+      if (isWeb) {
+        const { filename } = await backupDatabase();
+        return { location: "server" as const, value: filename };
+      }
+
+      const runtimePlatform = await getRuntimePlatform();
+      if (runtimePlatform.is_desktop) {
         // Open folder dialog to let user choose backup location
         const selectedDir = await openFolderDialog();
 
@@ -32,8 +45,13 @@ export function useBackupRestore() {
         return { location: "local" as const, value: backupPath };
       }
 
-      const { filename } = await backupDatabase();
-      return { location: "server" as const, value: filename };
+      // Mobile: create backup and let user choose file destination.
+      const { filename, data } = await backupDatabase();
+      const saved = await openFileSaveDialog(data, filename);
+      if (!saved) {
+        return null;
+      }
+      return { location: "local" as const, value: filename };
     },
     onSuccess: (result) => {
       if (result === null) {
@@ -44,7 +62,7 @@ export function useBackupRestore() {
       const description =
         result.location === "server"
           ? `Backup created on the server as ${result.value}`
-          : `Database backed up to: ${result.value}`;
+          : `Backup saved as ${result.value}`;
 
       toast({
         title: "Backup completed successfully",
@@ -64,7 +82,12 @@ export function useBackupRestore() {
 
   const { mutateAsync: restoreFromBackup, isPending: isRestoring } = useMutation({
     mutationFn: async () => {
-      if (!isDesktopEnv) {
+      if (isWeb) {
+        throw new Error("Restore is only supported in the desktop app");
+      }
+
+      const runtimePlatform = await getRuntimePlatform();
+      if (!runtimePlatform.is_desktop) {
         throw new Error("Restore is only supported in the desktop app");
       }
 
@@ -105,10 +128,10 @@ export function useBackupRestore() {
   };
 
   const performRestore = async () => {
-    if (!isDesktopEnv) {
+    if (platformMode !== "desktop") {
       toast({
-        title: "Restore unavailable in web mode",
-        description: "Please use the desktop application to restore backups.",
+        title: "Restore unavailable",
+        description: "Please use the desktop app to restore backups.",
       });
       return;
     }
@@ -125,6 +148,9 @@ export function useBackupRestore() {
     performRestore,
     isBackingUp,
     isRestoring,
-    isDesktop: isDesktopEnv,
+    isDesktop: platformMode === "desktop",
+    isMobile: platformMode === "mobile",
+    isWeb,
+    platformMode,
   };
 }

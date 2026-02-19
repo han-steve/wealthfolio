@@ -185,12 +185,16 @@ export function SwipablePage({
           /* Mobile: SwipableView with navigation */
           <div className="flex h-full flex-col md:hidden">
             {/* Mobile Navigation at top */}
-            <div className="pt-safe flex shrink-0 items-center justify-center pb-2">
+            <div className="pt-safe flex shrink-0 items-center justify-between px-3 pb-2">
+              <div className="w-10" />
               <MobileNavigation
                 views={views}
                 currentView={currentView}
                 onViewChange={handleViewChange}
               />
+              <div className="flex items-center gap-1.5">
+                {views.find((v) => v.value === currentView)?.actions}
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-hidden">

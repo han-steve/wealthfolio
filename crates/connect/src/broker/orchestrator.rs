@@ -11,8 +11,8 @@ use log::{debug, error, info};
 use super::models::{NewAccountInfo, SyncActivitiesResponse, SyncHoldingsResponse, SyncResult};
 use super::progress::{SyncProgressPayload, SyncProgressReporter, SyncStatus};
 use super::traits::{BrokerApiClient, BrokerSyncServiceTrait};
+use crate::broker_ingest::{ImportRunMode, ImportRunStatus, ImportRunSummary};
 use wealthfolio_core::accounts::TrackingMode;
-use wealthfolio_core::sync::{ImportRunMode, ImportRunStatus, ImportRunSummary};
 
 /// Configuration for sync operations.
 #[derive(Debug, Clone)]

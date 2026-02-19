@@ -3,7 +3,7 @@
 // State Machine: FRESH → REGISTERED → READY (+ STALE, RECOVERY)
 // ==================================================================
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Avatar, AvatarFallback } from "@wealthfolio/ui/components/ui/avatar";
@@ -73,6 +73,8 @@ export function DeviceSyncSection() {
   const [isPairingOpen, setIsPairingOpen] = useState(false);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isTogglingEngine, setIsTogglingEngine] = useState(false);
+  const isBackgroundRunning = state.engineStatus?.backgroundRunning ?? false;
 
   const handlePairingComplete = useCallback(() => {
     setIsPairingOpen(false);
@@ -97,11 +99,29 @@ export function DeviceSyncSection() {
     setTimeout(() => setIsRefreshing(false), 600);
   }, [queryClient]);
 
-  // Show recovery dialog when in RECOVERY state
-  const isRecovery = state.syncState === SyncStates.RECOVERY;
-  if (isRecovery && !showRecoveryDialog) {
-    setShowRecoveryDialog(true);
-  }
+  const handleToggleEngine = useCallback(async () => {
+    setIsTogglingEngine(true);
+    try {
+      if (isBackgroundRunning) {
+        await actions.stopBackgroundSync();
+        toast.success("Background sync paused");
+      } else {
+        await actions.startBackgroundSync();
+        toast.success("Background sync resumed");
+      }
+    } catch (err) {
+      toast.error("Failed to update background sync", {
+        description: err instanceof Error ? err.message : "An unexpected error occurred",
+      });
+    } finally {
+      setIsTogglingEngine(false);
+    }
+  }, [actions, isBackgroundRunning]);
+
+  // Keep recovery dialog strictly in sync with RECOVERY state.
+  useEffect(() => {
+    setShowRecoveryDialog(state.syncState === SyncStates.RECOVERY);
+  }, [state.syncState]);
 
   // Loading state (detecting)
   if (state.isDetecting) {
@@ -272,6 +292,45 @@ export function DeviceSyncSection() {
               <SyncStatusDot engineStatus={state.engineStatus} />
             </div>
             <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-muted-foreground hover:text-foreground h-8 w-8 sm:hidden"
+                onClick={handleToggleEngine}
+                disabled={isTogglingEngine}
+              >
+                {isTogglingEngine ? (
+                  <Icons.Loader className="h-4 w-4 animate-spin" />
+                ) : isBackgroundRunning ? (
+                  <Icons.PauseCircle className="h-4 w-4" />
+                ) : (
+                  <Icons.PlayCircle className="h-4 w-4" />
+                )}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground hover:text-foreground hidden sm:inline-flex"
+                onClick={handleToggleEngine}
+                disabled={isTogglingEngine}
+              >
+                {isTogglingEngine ? (
+                  <>
+                    <Icons.Loader className="mr-2 h-4 w-4 animate-spin" />
+                    Updating...
+                  </>
+                ) : isBackgroundRunning ? (
+                  <>
+                    <Icons.PauseCircle className="mr-2 h-4 w-4" />
+                    Pause Sync
+                  </>
+                ) : (
+                  <>
+                    <Icons.PlayCircle className="mr-2 h-4 w-4" />
+                    Resume Sync
+                  </>
+                )}
+              </Button>
               <Button
                 variant="ghost"
                 size="icon"

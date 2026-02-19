@@ -7,11 +7,11 @@ use super::models::{
     BrokerHoldingsResponse, HoldingsBalance, HoldingsPosition, PaginatedUniversalActivity,
     SyncAccountsResponse, SyncConnectionsResponse,
 };
+use crate::broker_ingest::BrokerSyncState;
+use crate::broker_ingest::{ImportRun, ImportRunMode, ImportRunStatus, ImportRunSummary};
 use crate::platform::Platform;
-use crate::state::BrokerSyncState;
 use wealthfolio_core::accounts::Account;
 use wealthfolio_core::errors::Result;
-use wealthfolio_core::sync::{ImportRun, ImportRunMode, ImportRunStatus, ImportRunSummary};
 
 /// Trait for fetching data from the cloud broker API
 #[async_trait]

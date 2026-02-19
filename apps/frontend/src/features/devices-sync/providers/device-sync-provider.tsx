@@ -249,6 +249,8 @@ interface SyncContextValue {
     // Sync reset
     resetSync: () => Promise<void>;
     reinitializeSync: () => Promise<void>;
+    startBackgroundSync: () => Promise<void>;
+    stopBackgroundSync: () => Promise<void>;
 
     // Utils
     computeSAS: () => Promise<string | null>;
@@ -267,6 +269,23 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
   const { isConnected, isEnabled, userInfo } = useWealthfolioConnect();
   const [state, dispatch] = useReducer(syncReducer, INITIAL_SYNC_STATE);
   const bootstrapDeviceRef = useRef<string | null>(null);
+  const backgroundPausedRef = useRef(false);
+  const refreshEngineStatus = useCallback(async () => {
+    const engineStatus = await syncService.getEngineStatus().catch(() => null);
+    if (engineStatus) {
+      dispatch({ type: "ENGINE_STATUS", status: engineStatus });
+    }
+    return engineStatus;
+  }, []);
+
+  const ensureEngineRunning = useCallback(async () => {
+    if (backgroundPausedRef.current) {
+      await refreshEngineStatus();
+      return;
+    }
+    await syncService.startBackgroundEngine().catch(() => null);
+    await refreshEngineStatus();
+  }, [refreshEngineStatus]);
 
   // Check if user has a subscription (team)
   const hasSubscription = !!userInfo?.team?.plan;
@@ -294,6 +313,9 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
           serverKeyVersion: result.serverKeyVersion,
           trustedDevices: result.trustedDevices,
         });
+        if (result.state === SyncStates.READY) {
+          await ensureEngineRunning();
+        }
       } catch (err) {
         if (cancelled) return;
 
@@ -316,11 +338,12 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [isConnected, isEnabled, hasSubscription]);
+  }, [isConnected, isEnabled, hasSubscription, ensureEngineRunning]);
 
   useEffect(() => {
     if (state.syncState !== SyncStates.READY) {
       bootstrapDeviceRef.current = null;
+      backgroundPausedRef.current = false;
       return;
     }
 
@@ -355,9 +378,8 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
           }
         }
 
-        const engineStatus = await syncService.getEngineStatus().catch(() => null);
-        if (!cancelled && engineStatus) {
-          dispatch({ type: "ENGINE_STATUS", status: engineStatus });
+        if (!cancelled) {
+          await ensureEngineRunning();
         }
       } catch (err) {
         if (cancelled) return;
@@ -373,7 +395,7 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [state.syncState, state.identity?.deviceId, state.device?.id]);
+  }, [state.syncState, state.identity?.deviceId, state.device?.id, ensureEngineRunning]);
 
   // Actions
   const refreshState = useCallback(async () => {
@@ -389,10 +411,7 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
         trustedDevices: result.trustedDevices,
       });
       if (result.state === SyncStates.READY) {
-        const engineStatus = await syncService.getEngineStatus().catch(() => null);
-        if (engineStatus) {
-          dispatch({ type: "ENGINE_STATUS", status: engineStatus });
-        }
+        await ensureEngineRunning();
       }
     } catch (err) {
       dispatch({
@@ -400,12 +419,13 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
         error: SyncError.from(err),
       });
     }
-  }, []);
+  }, [ensureEngineRunning]);
 
   const enableSync = useCallback(async (): Promise<EnableSyncResult> => {
     dispatch({ type: "OPERATION_START" });
     try {
       const result = await syncService.enableSync();
+      backgroundPausedRef.current = false;
       // Refresh state from backend to get authoritative state
       await refreshState();
       return result;
@@ -525,6 +545,9 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
   );
 
   const handleRecovery = useCallback(async () => {
+    if (state.syncState !== SyncStates.RECOVERY) {
+      return;
+    }
     dispatch({ type: "OPERATION_START" });
     try {
       await syncService.handleRecovery();
@@ -534,7 +557,7 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     } finally {
       dispatch({ type: "OPERATION_END" });
     }
-  }, [refreshState]);
+  }, [refreshState, state.syncState]);
 
   const renameDevice = useCallback(async (deviceId: string, name: string) => {
     await syncService.renameDevice(deviceId, name);
@@ -561,6 +584,7 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     dispatch({ type: "OPERATION_START" });
     try {
       await syncService.reinitializeSync();
+      backgroundPausedRef.current = false;
       await refreshState();
     } catch (err) {
       throw SyncError.from(err);
@@ -568,6 +592,30 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "OPERATION_END" });
     }
   }, [refreshState]);
+
+  const startBackgroundSync = useCallback(async () => {
+    const previousPaused = backgroundPausedRef.current;
+    backgroundPausedRef.current = false;
+    try {
+      await syncService.startBackgroundEngine();
+    } catch (err) {
+      backgroundPausedRef.current = previousPaused;
+      throw err;
+    }
+    await refreshEngineStatus();
+  }, [refreshEngineStatus]);
+
+  const stopBackgroundSync = useCallback(async () => {
+    const previousPaused = backgroundPausedRef.current;
+    try {
+      await syncService.stopBackgroundEngine();
+      backgroundPausedRef.current = true;
+    } catch (err) {
+      backgroundPausedRef.current = previousPaused;
+      throw err;
+    }
+    await refreshEngineStatus();
+  }, [refreshEngineStatus]);
 
   const computeSAS = useCallback(async () => {
     const sessionKey = state.pairingSession?.sessionKey || state.claimerSession?.sessionKey;
@@ -603,6 +651,8 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
       revokeDevice,
       resetSync,
       reinitializeSync,
+      startBackgroundSync,
+      stopBackgroundSync,
       computeSAS,
       clearError,
       clearSyncData,
