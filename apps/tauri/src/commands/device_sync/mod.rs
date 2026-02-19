@@ -37,7 +37,7 @@ const CLOUD_ACCESS_TOKEN_KEY: &str = "sync_access_token";
 
 fn cloud_api_base_url() -> Result<String, String> {
     crate::services::cloud_api_base_url().ok_or_else(|| {
-        "CONNECT_API_URL not configured. Connect API operations are disabled.".to_string()
+        "Cloud API base URL is unavailable. Device sync operations are disabled.".to_string()
     })
 }
 

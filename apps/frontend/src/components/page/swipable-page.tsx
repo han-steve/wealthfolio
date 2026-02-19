@@ -142,7 +142,7 @@ export function SwipablePage({
 }: SwipablePageProps) {
   const isMobile = useIsMobileViewport();
   const [searchParams, setSearchParams] = useSearchParams();
-  const hapticFeedback = useHapticFeedback();
+  const { triggerHaptic } = useHapticFeedback();
 
   // Single source of truth: URL search params
   const tabFromUrl = searchParams.get("tab");
@@ -164,7 +164,7 @@ export function SwipablePage({
       }
 
       if (isMobile) {
-        hapticFeedback();
+        triggerHaptic();
       }
 
       // Update URL - this is the single source of truth

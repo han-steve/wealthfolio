@@ -34,6 +34,7 @@ export type {
   AppInfo,
   UpdateCheckResult,
   UpdateCheckPayload,
+  PlatformCapabilities,
   PlatformInfo,
   BackendSyncStateResult,
   BackendEnableSyncResult,

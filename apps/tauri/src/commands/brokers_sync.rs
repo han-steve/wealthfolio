@@ -230,7 +230,7 @@ pub async fn get_subscription_plans_public() -> Result<PlansResponse, String> {
     info!("Fetching subscription plans from cloud API (public)...");
 
     let base_url = crate::services::cloud_api_base_url().ok_or_else(|| {
-        "CONNECT_API_URL not configured. Connect API operations are disabled.".to_string()
+        "Cloud API base URL is unavailable. Connect API operations are disabled.".to_string()
     })?;
 
     match fetch_subscription_plans_public(&base_url).await {

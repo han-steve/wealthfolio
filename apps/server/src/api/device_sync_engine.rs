@@ -4,15 +4,13 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine};
 use chrono::Utc;
-use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::main_lib::AppState;
-use wealthfolio_connect::DEFAULT_CLOUD_API_URL;
 use wealthfolio_core::sync::APP_SYNC_TABLES;
 use wealthfolio_device_sync::engine::{
-    self, CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SnapshotStore, SyncIdentity,
-    SyncTransport, TransportError,
+    self, CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SyncIdentity, SyncTransport,
+    TransportError,
 };
 use wealthfolio_device_sync::{
     DeviceSyncClient, SnapshotRequestPayload, SyncPullResponse, SyncPushRequest, SyncPushResponse,
@@ -53,11 +51,15 @@ pub struct SyncSnapshotUploadResult {
 }
 
 fn cloud_api_base_url() -> String {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLOUD_API_URL.to_string())
+    crate::features::cloud_api_base_url().unwrap_or_default()
+}
+
+fn ensure_device_sync_enabled() -> Result<(), String> {
+    if crate::features::device_sync_enabled() {
+        Ok(())
+    } else {
+        Err("Device sync feature is disabled in this build.".to_string())
+    }
 }
 
 fn create_client() -> DeviceSyncClient {
@@ -379,14 +381,8 @@ impl CredentialStore for ServerEnginePorts {
     }
 }
 
-#[async_trait]
-impl SnapshotStore for ServerEnginePorts {
-    async fn maybe_generate_snapshot_for_policy(&self) {
-        maybe_generate_snapshot_for_policy(Arc::clone(&self.state)).await;
-    }
-}
-
 pub async fn get_engine_status(state: &Arc<AppState>) -> Result<SyncEngineStatusResult, String> {
+    ensure_device_sync_enabled()?;
     let status = state
         .app_sync_repository
         .get_engine_status()
@@ -415,11 +411,13 @@ pub async fn get_engine_status(state: &Arc<AppState>) -> Result<SyncEngineStatus
 }
 
 pub async fn run_sync_cycle(state: Arc<AppState>) -> Result<engine::SyncCycleResult, String> {
+    ensure_device_sync_enabled()?;
     let ports = ServerEnginePorts::new(Arc::clone(&state));
     state.device_sync_runtime.run_cycle(&ports).await
 }
 
 pub async fn ensure_background_engine_started(state: Arc<AppState>) -> Result<(), String> {
+    ensure_device_sync_enabled()?;
     if get_sync_identity_from_store(&state).is_none() {
         return Ok(());
     }
@@ -432,6 +430,7 @@ pub async fn ensure_background_engine_started(state: Arc<AppState>) -> Result<()
 }
 
 pub async fn ensure_background_engine_stopped(state: Arc<AppState>) -> Result<(), String> {
+    ensure_device_sync_enabled()?;
     state.device_sync_runtime.ensure_background_stopped().await;
     Ok(())
 }
@@ -477,6 +476,7 @@ async fn request_snapshot_generation(
 pub async fn sync_bootstrap_snapshot_if_needed(
     state: Arc<AppState>,
 ) -> Result<SyncBootstrapResult, String> {
+    ensure_device_sync_enabled()?;
     let identity = get_sync_identity_from_store(&state)
         .ok_or_else(|| "No sync identity configured. Please enable sync first.".to_string())?;
     let device_id = identity
@@ -646,6 +646,7 @@ pub async fn sync_bootstrap_snapshot_if_needed(
 pub async fn generate_snapshot_now(
     state: Arc<AppState>,
 ) -> Result<SyncSnapshotUploadResult, String> {
+    ensure_device_sync_enabled()?;
     state
         .device_sync_runtime
         .snapshot_upload_cancelled
@@ -745,57 +746,11 @@ pub async fn generate_snapshot_now(
 }
 
 pub async fn cancel_snapshot_upload(state: Arc<AppState>) {
+    if !crate::features::device_sync_enabled() {
+        return;
+    }
     state
         .device_sync_runtime
         .snapshot_upload_cancelled
         .store(true, Ordering::Relaxed);
-}
-
-pub async fn maybe_generate_snapshot_for_policy(state: Arc<AppState>) {
-    let cursor = match state.app_sync_repository.get_cursor() {
-        Ok(value) => value,
-        Err(err) => {
-            warn!(
-                "[DeviceSync] Failed reading cursor for snapshot policy: {}",
-                err
-            );
-            return;
-        }
-    };
-
-    let now = Utc::now();
-    let (due_by_time, due_by_seq, _last_uploaded_cursor) = {
-        let policy = state.device_sync_runtime.snapshot_policy.lock().await;
-        let due_by_time = policy
-            .last_uploaded_at
-            .map(|at| (now - at).num_seconds() >= engine::DEVICE_SYNC_SNAPSHOT_INTERVAL_SECS as i64)
-            .unwrap_or(true);
-        let last_uploaded_cursor = policy.last_uploaded_cursor;
-        let due_by_seq = cursor.saturating_sub(last_uploaded_cursor)
-            >= engine::DEVICE_SYNC_SNAPSHOT_EVENT_THRESHOLD;
-        (due_by_time, due_by_seq, last_uploaded_cursor)
-    };
-
-    if !due_by_time && !due_by_seq {
-        return;
-    }
-
-    match generate_snapshot_now(Arc::clone(&state)).await {
-        Ok(result) if result.status == "uploaded" => {
-            let mut policy = state.device_sync_runtime.snapshot_policy.lock().await;
-            policy.last_uploaded_at = Some(now);
-            policy.last_uploaded_cursor = result.oplog_seq.unwrap_or(cursor);
-        }
-        Ok(_) => {}
-        Err(err) => {
-            let key_version = get_sync_identity_from_store(&state)
-                .and_then(|identity| identity.key_version)
-                .unwrap_or(1)
-                .max(1);
-            info!(
-                "[DeviceSync] Snapshot policy upload failed cursor={} key_version={} error={}",
-                cursor, key_version, err
-            );
-        }
-    }
 }

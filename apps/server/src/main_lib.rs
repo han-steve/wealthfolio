@@ -11,7 +11,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 use wealthfolio_ai::{AiProviderService, AiProviderServiceTrait, ChatConfig, ChatService};
 use wealthfolio_connect::{
     BrokerSyncService, BrokerSyncServiceTrait, CoreImportRunRepositoryAdapter,
-    ImportRunRepositoryTrait, DEFAULT_CLOUD_API_URL,
+    ImportRunRepositoryTrait,
 };
 use wealthfolio_core::addons::{AddonService, AddonServiceTrait};
 use wealthfolio_core::{
@@ -379,11 +379,7 @@ pub async fn build_state(config: &Config) -> anyhow::Result<Arc<AppState>> {
     let ai_chat_service = Arc::new(ChatService::new(ai_environment, ChatConfig::default()));
 
     // Device enroll service for E2EE sync
-    let cloud_api_url = std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLOUD_API_URL.to_string());
+    let cloud_api_url = crate::features::cloud_api_base_url().unwrap_or_default();
     let device_display_name = "Wealthfolio Server".to_string();
     let app_version = Some(env!("CARGO_PKG_VERSION").to_string());
     let device_enroll_service = Arc::new(DeviceEnrollService::new(

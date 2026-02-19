@@ -12,7 +12,6 @@ use axum::{
 };
 use serde::Deserialize;
 use tracing::{debug, info};
-use wealthfolio_connect::DEFAULT_CLOUD_API_URL;
 
 use crate::error::{ApiError, ApiResult};
 use crate::main_lib::AppState;
@@ -29,11 +28,7 @@ use wealthfolio_device_sync::{
 const DEVICE_ID_KEY: &str = "sync_device_id";
 
 fn cloud_api_base_url() -> String {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLOUD_API_URL.to_string())
+    crate::features::cloud_api_base_url().unwrap_or_default()
 }
 
 /// Get a fresh access token by refreshing via the stored refresh token.
@@ -570,6 +565,10 @@ async fn confirm_pairing_endpoint(
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn router() -> Router<Arc<AppState>> {
+    if !crate::features::device_sync_enabled() {
+        return Router::new();
+    }
+
     Router::new()
         // Device management
         .route("/sync/device/register", post(register_device))

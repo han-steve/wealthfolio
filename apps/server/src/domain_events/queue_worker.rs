@@ -378,11 +378,7 @@ async fn run_portfolio_job(
 const CLOUD_REFRESH_TOKEN_KEY: &str = "sync_refresh_token";
 
 fn cloud_api_base_url() -> String {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| wealthfolio_connect::DEFAULT_CLOUD_API_URL.to_string())
+    crate::features::cloud_api_base_url().unwrap_or_default()
 }
 
 fn connect_auth_url() -> Option<String> {
@@ -515,6 +511,10 @@ async fn perform_broker_sync(
     secret_store: Arc<dyn SecretStore>,
 ) -> Result<wealthfolio_connect::SyncResult, String> {
     use wealthfolio_connect::{ConnectApiClient, SyncConfig, SyncOrchestrator};
+
+    if !crate::features::connect_sync_enabled() {
+        return Err("Connect sync feature is disabled in this build.".to_string());
+    }
 
     // Create API client with fresh access token
     let token = mint_access_token(&secret_store).await?;

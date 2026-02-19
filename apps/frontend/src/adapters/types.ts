@@ -162,10 +162,19 @@ export interface UpdateCheckPayload {
 /**
  * Platform information for the current runtime environment.
  */
+export interface PlatformCapabilities {
+  connect_sync: boolean;
+  device_sync: boolean;
+  cloud_sync: boolean;
+}
+
 export interface PlatformInfo {
   os: string;
+  arch?: string;
   is_mobile: boolean;
   is_desktop: boolean;
+  is_tauri?: boolean;
+  capabilities?: PlatformCapabilities;
 }
 
 // ============================================================================

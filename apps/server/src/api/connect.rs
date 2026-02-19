@@ -27,7 +27,7 @@ use wealthfolio_connect::{
         SyncConnectionsResponse, UserInfo,
     },
     fetch_subscription_plans_public, ConnectApiClient, SyncConfig, SyncOrchestrator,
-    SyncProgressPayload, SyncProgressReporter, SyncResult, DEFAULT_CLOUD_API_URL,
+    SyncProgressPayload, SyncProgressReporter, SyncResult,
 };
 use wealthfolio_core::accounts::TrackingMode;
 use wealthfolio_device_sync::{EnableSyncResult, SyncState, SyncStateResult};
@@ -41,12 +41,41 @@ const TOKEN_EXPIRY_BUFFER_SECS: u64 = 60;
 /// Default TTL assumed when storing a token received from the frontend (no expires_in available).
 const DEFAULT_TOKEN_TTL_SECS: u64 = 55 * 60;
 
-fn cloud_api_base_url() -> String {
-    std::env::var("CONNECT_API_URL")
-        .ok()
-        .map(|v| v.trim().trim_end_matches('/').to_string())
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| DEFAULT_CLOUD_API_URL.to_string())
+fn ensure_cloud_sync_enabled() -> ApiResult<()> {
+    if crate::features::cloud_sync_enabled() {
+        Ok(())
+    } else {
+        Err(ApiError::NotImplemented(
+            "Cloud sync features are disabled in this build.".to_string(),
+        ))
+    }
+}
+
+fn ensure_connect_sync_enabled() -> ApiResult<()> {
+    if crate::features::connect_sync_enabled() {
+        Ok(())
+    } else {
+        Err(ApiError::NotImplemented(
+            "Connect sync feature is disabled in this build.".to_string(),
+        ))
+    }
+}
+
+fn ensure_device_sync_enabled() -> ApiResult<()> {
+    if crate::features::device_sync_enabled() {
+        Ok(())
+    } else {
+        Err(ApiError::NotImplemented(
+            "Device sync feature is disabled in this build.".to_string(),
+        ))
+    }
+}
+
+fn cloud_api_base_url() -> ApiResult<String> {
+    ensure_cloud_sync_enabled()?;
+    crate::features::cloud_api_base_url().ok_or_else(|| {
+        ApiError::NotImplemented("Cloud sync features are disabled in this build.".to_string())
+    })
 }
 
 fn connect_auth_url() -> Option<String> {
@@ -62,8 +91,10 @@ fn connect_auth_api_key() -> Option<String> {
 
 /// Create a ConnectApiClient with a fresh access token
 async fn create_connect_client(state: &AppState) -> ApiResult<ConnectApiClient> {
+    ensure_cloud_sync_enabled()?;
     let token = mint_access_token(state).await?;
-    ConnectApiClient::new(&cloud_api_base_url(), &token)
+    let base_url = cloud_api_base_url()?;
+    ConnectApiClient::new(&base_url, &token)
         .map_err(|e| ApiError::Internal(e.to_string()))
 }
 
@@ -199,6 +230,7 @@ async fn store_sync_session(
     State(state): State<Arc<AppState>>,
     Json(body): Json<StoreSyncSessionRequest>,
 ) -> ApiResult<Json<()>> {
+    ensure_cloud_sync_enabled()?;
     info!("[Connect] Storing sync session");
 
     state
@@ -231,6 +263,7 @@ async fn store_sync_session(
 }
 
 async fn clear_sync_session(State(state): State<Arc<AppState>>) -> ApiResult<Json<()>> {
+    ensure_cloud_sync_enabled()?;
     info!("[Connect] Clearing sync session");
 
     let _ = state.secret_store.delete_secret(CLOUD_REFRESH_TOKEN_KEY);
@@ -247,6 +280,7 @@ async fn clear_sync_session(State(state): State<Arc<AppState>>) -> ApiResult<Jso
 async fn get_sync_session_status(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<SyncSessionStatus>> {
+    ensure_cloud_sync_enabled()?;
     let is_configured = state
         .secret_store
         .get_secret(CLOUD_REFRESH_TOKEN_KEY)
@@ -271,6 +305,7 @@ async fn get_sync_session_status(
 ///
 /// A write-lock is held across the auth call to prevent concurrent refresh storms.
 pub(crate) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
+    ensure_cloud_sync_enabled()?;
     // Fast path: check cache under a read lock.
     {
         let cache = state.token_cache.read().await;
@@ -382,6 +417,7 @@ pub(crate) async fn mint_access_token(state: &AppState) -> ApiResult<String> {
 async fn sync_broker_connections(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<SyncConnectionsResponse>> {
+    ensure_connect_sync_enabled()?;
     info!("[Connect] Syncing broker connections...");
 
     let client = create_connect_client(&state).await?;
@@ -415,6 +451,7 @@ async fn sync_broker_connections(
 async fn sync_broker_accounts(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<SyncAccountsResponse>> {
+    ensure_connect_sync_enabled()?;
     info!("[Connect] Syncing broker accounts...");
 
     let client = create_connect_client(&state).await?;
@@ -445,6 +482,7 @@ async fn sync_broker_accounts(
 async fn sync_broker_activities(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<SyncActivitiesResponse>> {
+    ensure_connect_sync_enabled()?;
     info!("[Connect] Running activities-only broker sync");
     let result = perform_broker_activities_only_sync(&state)
         .await
@@ -460,6 +498,11 @@ async fn sync_broker_activities(
 /// Trigger a full broker data sync (connections → accounts → activities).
 /// Returns immediately with 202 Accepted. Sync runs in background and emits SSE events.
 async fn sync_broker_data(State(state): State<Arc<AppState>>) -> StatusCode {
+    if let Err(err) = ensure_connect_sync_enabled() {
+        error!("[Connect] Broker sync skipped: {}", err);
+        return StatusCode::NOT_IMPLEMENTED;
+    }
+
     info!("[Connect] Starting broker data sync (non-blocking)...");
 
     // Spawn background task to perform the sync
@@ -483,6 +526,7 @@ async fn sync_broker_data(State(state): State<Arc<AppState>>) -> StatusCode {
 /// Uses the centralized SyncOrchestrator for full pagination support.
 /// Also used by the background scheduler for periodic syncs.
 pub async fn perform_broker_sync(state: &AppState) -> Result<SyncResult, String> {
+    ensure_connect_sync_enabled().map_err(|e| e.to_string())?;
     // Create API client
     let client = create_connect_client(state)
         .await
@@ -506,6 +550,7 @@ pub async fn perform_broker_sync(state: &AppState) -> Result<SyncResult, String>
 async fn perform_broker_activities_only_sync(
     state: &AppState,
 ) -> Result<SyncActivitiesResponse, String> {
+    ensure_connect_sync_enabled().map_err(|e| e.to_string())?;
     let client = create_connect_client(state)
         .await
         .map_err(|e| e.to_string())?;
@@ -679,6 +724,7 @@ async fn perform_broker_activities_only_sync(
 async fn get_subscription_plans(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<PlansResponse>> {
+    ensure_cloud_sync_enabled()?;
     info!("[Connect] Getting subscription plans...");
 
     let client = create_connect_client(&state).await?;
@@ -692,9 +738,10 @@ async fn get_subscription_plans(
 }
 
 async fn get_subscription_plans_public() -> ApiResult<Json<PlansResponse>> {
+    ensure_cloud_sync_enabled()?;
     info!("[Connect] Getting subscription plans (public)...");
 
-    let base_url = cloud_api_base_url();
+    let base_url = cloud_api_base_url()?;
 
     let plans = fetch_subscription_plans_public(&base_url)
         .await
@@ -704,6 +751,7 @@ async fn get_subscription_plans_public() -> ApiResult<Json<PlansResponse>> {
 }
 
 async fn get_user_info(State(state): State<Arc<AppState>>) -> ApiResult<Json<UserInfo>> {
+    ensure_cloud_sync_enabled()?;
     info!("[Connect] Getting user info...");
 
     let client = create_connect_client(&state).await?;
@@ -723,6 +771,7 @@ async fn get_user_info(State(state): State<Arc<AppState>>) -> ApiResult<Json<Use
 async fn list_broker_connections(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<wealthfolio_connect::broker::BrokerConnection>>> {
+    ensure_connect_sync_enabled()?;
     info!("[Connect] Listing broker connections from cloud...");
 
     let client = create_connect_client(&state).await?;
@@ -739,6 +788,7 @@ async fn list_broker_connections(
 async fn list_broker_accounts(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<wealthfolio_connect::broker::BrokerAccount>>> {
+    ensure_connect_sync_enabled()?;
     info!("[Connect] Listing broker accounts from cloud...");
 
     let client = create_connect_client(&state).await?;
@@ -769,6 +819,10 @@ pub struct GetImportRunsQuery {
 async fn get_synced_accounts(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<wealthfolio_core::accounts::Account>>> {
+    if !crate::features::connect_sync_enabled() {
+        return Ok(Json(vec![]));
+    }
+
     info!("[Connect] Getting synced accounts from local database...");
 
     let accounts = state
@@ -784,6 +838,10 @@ async fn get_synced_accounts(
 async fn get_platforms(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<wealthfolio_connect::Platform>>> {
+    if !crate::features::connect_sync_enabled() {
+        return Ok(Json(vec![]));
+    }
+
     info!("[Connect] Getting platforms from local database...");
 
     let platforms = state
@@ -799,6 +857,10 @@ async fn get_platforms(
 async fn get_broker_sync_states(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<wealthfolio_connect::BrokerSyncState>>> {
+    if !crate::features::connect_sync_enabled() {
+        return Ok(Json(vec![]));
+    }
+
     debug!("[Connect] Getting broker sync states from local database...");
 
     let states = state
@@ -814,6 +876,10 @@ async fn get_import_runs(
     State(state): State<Arc<AppState>>,
     Query(query): Query<GetImportRunsQuery>,
 ) -> ApiResult<Json<Vec<wealthfolio_connect::ImportRun>>> {
+    if !crate::features::connect_sync_enabled() {
+        return Ok(Json(vec![]));
+    }
+
     let limit = query.limit.unwrap_or(50);
     let offset = query.offset.unwrap_or(0);
     debug!(
@@ -837,6 +903,7 @@ async fn get_import_runs(
 async fn get_device_sync_state(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<SyncStateResult>> {
+    ensure_device_sync_enabled()?;
     info!("[Connect] Getting device sync state...");
     // Ensure store has a fresh access token for DeviceEnrollService (reads from store directly).
     mint_access_token(&state).await?;
@@ -854,6 +921,7 @@ async fn get_device_sync_state(
 async fn enable_device_sync(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<EnableSyncResult>> {
+    ensure_device_sync_enabled()?;
     info!("[Connect] Enabling device sync...");
     mint_access_token(&state).await?;
 
@@ -873,6 +941,7 @@ async fn enable_device_sync(
 
 /// Clear all device sync data and return to FRESH state
 async fn clear_device_sync_data(State(state): State<Arc<AppState>>) -> ApiResult<Json<()>> {
+    ensure_device_sync_enabled()?;
     info!("[Connect] Clearing device sync data...");
 
     state
@@ -889,6 +958,7 @@ async fn clear_device_sync_data(State(state): State<Arc<AppState>>) -> ApiResult
 async fn reinitialize_device_sync(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<EnableSyncResult>> {
+    ensure_device_sync_enabled()?;
     info!("[Connect] Reinitializing device sync...");
     mint_access_token(&state).await?;
 
@@ -909,6 +979,7 @@ async fn reinitialize_device_sync(
 async fn get_device_sync_engine_status(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncEngineStatusResponse>> {
+    ensure_device_sync_enabled()?;
     let status = device_sync_engine::get_engine_status(&state)
         .await
         .map_err(ApiError::Internal)?;
@@ -929,6 +1000,7 @@ async fn get_device_sync_engine_status(
 async fn bootstrap_device_snapshot(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncBootstrapResponse>> {
+    ensure_device_sync_enabled()?;
     let result = device_sync_engine::sync_bootstrap_snapshot_if_needed(Arc::clone(&state))
         .await
         .map_err(ApiError::Internal)?;
@@ -948,6 +1020,7 @@ async fn bootstrap_device_snapshot(
 async fn trigger_device_sync_cycle(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncCycleResponse>> {
+    ensure_device_sync_enabled()?;
     let result = device_sync_engine::run_sync_cycle(state)
         .await
         .map_err(ApiError::Internal)?;
@@ -964,6 +1037,7 @@ async fn trigger_device_sync_cycle(
 async fn start_device_sync_background_engine(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+    ensure_device_sync_enabled()?;
     device_sync_engine::ensure_background_engine_started(Arc::clone(&state))
         .await
         .map_err(ApiError::Internal)?;
@@ -985,6 +1059,7 @@ async fn start_device_sync_background_engine(
 async fn stop_device_sync_background_engine(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+    ensure_device_sync_enabled()?;
     device_sync_engine::ensure_background_engine_stopped(state)
         .await
         .map_err(ApiError::Internal)?;
@@ -997,6 +1072,7 @@ async fn stop_device_sync_background_engine(
 async fn generate_device_snapshot_now(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncSnapshotUploadResponse>> {
+    ensure_device_sync_enabled()?;
     let result = device_sync_engine::generate_snapshot_now(state)
         .await
         .map_err(ApiError::Internal)?;
@@ -1011,6 +1087,7 @@ async fn generate_device_snapshot_now(
 async fn cancel_device_snapshot_upload(
     State(state): State<Arc<AppState>>,
 ) -> ApiResult<Json<DeviceSyncBackgroundResponse>> {
+    ensure_device_sync_enabled()?;
     device_sync_engine::cancel_snapshot_upload(state).await;
     Ok(Json(DeviceSyncBackgroundResponse {
         status: "cancel_requested".to_string(),
