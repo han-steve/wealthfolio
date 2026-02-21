@@ -7,6 +7,7 @@ use chrono::Utc;
 use uuid::Uuid;
 
 use crate::main_lib::AppState;
+use wealthfolio_core::events::DomainEvent;
 use wealthfolio_core::sync::APP_SYNC_TABLES;
 use wealthfolio_device_sync::engine::{
     self, CredentialStore, OutboxStore, ReadyReconcileStore, ReplayEvent, ReplayStore,
@@ -323,6 +324,15 @@ impl ReplayStore for ServerEnginePorts {
     async fn get_engine_status(&self) -> Result<wealthfolio_core::sync::SyncEngineStatus, String> {
         self.db.get_engine_status().await
     }
+
+    async fn on_pull_complete(&self, pulled_count: usize) -> Result<(), String> {
+        if pulled_count > 0 {
+            self.state
+                .domain_event_sink
+                .emit(DomainEvent::device_sync_pull_complete());
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -458,7 +468,11 @@ pub async fn get_engine_status(state: &Arc<AppState>) -> Result<SyncEngineStatus
 pub async fn run_sync_cycle(state: Arc<AppState>) -> Result<engine::SyncCycleResult, String> {
     ensure_device_sync_enabled()?;
     let ports = ServerEnginePorts::new(Arc::clone(&state));
-    state.device_sync_runtime.run_cycle(&ports).await
+    let result = state.device_sync_runtime.run_cycle(&ports).await?;
+
+    // Note: on_pull_complete is now called by the engine itself via ReplayStore trait
+
+    Ok(result)
 }
 
 struct ServerReadyReconcileRunner {

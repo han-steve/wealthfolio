@@ -5,6 +5,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 
 use crate::context::ServiceContext;
+use wealthfolio_core::events::DomainEvent;
 use wealthfolio_device_sync::engine::{
     CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SyncIdentity, SyncTransport,
     TransportError,
@@ -160,6 +161,15 @@ impl ReplayStore for TauriEnginePorts {
     async fn get_engine_status(&self) -> Result<wealthfolio_core::sync::SyncEngineStatus, String> {
         self.db.get_engine_status().await
     }
+
+    async fn on_pull_complete(&self, pulled_count: usize) -> Result<(), String> {
+        if pulled_count > 0 {
+            self.context
+                .domain_event_sink
+                .emit(DomainEvent::device_sync_pull_complete());
+        }
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -280,8 +290,11 @@ pub(super) async fn run_sync_cycle(
     context: Arc<ServiceContext>,
 ) -> Result<SyncCycleResult, String> {
     let runtime = context.device_sync_runtime();
-    let ports = TauriEnginePorts::new(context);
+    let ports = TauriEnginePorts::new(Arc::clone(&context));
     let result = runtime.run_cycle(&ports).await?;
+
+    // Note: on_pull_complete is now called by the engine itself via ReplayStore trait
+
     Ok(SyncCycleResult {
         status: result.status,
         lock_version: result.lock_version,

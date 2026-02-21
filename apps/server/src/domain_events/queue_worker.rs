@@ -454,7 +454,7 @@ async fn mint_access_token(secret_store: &Arc<dyn SecretStore>) -> Result<String
         .map_err(|e| format!("Failed to create HTTP client: {}", e))?;
 
     let token_url = format!("{}/auth/v1/token?grant_type=refresh_token", auth_url);
-    tracing::debug!("Refreshing access token from: {}", token_url);
+    tracing::debug!("Refreshing access token");
 
     let response = client
         .post(&token_url)
@@ -486,7 +486,7 @@ async fn mint_access_token(secret_store: &Arc<dyn SecretStore>) -> Result<String
             tracing::error!("Token refresh failed: {}", msg);
             return Err(format!("Session expired. Please sign in again. ({})", msg));
         }
-        tracing::error!("Token refresh failed with status {}: {}", status, body);
+        tracing::error!("Token refresh failed with status {}", status);
         return Err("Session expired. Please sign in again.".to_string());
     }
 

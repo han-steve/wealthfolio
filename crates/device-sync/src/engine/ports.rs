@@ -122,6 +122,11 @@ pub trait ReplayStore: Send + Sync {
     async fn mark_engine_error(&self, message: String) -> Result<(), String>;
     async fn prune_applied_events_up_to_seq(&self, seq: i64) -> Result<(), String>;
     async fn get_engine_status(&self) -> Result<SyncEngineStatus, String>;
+    /// Called after a sync cycle completes with pulled changes.
+    /// Implementations can use this to trigger portfolio recalculation.
+    async fn on_pull_complete(&self, _pulled_count: usize) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 #[async_trait]

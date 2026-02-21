@@ -768,6 +768,13 @@ where
         .await
         .map_err(|e| e.to_string())?;
 
+    if pulled_count > 0 {
+        ports
+            .on_pull_complete(pulled_count)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+
     Ok(SyncCycleResult {
         status: "ok".to_string(),
         lock_version,
