@@ -237,26 +237,33 @@ where
         }
     };
 
+    debug!("[DeviceSync] Reconcile action={}, cursor={:?}", reconcile.action, reconcile.cursor);
+    
+    let has_pending = ports.has_pending_outbox().await.unwrap_or(false);
     match reconcile.action.as_str() {
         "NOOP" => {
-            ports
-                .mark_cycle_outcome(
-                    "ok".to_string(),
-                    ctx.started_at.elapsed().as_millis() as i64,
-                    None,
-                )
-                .await
-                .map_err(|e| e.to_string())?;
-            return Ok(SyncCycleResult {
-                status: "ok".to_string(),
-                lock_version: 0,
-                pushed_count: 0,
-                pulled_count: 0,
-                cursor: ctx.local_cursor,
-                needs_bootstrap: false,
-                bootstrap_snapshot_id: None,
-                bootstrap_snapshot_seq: None,
-            });
+            if !has_pending {
+                debug!("[DeviceSync] Reconcile action=NOOP and no pending outbox, skipping push+pull");
+                ports
+                    .mark_cycle_outcome(
+                        "ok".to_string(),
+                        ctx.started_at.elapsed().as_millis() as i64,
+                        None,
+                    )
+                    .await
+                    .map_err(|e| e.to_string())?;
+                return Ok(SyncCycleResult {
+                    status: "ok".to_string(),
+                    lock_version: 0,
+                    pushed_count: 0,
+                    pulled_count: 0,
+                    cursor: ctx.local_cursor,
+                    needs_bootstrap: false,
+                    bootstrap_snapshot_id: None,
+                    bootstrap_snapshot_seq: None,
+                });
+            }
+            debug!("[DeviceSync] Reconcile action=NOOP but has pending outbox, proceeding with push+pull");
         }
         "BOOTSTRAP_SNAPSHOT" => {
             ports
@@ -317,6 +324,7 @@ where
         .await
         .map_err(|e| e.to_string())?;
     ctx.local_cursor = ports.get_cursor().await.map_err(|e| e.to_string())?;
+    debug!("[DeviceSync] Local cursor: {}", ctx.local_cursor);
     let lock_version = ctx.lock_version;
     let mut local_cursor = ctx.local_cursor;
     let server_cursor = match reconcile.cursor {
@@ -334,6 +342,7 @@ where
         .list_pending_outbox(500)
         .await
         .map_err(|e| e.to_string())?;
+    debug!("[DeviceSync] Retrieved {} pending outbox events", pending.len());
     let mut push_events = Vec::new();
     let mut push_event_ids = Vec::new();
     let mut invalid_entity_id_event_ids = Vec::new();

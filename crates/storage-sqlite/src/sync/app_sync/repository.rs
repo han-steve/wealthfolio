@@ -805,11 +805,18 @@ impl AppSyncRepository {
     pub fn list_pending_outbox(&self, limit_value: i64) -> Result<Vec<SyncOutboxEvent>> {
         let mut conn = get_connection(&self.pool)?;
         let now = Utc::now().to_rfc3339();
+        let pending_status = enum_to_db(&SyncOutboxStatus::Pending)?;
+        log::debug!(
+            "[OutboxQuery] status_filter={}, sent_filter=0, now={}, limit={}",
+            pending_status,
+            now,
+            limit_value
+        );
 
         let rows = sync_outbox::table
             .filter(
                 sync_outbox::status
-                    .eq(enum_to_db(&SyncOutboxStatus::Pending)?)
+                    .eq(pending_status)
                     .and(sync_outbox::sent.eq(0)),
             )
             .filter(
@@ -822,6 +829,7 @@ impl AppSyncRepository {
             .load::<SyncOutboxEventDB>(&mut conn)
             .map_err(StorageError::from)?;
 
+        log::debug!("[OutboxQuery] Found {} pending outbox events", rows.len());
         rows.into_iter().map(to_outbox_event).collect()
     }
 
