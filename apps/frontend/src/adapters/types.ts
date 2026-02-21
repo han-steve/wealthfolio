@@ -224,6 +224,19 @@ export interface BackendSyncEngineStatusResult {
   bootstrapRequired: boolean;
 }
 
+export interface BackendSyncReconcileReadyResult {
+  status: "ok" | "skipped_not_ready" | "error";
+  message: string;
+  bootstrapStatus: "applied" | "skipped" | "requested" | "not_attempted";
+  bootstrapMessage: string | null;
+  bootstrapSnapshotId: string | null;
+  cycleStatus: string | null;
+  cycleNeedsBootstrap: boolean;
+  retryAttempted: boolean;
+  retryCycleStatus: string | null;
+  backgroundStatus: "started" | "skipped" | "failed";
+}
+
 /**
  * Result from sync_bootstrap_snapshot_if_needed command.
  */
@@ -244,6 +257,8 @@ export interface BackendSyncCycleResult {
   pulledCount: number;
   cursor: number;
   needsBootstrap: boolean;
+  bootstrapSnapshotId: string | null;
+  bootstrapSnapshotSeq: number | null;
 }
 
 export interface BackendSyncBackgroundEngineResult {

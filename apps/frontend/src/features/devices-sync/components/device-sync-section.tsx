@@ -3,27 +3,8 @@
 // State Machine: FRESH → REGISTERED → READY (+ STALE, RECOVERY)
 // ==================================================================
 
-import { useState, useCallback, useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { toast } from "sonner";
-import { Avatar, AvatarFallback } from "@wealthfolio/ui/components/ui/avatar";
-import { Badge } from "@wealthfolio/ui/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@wealthfolio/ui/components/ui/card";
-import { Button } from "@wealthfolio/ui/components/ui/button";
-import { Input } from "@wealthfolio/ui/components/ui/input";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@wealthfolio/ui/components/ui/dialog";
+import { Icons, Skeleton } from "@wealthfolio/ui";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -33,6 +14,23 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@wealthfolio/ui/components/ui/alert-dialog";
+import { Avatar, AvatarFallback } from "@wealthfolio/ui/components/ui/avatar";
+import { Badge } from "@wealthfolio/ui/components/ui/badge";
+import { Button } from "@wealthfolio/ui/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@wealthfolio/ui/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@wealthfolio/ui/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -40,19 +38,21 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@wealthfolio/ui/components/ui/dropdown-menu";
-import { Icons, Skeleton } from "@wealthfolio/ui";
+import { Input } from "@wealthfolio/ui/components/ui/input";
 import {
   Tooltip,
   TooltipContent,
   TooltipProvider,
   TooltipTrigger,
 } from "@wealthfolio/ui/components/ui/tooltip";
-import { useDeviceSync } from "../providers/device-sync-provider";
+import { useCallback, useEffect, useState } from "react";
+import { toast } from "sonner";
 import { useDevices, useRenameDevice, useRevokeDevice } from "../hooks";
-import { E2EESetupCard } from "./e2ee-setup-card";
-import { RecoveryDialog } from "./recovery-dialog";
-import { PairingFlow } from "./pairing-flow";
+import { useDeviceSync } from "../providers/device-sync-provider";
 import { SyncStates, type Device, type SyncState } from "../types";
+import { E2EESetupCard } from "./e2ee-setup-card";
+import { PairingFlow } from "./pairing-flow";
+import { RecoveryDialog } from "./recovery-dialog";
 
 const PORTAL_DEVICES_URL = "https://connect.wealthfolio.app/settings/devices";
 
@@ -316,17 +316,17 @@ export function DeviceSyncSection() {
               >
                 {isTogglingEngine ? (
                   <>
-                    <Icons.Loader className="mr-2 h-4 w-4 animate-spin" />
+                    <Icons.Loader className="h-4 w-4 animate-spin" />
                     Updating...
                   </>
                 ) : isBackgroundRunning ? (
                   <>
-                    <Icons.PauseCircle className="mr-2 h-4 w-4" />
+                    <Icons.PauseCircle className="h-4 w-4" />
                     Pause Sync
                   </>
                 ) : (
                   <>
-                    <Icons.PlayCircle className="mr-2 h-4 w-4" />
+                    <Icons.PlayCircle className="h-4 w-4" />
                     Resume Sync
                   </>
                 )}

@@ -14,6 +14,7 @@ import {
   clearDeviceSyncData as clearDeviceSyncDataApi,
   reinitializeDeviceSync as reinitializeDeviceSyncApi,
   getSyncEngineStatus as getSyncEngineStatusApi,
+  deviceSyncReconcileReadyState as deviceSyncReconcileReadyStateApi,
   syncBootstrapSnapshotIfNeeded as syncBootstrapSnapshotIfNeededApi,
   syncTriggerCycle as syncTriggerCycleApi,
   deviceSyncStartBackgroundEngine as deviceSyncStartBackgroundEngineApi,
@@ -195,6 +196,21 @@ class SyncService {
     bootstrapRequired: boolean;
   }> {
     return getSyncEngineStatusApi();
+  }
+
+  async reconcileReadyState(): Promise<{
+    status: "ok" | "skipped_not_ready" | "error";
+    message: string;
+    bootstrapStatus: "applied" | "skipped" | "requested" | "not_attempted";
+    bootstrapMessage: string | null;
+    bootstrapSnapshotId: string | null;
+    cycleStatus: string | null;
+    cycleNeedsBootstrap: boolean;
+    retryAttempted: boolean;
+    retryCycleStatus: string | null;
+    backgroundStatus: "started" | "skipped" | "failed";
+  }> {
+    return deviceSyncReconcileReadyStateApi();
   }
 
   async bootstrapSnapshotIfNeeded(): Promise<{

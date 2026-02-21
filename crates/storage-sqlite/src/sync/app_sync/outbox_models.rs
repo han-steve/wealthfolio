@@ -60,7 +60,6 @@ impl SyncOutboxModel for ActivityDB {
                 self.source_record_id.as_deref(),
             ),
             SyncOperation::Delete => true,
-            SyncOperation::Request => false,
         }
     }
 }

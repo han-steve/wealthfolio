@@ -39,6 +39,7 @@ export type {
   BackendSyncStateResult,
   BackendEnableSyncResult,
   BackendSyncEngineStatusResult,
+  BackendSyncReconcileReadyResult,
   BackendSyncBootstrapResult,
   BackendSyncCycleResult,
   BackendSyncBackgroundEngineResult,

@@ -97,6 +97,14 @@ export default function ConnectPage() {
     return map;
   }, [localAccounts]);
 
+  const accountTrackingModeMap = useMemo(() => {
+    const map = new Map<string, Account["trackingMode"]>();
+    localAccounts.forEach((account) => {
+      map.set(account.id, account.trackingMode);
+    });
+    return map;
+  }, [localAccounts]);
+
   const hasSubscription = useMemo(() => {
     if (!userInfo?.team) return false;
     const subStatus = userInfo.team.subscription_status;
@@ -389,6 +397,7 @@ export default function ConnectPage() {
                       key={run.id}
                       run={run}
                       accountName={accountNameMap.get(run.accountId)}
+                      trackingMode={accountTrackingModeMap.get(run.accountId)}
                     />
                   ))}
                 </div>
@@ -586,11 +595,21 @@ function formatDeviceLastSeen(device: Device): string {
   return `${diffDays}d ago`;
 }
 
-function SyncHistoryItem({ run, accountName }: { run: ImportRun; accountName?: string }) {
+function SyncHistoryItem({
+  run,
+  accountName,
+  trackingMode,
+}: {
+  run: ImportRun;
+  accountName?: string;
+  trackingMode?: Account["trackingMode"];
+}) {
   const timeAgo = formatDistanceToNow(new Date(run.startedAt), { addSuffix: false });
   const isNeedsReview = run.status === "NEEDS_REVIEW";
   const isFailed = run.status === "FAILED";
   const isRunning = run.status === "RUNNING";
+  const itemLabel = trackingMode === "HOLDINGS" ? "position" : "transaction";
+  const itemLabelPlural = `${itemLabel}s`;
 
   const summary = run.summary;
   const inserted = summary?.inserted ?? 0;
@@ -610,14 +629,18 @@ function SyncHistoryItem({ run, accountName }: { run: ImportRun; accountName?: s
   } else if (needsAttention) {
     const issueCount = warnings + errors;
     description = `${issueCount} ${issueCount === 1 ? "item needs" : "items need"} your review`;
-  } else if (inserted > 0 && updated > 0) {
-    description = `${inserted} new, ${updated} updated`;
-  } else if (inserted > 0) {
-    description = `${inserted} new ${inserted === 1 ? "transaction" : "transactions"}`;
-  } else if (updated > 0) {
-    description = `${updated} ${updated === 1 ? "transaction" : "transactions"} updated`;
-  } else if (removed > 0) {
-    description = `${removed} ${removed === 1 ? "transaction" : "transactions"} removed`;
+  } else if (inserted > 0 || updated > 0 || removed > 0) {
+    const parts: string[] = [];
+    if (inserted > 0) {
+      parts.push(`${inserted} new ${inserted === 1 ? itemLabel : itemLabelPlural}`);
+    }
+    if (updated > 0) {
+      parts.push(`${updated} ${updated === 1 ? itemLabel : itemLabelPlural} updated`);
+    }
+    if (removed > 0) {
+      parts.push(`${removed} ${removed === 1 ? itemLabel : itemLabelPlural} removed`);
+    }
+    description = parts.join(", ");
   } else {
     description = "Everything is up to date";
   }

@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use wealthfolio_core::sync::{SyncEngineStatus, SyncEntity, SyncOperation, SyncOutboxEvent};
 
 use crate::{
-    ApiRetryClass, SyncCursorResponse, SyncPullResponse, SyncPushRequest, SyncPushResponse,
-    SyncState,
+    ApiRetryClass, ReconcileReadyStateResponse, SyncCursorResponse, SyncPullResponse,
+    SyncPushRequest, SyncPushResponse, SyncState,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -24,6 +24,33 @@ pub struct SyncCycleResult {
     pub pulled_count: usize,
     pub cursor: i64,
     pub needs_bootstrap: bool,
+    #[serde(default)]
+    pub bootstrap_snapshot_id: Option<String>,
+    #[serde(default)]
+    pub bootstrap_snapshot_seq: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncBootstrapResult {
+    pub status: String,
+    pub message: String,
+    pub snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncReadyReconcileResult {
+    pub status: String,
+    pub message: String,
+    pub bootstrap_status: String,
+    pub bootstrap_message: Option<String>,
+    pub bootstrap_snapshot_id: Option<String>,
+    pub cycle_status: Option<String>,
+    pub cycle_needs_bootstrap: bool,
+    pub retry_attempted: bool,
+    pub retry_cycle_status: Option<String>,
+    pub background_status: String,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +68,8 @@ pub struct ReplayEvent {
 pub struct TransportError {
     pub message: String,
     pub retry_class: ApiRetryClass,
+    pub error_code: Option<String>,
+    pub details: Option<serde_json::Value>,
 }
 
 impl std::fmt::Display for TransportError {
@@ -115,6 +144,11 @@ pub trait SyncTransport: Send + Sync {
         from_cursor: Option<i64>,
         limit: Option<i64>,
     ) -> Result<SyncPullResponse, TransportError>;
+    async fn get_reconcile_ready_state(
+        &self,
+        token: &str,
+        device_id: &str,
+    ) -> Result<ReconcileReadyStateResponse, TransportError>;
 }
 
 #[async_trait]
@@ -135,4 +169,12 @@ pub trait CredentialStore: Send + Sync {
         identity: &SyncIdentity,
         payload_key_version: i32,
     ) -> Result<String, String>;
+}
+
+#[async_trait]
+pub trait ReadyReconcileStore: Send + Sync {
+    async fn get_sync_state(&self) -> Result<SyncState, String>;
+    async fn bootstrap_snapshot_if_needed(&self) -> Result<SyncBootstrapResult, String>;
+    async fn run_sync_cycle(&self) -> Result<SyncCycleResult, String>;
+    async fn ensure_background_started(&self) -> Result<bool, String>;
 }

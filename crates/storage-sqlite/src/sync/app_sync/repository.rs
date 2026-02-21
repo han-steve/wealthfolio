@@ -536,7 +536,7 @@ fn apply_remote_event_lww_tx(
                         .execute(conn)
                         .map_err(StorageError::from)?;
                 }
-                SyncOperation::Create | SyncOperation::Update | SyncOperation::Request => {
+                SyncOperation::Create | SyncOperation::Update => {
                     let payload_obj = payload_json.as_object().ok_or_else(|| {
                         Error::Database(DatabaseError::Internal(
                             "Sync payload must be a JSON object".to_string(),
@@ -726,10 +726,17 @@ impl AppSyncRepository {
             .first::<SyncDeviceConfigDB>(&mut conn)
             .optional()
             .map_err(StorageError::from)?;
+        let stale_cursor_detected = sync_engine_state::table
+            .find(1)
+            .first::<SyncEngineStateDB>(&mut conn)
+            .optional()
+            .map_err(StorageError::from)?
+            .and_then(|row| row.last_cycle_status)
+            .is_some_and(|status| status == "stale_cursor");
 
         Ok(match config {
             None => true,
-            Some(row) => row.last_bootstrap_at.is_none(),
+            Some(row) => row.last_bootstrap_at.is_none() || stale_cursor_detected,
         })
     }
 
@@ -1395,9 +1402,9 @@ impl AppSyncRepository {
                 let attach_sql =
                     format!("ATTACH DATABASE '{}' AS {}", escaped_path, snapshot_alias);
 
-                diesel::sql_query("PRAGMA foreign_keys = OFF")
-                    .execute(conn)
-                    .map_err(StorageError::from)?;
+                // Note: PRAGMA foreign_keys cannot be changed inside a transaction
+                // (SQLite silently ignores it). Instead, APP_SYNC_TABLES is ordered
+                // to respect FK dependencies (parent tables before children).
                 diesel::sql_query(attach_sql)
                     .execute(conn)
                     .map_err(StorageError::from)?;
@@ -1531,7 +1538,6 @@ impl AppSyncRepository {
 
                 let detach_sql = format!("DETACH DATABASE {}", snapshot_alias);
                 let _ = diesel::sql_query(detach_sql).execute(conn);
-                let _ = diesel::sql_query("PRAGMA foreign_keys = ON").execute(conn);
                 restore_result
             })
             .await
@@ -1825,6 +1831,28 @@ mod tests {
             .await;
         assert!(result.is_err(), "restore should fail for invalid snapshot");
         assert_eq!(repo.get_cursor().expect("cursor"), 15);
+    }
+
+    #[tokio::test]
+    async fn needs_bootstrap_when_last_cycle_is_stale_cursor() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool, writer);
+
+        repo.mark_bootstrap_complete("device-1".to_string(), Some(1))
+            .await
+            .expect("mark bootstrap complete");
+        assert!(
+            !repo.needs_bootstrap("device-1").expect("needs bootstrap"),
+            "bootstrap should not be required immediately after completion"
+        );
+
+        repo.mark_cycle_outcome("stale_cursor".to_string(), 42, None)
+            .await
+            .expect("mark stale cursor cycle");
+        assert!(
+            repo.needs_bootstrap("device-1").expect("needs bootstrap"),
+            "bootstrap should be required after stale cursor cycle"
+        );
     }
 
     #[tokio::test]

@@ -16,8 +16,8 @@ use wealthfolio_device_sync::SyncState;
 
 use super::{
     create_client, encrypt_sync_payload, get_access_token, get_sync_identity_from_store,
-    is_sqlite_image, persist_device_config_from_identity, request_snapshot_generation,
-    sha256_checksum, SyncBootstrapResult, SyncIdentity, SyncSnapshotUploadResult,
+    is_sqlite_image, persist_device_config_from_identity, sha256_checksum, SyncBootstrapResult,
+    SyncIdentity, SyncSnapshotUploadResult,
 };
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -193,17 +193,10 @@ pub async fn sync_bootstrap_snapshot_if_needed(
 
     let snapshot_id = latest.snapshot_id.trim().to_string();
     if snapshot_id.is_empty() {
-        debug!(
-            "[DeviceSync] Latest snapshot metadata had empty snapshot_id; requested snapshot generation and no local upload performed in this path"
+        return Err(
+            "Latest snapshot metadata had empty snapshot_id. No valid snapshot available."
+                .to_string(),
         );
-        return request_snapshot_generation(
-            &client,
-            &token,
-            &device_id,
-            &identity,
-            "Latest snapshot metadata was invalid. Requested a fresh snapshot.",
-        )
-        .await;
     }
     let snapshot_oplog_seq = latest.oplog_seq;
     let latest_checksum = if latest.checksum.trim().is_empty() {
@@ -217,10 +210,21 @@ pub async fn sync_bootstrap_snapshot_if_needed(
         latest.covers_tables
     };
 
-    let (headers, blob) = client
+    let (headers, blob) = match client
         .download_snapshot(&token, &device_id, &snapshot_id)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(value) => value,
+        Err(err) => {
+            if err.status_code() == Some(404) {
+                return Err(format!(
+                    "Snapshot {} is no longer available. No valid snapshot to download.",
+                    snapshot_id
+                ));
+            }
+            return Err(err.to_string());
+        }
+    };
     debug!(
         "[DeviceSync] Snapshot download response headers: schema_version={} tables={} checksum={} blob_size={}",
         headers.schema_version,
@@ -372,6 +376,7 @@ pub async fn generate_snapshot_now_internal(
         key_version,
     )?;
 
+    let base_seq = context.app_sync_repository().get_cursor().ok();
     let upload_headers = wealthfolio_device_sync::SnapshotUploadHeaders {
         event_id: Some(Uuid::now_v7().to_string()),
         schema_version: 1,
@@ -380,6 +385,7 @@ pub async fn generate_snapshot_now_internal(
         checksum,
         metadata_payload,
         payload_key_version: key_version,
+        base_seq,
     };
     let checksum_prefix = upload_headers
         .checksum

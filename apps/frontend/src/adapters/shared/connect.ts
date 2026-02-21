@@ -23,6 +23,7 @@ import type {
   BackendSyncStateResult,
   BackendEnableSyncResult,
   BackendSyncEngineStatusResult,
+  BackendSyncReconcileReadyResult,
   BackendSyncBootstrapResult,
   BackendSyncCycleResult,
   BackendSyncBackgroundEngineResult,
@@ -102,6 +103,11 @@ export const reinitializeDeviceSync = async (): Promise<BackendEnableSyncResult>
 export const getSyncEngineStatus = async (): Promise<BackendSyncEngineStatusResult> => {
   return invoke<BackendSyncEngineStatusResult>("device_sync_engine_status");
 };
+
+export const deviceSyncReconcileReadyState =
+  async (): Promise<BackendSyncReconcileReadyResult> => {
+    return invoke<BackendSyncReconcileReadyResult>("device_sync_reconcile_ready_state");
+  };
 
 export const syncBootstrapSnapshotIfNeeded = async (): Promise<BackendSyncBootstrapResult> => {
   return invoke<BackendSyncBootstrapResult>("device_sync_bootstrap_snapshot_if_needed");

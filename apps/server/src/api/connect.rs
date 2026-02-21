@@ -94,8 +94,7 @@ async fn create_connect_client(state: &AppState) -> ApiResult<ConnectApiClient> 
     ensure_cloud_sync_enabled()?;
     let token = mint_access_token(state).await?;
     let base_url = cloud_api_base_url()?;
-    ConnectApiClient::new(&base_url, &token)
-        .map_err(|e| ApiError::Internal(e.to_string()))
+    ConnectApiClient::new(&base_url, &token).map_err(|e| ApiError::Internal(e.to_string()))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -162,6 +161,8 @@ struct DeviceSyncCycleResponse {
     pulled_count: usize,
     cursor: i64,
     needs_bootstrap: bool,
+    bootstrap_snapshot_id: Option<String>,
+    bootstrap_snapshot_seq: Option<i64>,
 }
 
 #[derive(Debug, Serialize)]
@@ -169,6 +170,38 @@ struct DeviceSyncCycleResponse {
 struct DeviceSyncBackgroundResponse {
     status: String,
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DeviceSyncReconcileReadyResponse {
+    status: String,
+    message: String,
+    bootstrap_status: String,
+    bootstrap_message: Option<String>,
+    bootstrap_snapshot_id: Option<String>,
+    cycle_status: Option<String>,
+    cycle_needs_bootstrap: bool,
+    retry_attempted: bool,
+    retry_cycle_status: Option<String>,
+    background_status: String,
+}
+
+fn to_device_sync_reconcile_ready_response(
+    result: device_sync_engine::SyncReconcileReadyStateResult,
+) -> DeviceSyncReconcileReadyResponse {
+    DeviceSyncReconcileReadyResponse {
+        status: result.status,
+        message: result.message,
+        bootstrap_status: result.bootstrap_status,
+        bootstrap_message: result.bootstrap_message,
+        bootstrap_snapshot_id: result.bootstrap_snapshot_id,
+        cycle_status: result.cycle_status,
+        cycle_needs_bootstrap: result.cycle_needs_bootstrap,
+        retry_attempted: result.retry_attempted,
+        retry_cycle_status: result.retry_cycle_status,
+        background_status: result.background_status,
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1031,6 +1064,8 @@ async fn trigger_device_sync_cycle(
         pulled_count: result.pulled_count,
         cursor: result.cursor,
         needs_bootstrap: result.needs_bootstrap,
+        bootstrap_snapshot_id: result.bootstrap_snapshot_id,
+        bootstrap_snapshot_seq: result.bootstrap_snapshot_seq,
     }))
 }
 
@@ -1054,6 +1089,16 @@ async fn start_device_sync_background_engine(
             "Background engine not started because sync identity is not configured".to_string()
         },
     }))
+}
+
+async fn reconcile_device_sync_ready_state(
+    State(state): State<Arc<AppState>>,
+) -> ApiResult<Json<DeviceSyncReconcileReadyResponse>> {
+    ensure_device_sync_enabled()?;
+    let result = device_sync_engine::reconcile_ready_state(state)
+        .await
+        .map_err(ApiError::Internal)?;
+    Ok(Json(to_device_sync_reconcile_ready_response(result)))
 }
 
 async fn stop_device_sync_background_engine(
@@ -1136,6 +1181,10 @@ pub fn router() -> Router<Arc<AppState>> {
             get(get_device_sync_engine_status),
         )
         .route(
+            "/connect/device/reconcile-ready-state",
+            post(reconcile_device_sync_ready_state),
+        )
+        .route(
             "/connect/device/bootstrap-snapshot",
             post(bootstrap_device_snapshot),
         )
@@ -1168,5 +1217,33 @@ mod tests {
     #[test]
     fn connect_router_includes_device_engine_routes() {
         let _router = router();
+    }
+
+    #[test]
+    fn reconcile_response_mapping_preserves_fields() {
+        let source = device_sync_engine::SyncReconcileReadyStateResult {
+            status: "ok".to_string(),
+            message: "done".to_string(),
+            bootstrap_status: "applied".to_string(),
+            bootstrap_message: Some("bootstrap ok".to_string()),
+            bootstrap_snapshot_id: Some("snap-1".to_string()),
+            cycle_status: Some("ok".to_string()),
+            cycle_needs_bootstrap: false,
+            retry_attempted: true,
+            retry_cycle_status: Some("ok".to_string()),
+            background_status: "started".to_string(),
+        };
+
+        let mapped = to_device_sync_reconcile_ready_response(source.clone());
+        assert_eq!(mapped.status, source.status);
+        assert_eq!(mapped.message, source.message);
+        assert_eq!(mapped.bootstrap_status, source.bootstrap_status);
+        assert_eq!(mapped.bootstrap_message, source.bootstrap_message);
+        assert_eq!(mapped.bootstrap_snapshot_id, source.bootstrap_snapshot_id);
+        assert_eq!(mapped.cycle_status, source.cycle_status);
+        assert_eq!(mapped.cycle_needs_bootstrap, source.cycle_needs_bootstrap);
+        assert_eq!(mapped.retry_attempted, source.retry_attempted);
+        assert_eq!(mapped.retry_cycle_status, source.retry_cycle_status);
+        assert_eq!(mapped.background_status, source.background_status);
     }
 }

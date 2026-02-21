@@ -9,7 +9,30 @@ use wealthfolio_device_sync::engine::{
     CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SyncIdentity, SyncTransport,
     TransportError,
 };
-use wealthfolio_device_sync::{SyncPullResponse, SyncPushRequest, SyncPushResponse, SyncState};
+use wealthfolio_device_sync::{
+    ReconcileReadyStateResponse, SyncPullResponse, SyncPushRequest, SyncPushResponse, SyncState,
+};
+
+fn transport_err_from_sync(e: wealthfolio_device_sync::DeviceSyncError) -> TransportError {
+    TransportError {
+        message: e.to_string(),
+        retry_class: e.retry_class(),
+        error_code: e.error_code().map(|s| s.to_string()),
+        details: match &e {
+            wealthfolio_device_sync::DeviceSyncError::Api { details, .. } => details.clone(),
+            _ => None,
+        },
+    }
+}
+
+fn transport_err_permanent(message: String) -> TransportError {
+    TransportError {
+        message,
+        retry_class: wealthfolio_device_sync::ApiRetryClass::Permanent,
+        error_code: None,
+        details: None,
+    }
+}
 use wealthfolio_storage_sqlite::sync::SqliteSyncEngineDbPorts;
 
 use super::{
@@ -147,16 +170,10 @@ impl SyncTransport for TauriEnginePorts {
         device_id: &str,
     ) -> Result<wealthfolio_device_sync::SyncCursorResponse, TransportError> {
         create_client()
-            .map_err(|e| TransportError {
-                message: e,
-                retry_class: wealthfolio_device_sync::ApiRetryClass::Permanent,
-            })?
+            .map_err(transport_err_permanent)?
             .get_events_cursor(token, device_id)
             .await
-            .map_err(|e| TransportError {
-                message: e.to_string(),
-                retry_class: e.retry_class(),
-            })
+            .map_err(transport_err_from_sync)
     }
 
     async fn push_events(
@@ -166,16 +183,10 @@ impl SyncTransport for TauriEnginePorts {
         request: SyncPushRequest,
     ) -> Result<SyncPushResponse, TransportError> {
         create_client()
-            .map_err(|e| TransportError {
-                message: e,
-                retry_class: wealthfolio_device_sync::ApiRetryClass::Permanent,
-            })?
+            .map_err(transport_err_permanent)?
             .push_events(token, device_id, request)
             .await
-            .map_err(|e| TransportError {
-                message: e.to_string(),
-                retry_class: e.retry_class(),
-            })
+            .map_err(transport_err_from_sync)
     }
 
     async fn pull_events(
@@ -186,10 +197,7 @@ impl SyncTransport for TauriEnginePorts {
         limit: Option<i64>,
     ) -> Result<SyncPullResponse, TransportError> {
         create_client()
-            .map_err(|e| TransportError {
-                message: e,
-                retry_class: wealthfolio_device_sync::ApiRetryClass::Permanent,
-            })?
+            .map_err(transport_err_permanent)?
             .pull_events(
                 token,
                 device_id,
@@ -197,10 +205,19 @@ impl SyncTransport for TauriEnginePorts {
                 limit.map(|value| value as i32),
             )
             .await
-            .map_err(|e| TransportError {
-                message: e.to_string(),
-                retry_class: e.retry_class(),
-            })
+            .map_err(transport_err_from_sync)
+    }
+
+    async fn get_reconcile_ready_state(
+        &self,
+        token: &str,
+        device_id: &str,
+    ) -> Result<ReconcileReadyStateResponse, TransportError> {
+        create_client()
+            .map_err(transport_err_permanent)?
+            .get_reconcile_ready_state(token, device_id)
+            .await
+            .map_err(transport_err_from_sync)
     }
 }
 
@@ -272,6 +289,8 @@ pub(super) async fn run_sync_cycle(
         pulled_count: result.pulled_count,
         cursor: result.cursor,
         needs_bootstrap: result.needs_bootstrap,
+        bootstrap_snapshot_id: result.bootstrap_snapshot_id,
+        bootstrap_snapshot_seq: result.bootstrap_snapshot_seq,
     })
 }
 

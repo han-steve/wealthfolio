@@ -458,6 +458,8 @@ pub fn run() {
             #[cfg(feature = "device-sync")]
             commands::device_sync::device_sync_engine_status,
             #[cfg(feature = "device-sync")]
+            commands::device_sync::device_sync_reconcile_ready_state,
+            #[cfg(feature = "device-sync")]
             commands::device_sync::device_sync_trigger_cycle,
             #[cfg(feature = "device-sync")]
             commands::device_sync::device_sync_start_background_engine,

@@ -278,15 +278,6 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     return engineStatus;
   }, []);
 
-  const ensureEngineRunning = useCallback(async () => {
-    if (backgroundPausedRef.current) {
-      await refreshEngineStatus();
-      return;
-    }
-    await syncService.startBackgroundEngine().catch(() => null);
-    await refreshEngineStatus();
-  }, [refreshEngineStatus]);
-
   // Check if user has a subscription (team)
   const hasSubscription = !!userInfo?.team?.plan;
 
@@ -313,9 +304,6 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
           serverKeyVersion: result.serverKeyVersion,
           trustedDevices: result.trustedDevices,
         });
-        if (result.state === SyncStates.READY) {
-          await ensureEngineRunning();
-        }
       } catch (err) {
         if (cancelled) return;
 
@@ -338,7 +326,7 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [isConnected, isEnabled, hasSubscription, ensureEngineRunning]);
+  }, [isConnected, isEnabled, hasSubscription]);
 
   useEffect(() => {
     if (state.syncState !== SyncStates.READY) {
@@ -354,33 +342,48 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
     bootstrapDeviceRef.current = deviceId;
     let cancelled = false;
 
-    async function bootstrapSnapshot() {
+    async function reconcileReadyState() {
       dispatch({ type: "BOOTSTRAP_START" });
       try {
-        const result = await syncService.bootstrapSnapshotIfNeeded();
+        const result = await syncService.reconcileReadyState();
         if (cancelled) return;
+
+        if (result.status === "error") {
+          dispatch({
+            type: "BOOTSTRAP_ERROR",
+            error: new SyncError(SyncErrorCodes.INIT_FAILED, result.message),
+          });
+          return;
+        }
+        if (result.status === "skipped_not_ready") {
+          bootstrapDeviceRef.current = null;
+          try {
+            const refreshed = await syncService.detectState();
+            if (cancelled) return;
+            dispatch({
+              type: "DETECT_SUCCESS",
+              syncState: refreshed.state,
+              identity: refreshed.identity,
+              device: refreshed.device,
+              serverKeyVersion: refreshed.serverKeyVersion,
+              trustedDevices: refreshed.trustedDevices,
+            });
+          } catch (refreshErr) {
+            if (cancelled) return;
+            dispatch({
+              type: "DETECT_ERROR",
+              error: SyncError.from(refreshErr),
+            });
+          }
+          return;
+        }
 
         dispatch({
           type: "BOOTSTRAP_SUCCESS",
-          message: result.message,
-          snapshotId: result.snapshotId,
+          message: result.bootstrapMessage ?? result.message,
+          snapshotId: result.bootstrapSnapshotId,
         });
-
-        if (result.status === "applied") {
-          // Trigger first incremental cycle immediately after snapshot restore.
-          try {
-            await syncService.triggerSyncCycle();
-          } catch (cycleError) {
-            console.warn(
-              "[DeviceSyncProvider] Initial sync cycle after bootstrap failed",
-              cycleError,
-            );
-          }
-        }
-
-        if (!cancelled) {
-          await ensureEngineRunning();
-        }
+        await refreshEngineStatus();
       } catch (err) {
         if (cancelled) return;
         dispatch({
@@ -390,12 +393,12 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
       }
     }
 
-    void bootstrapSnapshot();
+    void reconcileReadyState();
 
     return () => {
       cancelled = true;
     };
-  }, [state.syncState, state.identity?.deviceId, state.device?.id, ensureEngineRunning]);
+  }, [state.syncState, state.identity?.deviceId, state.device?.id, refreshEngineStatus]);
 
   // Actions
   const refreshState = useCallback(async () => {
@@ -410,16 +413,13 @@ export function DeviceSyncProvider({ children }: { children: ReactNode }) {
         serverKeyVersion: result.serverKeyVersion,
         trustedDevices: result.trustedDevices,
       });
-      if (result.state === SyncStates.READY) {
-        await ensureEngineRunning();
-      }
     } catch (err) {
       dispatch({
         type: "DETECT_ERROR",
         error: SyncError.from(err),
       });
     }
-  }, [ensureEngineRunning]);
+  }, []);
 
   const enableSync = useCallback(async (): Promise<EnableSyncResult> => {
     dispatch({ type: "OPERATION_START" });

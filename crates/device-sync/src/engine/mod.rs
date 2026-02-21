@@ -10,8 +10,9 @@ pub mod ports;
 mod runtime;
 
 pub use ports::{
-    CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SyncCycleResult, SyncIdentity,
-    SyncTransport, TransportError,
+    CredentialStore, OutboxStore, ReadyReconcileStore, ReplayEvent, ReplayStore,
+    SyncBootstrapResult, SyncCycleResult, SyncIdentity, SyncReadyReconcileResult, SyncTransport,
+    TransportError,
 };
 pub use runtime::DeviceSyncRuntimeState;
 
@@ -56,7 +57,6 @@ fn sync_operation_name(op: &SyncOperation) -> &'static str {
         SyncOperation::Create => "create",
         SyncOperation::Update => "update",
         SyncOperation::Delete => "delete",
-        SyncOperation::Request => "request",
     }
 }
 
@@ -75,7 +75,6 @@ fn parse_event_operation(event_type: &str) -> Option<SyncOperation> {
         "create" => Some(SyncOperation::Create),
         "update" => Some(SyncOperation::Update),
         "delete" => Some(SyncOperation::Delete),
-        "request" => Some(SyncOperation::Request),
         _ => None,
     }
 }
@@ -88,6 +87,18 @@ fn millis_until_rfc3339(target: &str) -> Option<u64> {
         return Some(0);
     }
     Some(diff.num_milliseconds() as u64)
+}
+
+fn extract_bootstrap_hints(details: &Option<serde_json::Value>) -> (Option<String>, Option<i64>) {
+    let Some(details) = details.as_ref() else {
+        return (None, None);
+    };
+    let snap_id = details
+        .get("latestSnapshotId")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let snap_seq = details.get("latestSnapshotSeq").and_then(|v| v.as_i64());
+    (snap_id, snap_seq)
 }
 
 struct CycleContext<'a, R: ReplayStore + ?Sized> {
@@ -126,6 +137,8 @@ impl<'a, R: ReplayStore + ?Sized> CycleContext<'a, R> {
             pulled_count: self.pulled_count,
             cursor: self.local_cursor,
             needs_bootstrap: status == "stale_cursor",
+            bootstrap_snapshot_id: None,
+            bootstrap_snapshot_seq: None,
         })
     }
 }
@@ -195,6 +208,8 @@ where
             pulled_count: 0,
             cursor: ctx.local_cursor,
             needs_bootstrap: false,
+            bootstrap_snapshot_id: None,
+            bootstrap_snapshot_seq: None,
         });
     }
 
@@ -208,6 +223,95 @@ where
         }
     };
 
+    // Reconcile-first: ask server what action this device should take.
+    let reconcile = match ports.get_reconcile_ready_state(&token, &device_id).await {
+        Ok(response) => response,
+        Err(err) => {
+            return ctx
+                .fail(
+                    "reconcile_error",
+                    format!("Reconcile ready state failed: {}", err),
+                    Some(10),
+                )
+                .await;
+        }
+    };
+
+    match reconcile.action.as_str() {
+        "NOOP" => {
+            ports
+                .mark_cycle_outcome(
+                    "ok".to_string(),
+                    ctx.started_at.elapsed().as_millis() as i64,
+                    None,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(SyncCycleResult {
+                status: "ok".to_string(),
+                lock_version: 0,
+                pushed_count: 0,
+                pulled_count: 0,
+                cursor: ctx.local_cursor,
+                needs_bootstrap: false,
+                bootstrap_snapshot_id: None,
+                bootstrap_snapshot_seq: None,
+            });
+        }
+        "BOOTSTRAP_SNAPSHOT" => {
+            ports
+                .mark_cycle_outcome(
+                    "stale_cursor".to_string(),
+                    ctx.started_at.elapsed().as_millis() as i64,
+                    None,
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(SyncCycleResult {
+                status: "stale_cursor".to_string(),
+                lock_version: 0,
+                pushed_count: 0,
+                pulled_count: 0,
+                cursor: ctx.local_cursor,
+                needs_bootstrap: true,
+                bootstrap_snapshot_id: reconcile
+                    .latest_snapshot
+                    .as_ref()
+                    .map(|s| s.snapshot_id.clone()),
+                bootstrap_snapshot_seq: reconcile.latest_snapshot.as_ref().map(|s| s.oplog_seq),
+            });
+        }
+        "WAIT_SNAPSHOT" => {
+            ports
+                .mark_cycle_outcome(
+                    "wait_snapshot".to_string(),
+                    ctx.started_at.elapsed().as_millis() as i64,
+                    Some((Utc::now() + chrono::Duration::seconds(30)).to_rfc3339()),
+                )
+                .await
+                .map_err(|e| e.to_string())?;
+            return Ok(SyncCycleResult {
+                status: "wait_snapshot".to_string(),
+                lock_version: 0,
+                pushed_count: 0,
+                pulled_count: 0,
+                cursor: ctx.local_cursor,
+                needs_bootstrap: false,
+                bootstrap_snapshot_id: None,
+                bootstrap_snapshot_seq: None,
+            });
+        }
+        "PULL_TAIL" => {
+            // Proceed with normal push+pull flow
+        }
+        other => {
+            log::warn!(
+                "[DeviceSync] Unknown reconcile action '{}', proceeding with push+pull flow",
+                other
+            );
+        }
+    }
+
     ctx.lock_version = ports
         .acquire_cycle_lock()
         .await
@@ -215,33 +319,16 @@ where
     ctx.local_cursor = ports.get_cursor().await.map_err(|e| e.to_string())?;
     let lock_version = ctx.lock_version;
     let mut local_cursor = ctx.local_cursor;
-
-    let cursor_response = match ports.get_events_cursor(&token, &device_id).await {
-        Ok(response) => response,
-        Err(err) => {
-            return ctx
-                .fail(
-                    "cursor_error",
-                    format!("Cursor check failed: {}", err),
-                    Some(10),
-                )
-                .await;
+    let server_cursor = match reconcile.cursor {
+        Some(c) => c,
+        None => {
+            log::warn!(
+                "[DeviceSync] Reconcile action '{}' returned no cursor, defaulting to 0",
+                reconcile.action
+            );
+            0
         }
     };
-    if let Some(gc_watermark) = cursor_response.gc_watermark {
-        if local_cursor < gc_watermark {
-            return ctx
-                .fail(
-                    "stale_cursor",
-                    format!(
-                        "Local cursor {} is older than GC watermark {}. Snapshot bootstrap required.",
-                        local_cursor, gc_watermark
-                    ),
-                    None,
-                )
-                .await;
-        }
-    }
 
     let pending = ports
         .list_pending_outbox(500)
@@ -435,11 +522,13 @@ where
             pulled_count: 0,
             cursor: local_cursor,
             needs_bootstrap: false,
+            bootstrap_snapshot_id: None,
+            bootstrap_snapshot_seq: None,
         });
     }
 
     let mut pulled_count = 0usize;
-    if cursor_response.cursor > local_cursor {
+    if server_cursor > local_cursor {
         loop {
             ctx.local_cursor = local_cursor;
             ctx.pulled_count = pulled_count;
@@ -458,6 +547,38 @@ where
                                 Some(30),
                             )
                             .await;
+                    }
+                    // Check for SYNC_CURSOR_TOO_OLD or integrity errors — trigger bootstrap
+                    if let Some(code) = err.error_code.as_deref() {
+                        if code == crate::error::SYNC_CURSOR_TOO_OLD
+                            || crate::error::is_integrity_code(code)
+                        {
+                            warn!("[DeviceSync] Pull error code {} — bootstrap required", code);
+                            let _ = ctx
+                                .replay_store
+                                .mark_engine_error(format!("Pull failed: {}", err))
+                                .await;
+                            let _ = ctx
+                                .replay_store
+                                .mark_cycle_outcome(
+                                    "stale_cursor".to_string(),
+                                    ctx.started_at.elapsed().as_millis() as i64,
+                                    None,
+                                )
+                                .await;
+                            // Extract bootstrap hints from details if available
+                            let (snap_id, snap_seq) = extract_bootstrap_hints(&err.details);
+                            return Ok(SyncCycleResult {
+                                status: "stale_cursor".to_string(),
+                                lock_version: ctx.lock_version,
+                                pushed_count: ctx.pushed_count,
+                                pulled_count: ctx.pulled_count,
+                                cursor: ctx.local_cursor,
+                                needs_bootstrap: true,
+                                bootstrap_snapshot_id: snap_id,
+                                bootstrap_snapshot_seq: snap_seq,
+                            });
+                        }
                     }
                     return ctx
                         .fail("pull_error", format!("Pull failed: {}", err), Some(10))
@@ -645,7 +766,142 @@ where
         pulled_count,
         cursor: local_cursor,
         needs_bootstrap: false,
+        bootstrap_snapshot_id: None,
+        bootstrap_snapshot_seq: None,
     })
+}
+
+fn reconcile_error(
+    mut result: SyncReadyReconcileResult,
+    message: String,
+) -> SyncReadyReconcileResult {
+    result.status = "error".to_string();
+    result.message = message;
+    result
+}
+
+pub async fn run_ready_reconcile_state<P>(ports: &P) -> SyncReadyReconcileResult
+where
+    P: ReadyReconcileStore + Send + Sync,
+{
+    let mut result = SyncReadyReconcileResult {
+        status: "ok".to_string(),
+        message: "Device sync reconcile completed".to_string(),
+        bootstrap_status: "not_attempted".to_string(),
+        bootstrap_message: None,
+        bootstrap_snapshot_id: None,
+        cycle_status: None,
+        cycle_needs_bootstrap: false,
+        retry_attempted: false,
+        retry_cycle_status: None,
+        background_status: "skipped".to_string(),
+    };
+
+    let sync_state = match ports.get_sync_state().await {
+        Ok(value) => value,
+        Err(err) => {
+            return reconcile_error(result, format!("Failed to read sync state: {}", err));
+        }
+    };
+    if sync_state != SyncState::Ready {
+        result.status = "skipped_not_ready".to_string();
+        result.message = "Device is not in READY state".to_string();
+        return result;
+    }
+
+    let bootstrap_result = match ports.bootstrap_snapshot_if_needed().await {
+        Ok(value) => value,
+        Err(err) => {
+            return reconcile_error(result, format!("Snapshot bootstrap failed: {}", err));
+        }
+    };
+    result.bootstrap_status = bootstrap_result.status.clone();
+    result.bootstrap_message = Some(bootstrap_result.message);
+    result.bootstrap_snapshot_id = bootstrap_result.snapshot_id;
+
+    if result.bootstrap_status == "applied" {
+        let cycle_result = match ports.run_sync_cycle().await {
+            Ok(value) => value,
+            Err(err) => {
+                return reconcile_error(result, format!("Initial sync cycle failed: {}", err));
+            }
+        };
+        result.cycle_status = Some(cycle_result.status.clone());
+        result.cycle_needs_bootstrap = cycle_result.needs_bootstrap;
+
+        if cycle_result.needs_bootstrap {
+            result.retry_attempted = true;
+            let retry_bootstrap_result = match ports.bootstrap_snapshot_if_needed().await {
+                Ok(value) => value,
+                Err(err) => {
+                    return reconcile_error(
+                        result,
+                        format!("Retry snapshot bootstrap failed: {}", err),
+                    );
+                }
+            };
+            result.bootstrap_status = retry_bootstrap_result.status.clone();
+            result.bootstrap_message = Some(retry_bootstrap_result.message);
+            result.bootstrap_snapshot_id = retry_bootstrap_result.snapshot_id;
+
+            if result.bootstrap_status != "applied" {
+                let retry_status = result.bootstrap_status.clone();
+                return reconcile_error(
+                    result,
+                    format!(
+                        "Retry bootstrap did not apply a snapshot (status={})",
+                        retry_status
+                    ),
+                );
+            }
+
+            let retry_cycle_result = match ports.run_sync_cycle().await {
+                Ok(value) => value,
+                Err(err) => {
+                    return reconcile_error(result, format!("Retry sync cycle failed: {}", err));
+                }
+            };
+            result.retry_cycle_status = Some(retry_cycle_result.status);
+            result.cycle_needs_bootstrap = retry_cycle_result.needs_bootstrap;
+            if result.cycle_needs_bootstrap {
+                return reconcile_error(
+                    result,
+                    "Retry sync cycle still requires bootstrap".to_string(),
+                );
+            }
+        }
+    }
+
+    match ports.ensure_background_started().await {
+        Ok(true) => {
+            result.background_status = "started".to_string();
+        }
+        Ok(false) => {
+            result.background_status = "skipped".to_string();
+        }
+        Err(err) => {
+            result.background_status = "failed".to_string();
+            let bootstrap_status = result.bootstrap_status.clone();
+            let cycle_status = result.cycle_status.as_deref().unwrap_or("none").to_string();
+            let retry_cycle_status = result
+                .retry_cycle_status
+                .as_deref()
+                .unwrap_or("none")
+                .to_string();
+            return reconcile_error(
+                result,
+                format!(
+                    "Background engine start failed: {} (bootstrap_status={}, cycle_status={}, retry_cycle_status={})",
+                    err,
+                    bootstrap_status,
+                    cycle_status,
+                    retry_cycle_status
+                ),
+            );
+        }
+    }
+
+    result
 }
 
 fn compute_jitter_ms() -> u64 {
@@ -895,6 +1151,14 @@ mod tests {
         ) -> Result<crate::SyncPullResponse, TransportError> {
             unreachable!("not used by these tests")
         }
+
+        async fn get_reconcile_ready_state(
+            &self,
+            _token: &str,
+            _device_id: &str,
+        ) -> Result<crate::ReconcileReadyStateResponse, TransportError> {
+            unreachable!("not used by these tests")
+        }
     }
 
     #[async_trait]
@@ -989,5 +1253,247 @@ mod tests {
             .expect_err("cycle should fail when status persistence fails");
 
         assert!(error.contains("forced cycle_outcome failure"));
+    }
+
+    #[derive(Clone)]
+    struct ReconcileTestPorts {
+        sync_state: Result<SyncState, String>,
+        bootstrap_results: Arc<Mutex<Vec<SyncBootstrapResult>>>,
+        cycle_results: Arc<Mutex<Vec<SyncCycleResult>>>,
+        ensure_background_result: Result<bool, String>,
+    }
+
+    impl ReconcileTestPorts {
+        fn new(sync_state: Result<SyncState, String>) -> Self {
+            Self {
+                sync_state,
+                bootstrap_results: Arc::new(Mutex::new(Vec::new())),
+                cycle_results: Arc::new(Mutex::new(Vec::new())),
+                ensure_background_result: Ok(true),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ReadyReconcileStore for ReconcileTestPorts {
+        async fn get_sync_state(&self) -> Result<SyncState, String> {
+            self.sync_state.clone()
+        }
+
+        async fn bootstrap_snapshot_if_needed(&self) -> Result<SyncBootstrapResult, String> {
+            self.bootstrap_results
+                .lock()
+                .await
+                .pop()
+                .ok_or_else(|| "missing bootstrap result".to_string())
+        }
+
+        async fn run_sync_cycle(&self) -> Result<SyncCycleResult, String> {
+            self.cycle_results
+                .lock()
+                .await
+                .pop()
+                .ok_or_else(|| "missing cycle result".to_string())
+        }
+
+        async fn ensure_background_started(&self) -> Result<bool, String> {
+            self.ensure_background_result.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn run_ready_reconcile_state_skips_when_not_ready() {
+        let ports = ReconcileTestPorts::new(Ok(SyncState::Registered));
+        let result = run_ready_reconcile_state(&ports).await;
+
+        assert_eq!(result.status, "skipped_not_ready");
+        assert_eq!(result.bootstrap_status, "not_attempted");
+        assert_eq!(result.background_status, "skipped");
+    }
+
+    #[tokio::test]
+    async fn run_ready_reconcile_state_applies_bootstrap_and_cycle() {
+        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
+        ports
+            .bootstrap_results
+            .lock()
+            .await
+            .push(SyncBootstrapResult {
+                status: "applied".to_string(),
+                message: "Snapshot bootstrap completed".to_string(),
+                snapshot_id: Some("snap-1".to_string()),
+            });
+        ports.cycle_results.lock().await.push(SyncCycleResult {
+            status: "ok".to_string(),
+            lock_version: 1,
+            pushed_count: 0,
+            pulled_count: 8,
+            cursor: 25,
+            needs_bootstrap: false,
+            bootstrap_snapshot_id: None,
+            bootstrap_snapshot_seq: None,
+        });
+
+        let result = run_ready_reconcile_state(&ports).await;
+        assert_eq!(result.status, "ok");
+        assert_eq!(result.bootstrap_status, "applied");
+        assert_eq!(result.cycle_status.as_deref(), Some("ok"));
+        assert!(!result.retry_attempted);
+        assert_eq!(result.background_status, "started");
+    }
+
+    #[tokio::test]
+    async fn run_ready_reconcile_state_retries_once_when_cycle_needs_bootstrap() {
+        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
+        {
+            let mut bootstrap_results = ports.bootstrap_results.lock().await;
+            bootstrap_results.push(SyncBootstrapResult {
+                status: "applied".to_string(),
+                message: "Retry bootstrap".to_string(),
+                snapshot_id: Some("snap-2".to_string()),
+            });
+            bootstrap_results.push(SyncBootstrapResult {
+                status: "applied".to_string(),
+                message: "Initial bootstrap".to_string(),
+                snapshot_id: Some("snap-1".to_string()),
+            });
+        }
+        {
+            let mut cycle_results = ports.cycle_results.lock().await;
+            cycle_results.push(SyncCycleResult {
+                status: "ok".to_string(),
+                lock_version: 2,
+                pushed_count: 0,
+                pulled_count: 2,
+                cursor: 40,
+                needs_bootstrap: false,
+                bootstrap_snapshot_id: None,
+                bootstrap_snapshot_seq: None,
+            });
+            cycle_results.push(SyncCycleResult {
+                status: "stale_cursor".to_string(),
+                lock_version: 1,
+                pushed_count: 0,
+                pulled_count: 0,
+                cursor: 20,
+                needs_bootstrap: true,
+                bootstrap_snapshot_id: None,
+                bootstrap_snapshot_seq: None,
+            });
+        }
+
+        let result = run_ready_reconcile_state(&ports).await;
+        assert_eq!(result.status, "ok");
+        assert!(result.retry_attempted);
+        assert_eq!(result.retry_cycle_status.as_deref(), Some("ok"));
+        assert!(!result.cycle_needs_bootstrap);
+    }
+
+    #[tokio::test]
+    async fn run_ready_reconcile_state_errors_when_retry_bootstrap_not_applied() {
+        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
+        {
+            let mut bootstrap_results = ports.bootstrap_results.lock().await;
+            bootstrap_results.push(SyncBootstrapResult {
+                status: "requested".to_string(),
+                message: "requested a new snapshot".to_string(),
+                snapshot_id: None,
+            });
+            bootstrap_results.push(SyncBootstrapResult {
+                status: "applied".to_string(),
+                message: "Initial bootstrap".to_string(),
+                snapshot_id: Some("snap-1".to_string()),
+            });
+        }
+        ports.cycle_results.lock().await.push(SyncCycleResult {
+            status: "stale_cursor".to_string(),
+            lock_version: 1,
+            pushed_count: 0,
+            pulled_count: 0,
+            cursor: 20,
+            needs_bootstrap: true,
+            bootstrap_snapshot_id: None,
+            bootstrap_snapshot_seq: None,
+        });
+
+        let result = run_ready_reconcile_state(&ports).await;
+        assert_eq!(result.status, "error");
+        assert!(result.retry_attempted);
+        assert_eq!(result.bootstrap_status, "requested");
+        assert!(result
+            .message
+            .contains("Retry bootstrap did not apply a snapshot"));
+    }
+
+    #[tokio::test]
+    async fn run_ready_reconcile_state_errors_when_retry_cycle_still_needs_bootstrap() {
+        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
+        {
+            let mut bootstrap_results = ports.bootstrap_results.lock().await;
+            bootstrap_results.push(SyncBootstrapResult {
+                status: "applied".to_string(),
+                message: "Retry bootstrap".to_string(),
+                snapshot_id: Some("snap-2".to_string()),
+            });
+            bootstrap_results.push(SyncBootstrapResult {
+                status: "applied".to_string(),
+                message: "Initial bootstrap".to_string(),
+                snapshot_id: Some("snap-1".to_string()),
+            });
+        }
+        {
+            let mut cycle_results = ports.cycle_results.lock().await;
+            cycle_results.push(SyncCycleResult {
+                status: "stale_cursor".to_string(),
+                lock_version: 2,
+                pushed_count: 0,
+                pulled_count: 0,
+                cursor: 40,
+                needs_bootstrap: true,
+                bootstrap_snapshot_id: None,
+                bootstrap_snapshot_seq: None,
+            });
+            cycle_results.push(SyncCycleResult {
+                status: "stale_cursor".to_string(),
+                lock_version: 1,
+                pushed_count: 0,
+                pulled_count: 0,
+                cursor: 20,
+                needs_bootstrap: true,
+                bootstrap_snapshot_id: None,
+                bootstrap_snapshot_seq: None,
+            });
+        }
+
+        let result = run_ready_reconcile_state(&ports).await;
+        assert_eq!(result.status, "error");
+        assert!(result.retry_attempted);
+        assert!(result.cycle_needs_bootstrap);
+        assert_eq!(result.retry_cycle_status.as_deref(), Some("stale_cursor"));
+        assert!(result
+            .message
+            .contains("Retry sync cycle still requires bootstrap"));
+    }
+
+    #[tokio::test]
+    async fn run_ready_reconcile_state_surfaces_background_start_failure() {
+        let mut ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
+        ports.ensure_background_result = Err("start failed".to_string());
+        ports
+            .bootstrap_results
+            .lock()
+            .await
+            .push(SyncBootstrapResult {
+                status: "skipped".to_string(),
+                message: "Snapshot bootstrap already completed".to_string(),
+                snapshot_id: None,
+            });
+
+        let result = run_ready_reconcile_state(&ports).await;
+        assert_eq!(result.status, "error");
+        assert_eq!(result.background_status, "failed");
+        assert!(result.message.contains("Background engine start failed"));
+        assert!(result.message.contains("bootstrap_status=skipped"));
+        assert_eq!(result.bootstrap_status, "skipped");
     }
 }

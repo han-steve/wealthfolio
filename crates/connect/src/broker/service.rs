@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use super::mapping;
 use super::models::{
-    AccountUniversalActivity, BrokerAccount, BrokerConnection, HoldingsBalance, HoldingsPosition,
-    NewAccountInfo, SyncAccountsResponse, SyncConnectionsResponse,
+    AccountUniversalActivity, BrokerAccount, BrokerConnection, HoldingsBalance, HoldingsDiff,
+    HoldingsPosition, NewAccountInfo, SyncAccountsResponse, SyncConnectionsResponse,
 };
 use super::traits::{BrokerSyncServiceTrait, PlatformRepositoryTrait};
 use crate::broker_ingest::{
@@ -18,7 +18,7 @@ use crate::platform::Platform;
 use chrono::{DateTime, Months, Utc};
 use rust_decimal::prelude::FromPrimitive;
 use rust_decimal::Decimal;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use wealthfolio_core::accounts::{Account, AccountServiceTrait, NewAccount, TrackingMode};
 use wealthfolio_core::activities::{
     compute_idempotency_key, ActivityRepositoryTrait, ActivityServiceTrait, ActivityUpsert,
@@ -36,6 +36,9 @@ use wealthfolio_core::portfolio::snapshot::{
 use wealthfolio_core::utils::time_utils::valuation_date_today;
 
 const DEFAULT_BROKERAGE_PROVIDER: &str = "snaptrade";
+/// Precision used for holdings normalization/diff comparisons.
+/// Higher than generic valuation precision to preserve crypto fidelity.
+const HOLDINGS_DECIMAL_PRECISION: u32 = 12;
 
 /// Service for syncing broker data to the local database
 pub struct BrokerSyncService {
@@ -525,8 +528,8 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
         account_id: String,
         balances: Vec<HoldingsBalance>,
         positions: Vec<HoldingsPosition>,
-    ) -> Result<(usize, usize, Vec<String>)> {
-        use std::collections::{HashMap, VecDeque};
+    ) -> Result<(HoldingsDiff, usize, Vec<String>)> {
+        use std::collections::VecDeque;
         use wealthfolio_core::assets::InstrumentType;
 
         // Get the account to determine its currency
@@ -634,10 +637,15 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
                 spec_key_to_idx.insert(spec_key.clone(), idx);
             }
 
-            let quantity = Decimal::from_f64(units).unwrap_or(Decimal::ZERO);
-            let price = Decimal::from_f64(pos.price.unwrap_or(0.0)).unwrap_or(Decimal::ZERO);
-            let avg_cost =
-                Decimal::from_f64(pos.average_purchase_price.unwrap_or(0.0)).unwrap_or(price);
+            let quantity = Decimal::from_f64(units)
+                .unwrap_or(Decimal::ZERO)
+                .round_dp(HOLDINGS_DECIMAL_PRECISION);
+            let price = Decimal::from_f64(pos.price.unwrap_or(0.0))
+                .unwrap_or(Decimal::ZERO)
+                .round_dp(HOLDINGS_DECIMAL_PRECISION);
+            let avg_cost = Decimal::from_f64(pos.average_purchase_price.unwrap_or(0.0))
+                .unwrap_or(price)
+                .round_dp(HOLDINGS_DECIMAL_PRECISION);
 
             position_data.push((spec_key, quantity, price, avg_cost, currency));
         }
@@ -696,7 +704,7 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
                 }
             };
 
-            let position_cost_basis = *quantity * *avg_cost;
+            let position_cost_basis = (*quantity * *avg_cost).round_dp(HOLDINGS_DECIMAL_PRECISION);
             total_cost_basis += position_cost_basis;
 
             let position = Position {
@@ -746,6 +754,7 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
         let latest = self
             .snapshot_repository
             .get_latest_snapshot_before_date(&account_id, tomorrow)?;
+        let diff = Self::compute_holdings_diff(latest.as_ref(), &positions_map);
 
         if let Some(existing) = latest {
             if existing.is_content_equal(&snapshot) {
@@ -753,7 +762,7 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
                     "Broker holdings unchanged for account {}, skipping save",
                     account_id
                 );
-                return Ok((positions_count, 0, vec![]));
+                return Ok((diff, 0, vec![]));
             }
         }
 
@@ -777,15 +786,72 @@ impl BrokerSyncServiceTrait for BrokerSyncService {
         }
 
         info!(
-            "Saved broker holdings for account {}: {} positions, {} assets created, {} new asset IDs",
-            account_id, positions_count, assets_created, new_asset_ids.len()
+            "Saved broker holdings for account {}: {} positions (+{}, {} updated, {} removed, {} unchanged), {} assets created, {} new asset IDs",
+            account_id,
+            positions_count,
+            diff.added_positions,
+            diff.updated_positions,
+            diff.removed_positions,
+            diff.unchanged_positions,
+            assets_created,
+            new_asset_ids.len()
         );
 
-        Ok((positions_count, assets_created, new_asset_ids))
+        let mut saved_diff = diff;
+        saved_diff.snapshot_saved = true;
+        Ok((saved_diff, assets_created, new_asset_ids))
     }
 }
 
 impl BrokerSyncService {
+    fn compute_holdings_diff(
+        latest_snapshot: Option<&AccountStateSnapshot>,
+        current_positions: &HashMap<String, Position>,
+    ) -> HoldingsDiff {
+        let mut diff = HoldingsDiff {
+            total_positions: current_positions.len(),
+            ..Default::default()
+        };
+
+        if let Some(latest) = latest_snapshot {
+            for (asset_id, current_position) in current_positions {
+                match latest.positions.get(asset_id) {
+                    Some(previous_position) => {
+                        if Self::positions_equal_for_diff(previous_position, current_position) {
+                            diff.unchanged_positions += 1;
+                        } else {
+                            diff.updated_positions += 1;
+                        }
+                    }
+                    None => {
+                        diff.added_positions += 1;
+                    }
+                }
+            }
+
+            diff.removed_positions = latest
+                .positions
+                .keys()
+                .filter(|asset_id| !current_positions.contains_key(*asset_id))
+                .count();
+        } else {
+            diff.added_positions = current_positions.len();
+        }
+
+        diff
+    }
+
+    fn positions_equal_for_diff(a: &Position, b: &Position) -> bool {
+        a.asset_id == b.asset_id
+            && a.quantity.round_dp(HOLDINGS_DECIMAL_PRECISION)
+                == b.quantity.round_dp(HOLDINGS_DECIMAL_PRECISION)
+            && a.average_cost.round_dp(HOLDINGS_DECIMAL_PRECISION)
+                == b.average_cost.round_dp(HOLDINGS_DECIMAL_PRECISION)
+            && a.total_cost_basis.round_dp(HOLDINGS_DECIMAL_PRECISION)
+                == b.total_cost_basis.round_dp(HOLDINGS_DECIMAL_PRECISION)
+            && a.currency == b.currency
+    }
+
     fn normalize_holdings_symbol(
         raw_symbol: Option<&str>,
         api_symbol: Option<&str>,
@@ -1039,7 +1105,59 @@ impl BrokerSyncService {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{HashMap, VecDeque};
+    use std::str::FromStr;
+
+    use chrono::Utc;
+    use rust_decimal::Decimal;
+    use wealthfolio_core::portfolio::snapshot::{AccountStateSnapshot, Position};
+
     use super::BrokerSyncService;
+
+    fn decimal(value: &str) -> Decimal {
+        Decimal::from_str(value).expect("valid decimal")
+    }
+
+    fn position(
+        account_id: &str,
+        asset_id: &str,
+        quantity: &str,
+        average_cost: &str,
+        total_cost_basis: &str,
+        currency: &str,
+    ) -> Position {
+        let now = Utc::now();
+        Position {
+            id: format!("{}_{}", account_id, asset_id),
+            account_id: account_id.to_string(),
+            asset_id: asset_id.to_string(),
+            quantity: decimal(quantity),
+            average_cost: decimal(average_cost),
+            total_cost_basis: decimal(total_cost_basis),
+            currency: currency.to_string(),
+            inception_date: now,
+            lots: VecDeque::new(),
+            created_at: now,
+            last_updated: now,
+            is_alternative: false,
+        }
+    }
+
+    fn snapshot_with_positions(positions: Vec<Position>) -> AccountStateSnapshot {
+        let mut snapshot = AccountStateSnapshot::default();
+        snapshot.positions = positions
+            .into_iter()
+            .map(|p| (p.asset_id.clone(), p))
+            .collect::<HashMap<_, _>>();
+        snapshot
+    }
+
+    fn positions_map(positions: Vec<Position>) -> HashMap<String, Position> {
+        positions
+            .into_iter()
+            .map(|p| (p.asset_id.clone(), p))
+            .collect::<HashMap<_, _>>()
+    }
 
     #[test]
     fn normalize_holdings_symbol_uses_api_suffix_when_raw_has_no_suffix() {
@@ -1068,5 +1186,82 @@ mod tests {
 
         assert_eq!(normalized.0, "BTC");
         assert_eq!(normalized.1, None);
+    }
+
+    #[test]
+    fn compute_holdings_diff_detects_added_updated_removed_and_unchanged() {
+        let latest = snapshot_with_positions(vec![
+            position("acc-1", "a", "10", "100", "1000", "USD"), // unchanged
+            position("acc-1", "b", "5", "50", "250", "USD"),    // updated
+            position("acc-1", "c", "2", "20", "40", "USD"),     // removed
+        ]);
+
+        let current = positions_map(vec![
+            position("acc-1", "a", "10", "100", "1000", "USD"),
+            position("acc-1", "b", "5", "55", "275", "USD"),
+            position("acc-1", "d", "1", "10", "10", "USD"),
+        ]);
+
+        let diff = BrokerSyncService::compute_holdings_diff(Some(&latest), &current);
+        assert_eq!(diff.total_positions, 3);
+        assert_eq!(diff.added_positions, 1);
+        assert_eq!(diff.updated_positions, 1);
+        assert_eq!(diff.removed_positions, 1);
+        assert_eq!(diff.unchanged_positions, 1);
+    }
+
+    #[test]
+    fn compute_holdings_diff_ignores_tiny_decimal_drift_for_crypto() {
+        let latest = snapshot_with_positions(vec![position(
+            "acc-1",
+            "btc",
+            "0.123456789123",
+            "42123.123456789123",
+            "5199.999999999999",
+            "USD",
+        )]);
+
+        // Drift only beyond 12 decimal places should still be unchanged.
+        let current = positions_map(vec![position(
+            "acc-1",
+            "btc",
+            "0.1234567891234",
+            "42123.1234567891234",
+            "5199.9999999999994",
+            "USD",
+        )]);
+
+        let diff = BrokerSyncService::compute_holdings_diff(Some(&latest), &current);
+        assert_eq!(diff.added_positions, 0);
+        assert_eq!(diff.updated_positions, 0);
+        assert_eq!(diff.removed_positions, 0);
+        assert_eq!(diff.unchanged_positions, 1);
+    }
+
+    #[test]
+    fn compute_holdings_diff_detects_cost_basis_change_with_same_quantity() {
+        let latest = snapshot_with_positions(vec![position(
+            "acc-1",
+            "eth",
+            "1.000000000001",
+            "2000.000000000001",
+            "2000.000000000003",
+            "USD",
+        )]);
+
+        let current = positions_map(vec![position(
+            "acc-1",
+            "eth",
+            "1.000000000001",
+            "2000.010000000001",
+            "2000.010000000003",
+            "USD",
+        )]);
+
+        let diff = BrokerSyncService::compute_holdings_diff(Some(&latest), &current);
+        assert_eq!(diff.added_positions, 0);
+        assert_eq!(diff.updated_positions, 1);
+        assert_eq!(diff.removed_positions, 0);
+        assert_eq!(diff.unchanged_positions, 0);
     }
 }

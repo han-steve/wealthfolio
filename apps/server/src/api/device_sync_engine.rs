@@ -9,13 +9,25 @@ use uuid::Uuid;
 use crate::main_lib::AppState;
 use wealthfolio_core::sync::APP_SYNC_TABLES;
 use wealthfolio_device_sync::engine::{
-    self, CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SyncIdentity, SyncTransport,
-    TransportError,
+    self, CredentialStore, OutboxStore, ReadyReconcileStore, ReplayEvent, ReplayStore,
+    SyncIdentity, SyncTransport, TransportError,
 };
 use wealthfolio_device_sync::{
-    DeviceSyncClient, SnapshotRequestPayload, SyncPullResponse, SyncPushRequest, SyncPushResponse,
-    SyncState,
+    DeviceSyncClient, ReconcileReadyStateResponse, SyncPullResponse, SyncPushRequest,
+    SyncPushResponse, SyncState,
 };
+
+fn transport_err_from_sync(e: wealthfolio_device_sync::DeviceSyncError) -> TransportError {
+    TransportError {
+        message: e.to_string(),
+        retry_class: e.retry_class(),
+        error_code: e.error_code().map(|s| s.to_string()),
+        details: match &e {
+            wealthfolio_device_sync::DeviceSyncError::Api { details, .. } => details.clone(),
+            _ => None,
+        },
+    }
+}
 use wealthfolio_storage_sqlite::sync::SqliteSyncEngineDbPorts;
 
 const SYNC_IDENTITY_KEY: &str = "sync_identity";
@@ -48,6 +60,37 @@ pub struct SyncSnapshotUploadResult {
     pub snapshot_id: Option<String>,
     pub oplog_seq: Option<i64>,
     pub message: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncReconcileReadyStateResult {
+    pub status: String,
+    pub message: String,
+    pub bootstrap_status: String,
+    pub bootstrap_message: Option<String>,
+    pub bootstrap_snapshot_id: Option<String>,
+    pub cycle_status: Option<String>,
+    pub cycle_needs_bootstrap: bool,
+    pub retry_attempted: bool,
+    pub retry_cycle_status: Option<String>,
+    pub background_status: String,
+}
+
+impl From<engine::SyncReadyReconcileResult> for SyncReconcileReadyStateResult {
+    fn from(value: engine::SyncReadyReconcileResult) -> Self {
+        Self {
+            status: value.status,
+            message: value.message,
+            bootstrap_status: value.bootstrap_status,
+            bootstrap_message: value.bootstrap_message,
+            bootstrap_snapshot_id: value.bootstrap_snapshot_id,
+            cycle_status: value.cycle_status,
+            cycle_needs_bootstrap: value.cycle_needs_bootstrap,
+            retry_attempted: value.retry_attempted,
+            retry_cycle_status: value.retry_cycle_status,
+            background_status: value.background_status,
+        }
+    }
 }
 
 fn cloud_api_base_url() -> String {
@@ -292,10 +335,7 @@ impl SyncTransport for ServerEnginePorts {
         create_client()
             .get_events_cursor(token, device_id)
             .await
-            .map_err(|e| TransportError {
-                message: e.to_string(),
-                retry_class: e.retry_class(),
-            })
+            .map_err(transport_err_from_sync)
     }
 
     async fn push_events(
@@ -307,10 +347,7 @@ impl SyncTransport for ServerEnginePorts {
         create_client()
             .push_events(token, device_id, request)
             .await
-            .map_err(|e| TransportError {
-                message: e.to_string(),
-                retry_class: e.retry_class(),
-            })
+            .map_err(transport_err_from_sync)
     }
 
     async fn pull_events(
@@ -328,10 +365,18 @@ impl SyncTransport for ServerEnginePorts {
                 limit.map(|value| value as i32),
             )
             .await
-            .map_err(|e| TransportError {
-                message: e.to_string(),
-                retry_class: e.retry_class(),
-            })
+            .map_err(transport_err_from_sync)
+    }
+
+    async fn get_reconcile_ready_state(
+        &self,
+        token: &str,
+        device_id: &str,
+    ) -> Result<ReconcileReadyStateResponse, TransportError> {
+        create_client()
+            .get_reconcile_ready_state(token, device_id)
+            .await
+            .map_err(transport_err_from_sync)
     }
 }
 
@@ -416,6 +461,49 @@ pub async fn run_sync_cycle(state: Arc<AppState>) -> Result<engine::SyncCycleRes
     state.device_sync_runtime.run_cycle(&ports).await
 }
 
+struct ServerReadyReconcileRunner {
+    state: Arc<AppState>,
+}
+
+#[async_trait]
+impl ReadyReconcileStore for ServerReadyReconcileRunner {
+    async fn get_sync_state(&self) -> Result<SyncState, String> {
+        self.state
+            .device_enroll_service
+            .get_sync_state()
+            .await
+            .map(|value| value.state)
+            .map_err(|err| err.message)
+    }
+
+    async fn bootstrap_snapshot_if_needed(&self) -> Result<engine::SyncBootstrapResult, String> {
+        let result = sync_bootstrap_snapshot_if_needed(Arc::clone(&self.state)).await?;
+        Ok(engine::SyncBootstrapResult {
+            status: result.status,
+            message: result.message,
+            snapshot_id: result.snapshot_id,
+        })
+    }
+
+    async fn run_sync_cycle(&self) -> Result<engine::SyncCycleResult, String> {
+        run_sync_cycle(Arc::clone(&self.state)).await
+    }
+
+    async fn ensure_background_started(&self) -> Result<bool, String> {
+        ensure_background_engine_started(Arc::clone(&self.state)).await?;
+        Ok(self.state.device_sync_runtime.is_background_running().await)
+    }
+}
+
+pub async fn reconcile_ready_state(
+    state: Arc<AppState>,
+) -> Result<SyncReconcileReadyStateResult, String> {
+    ensure_device_sync_enabled()?;
+    let runner = ServerReadyReconcileRunner { state };
+    let result = engine::run_ready_reconcile_state(&runner).await;
+    Ok(result.into())
+}
+
 pub async fn ensure_background_engine_started(state: Arc<AppState>) -> Result<(), String> {
     ensure_device_sync_enabled()?;
     if get_sync_identity_from_store(&state).is_none() {
@@ -442,35 +530,6 @@ fn snapshot_upload_cancelled_result(message: &str) -> SyncSnapshotUploadResult {
         oplog_seq: None,
         message: message.to_string(),
     }
-}
-
-async fn request_snapshot_generation(
-    token: &str,
-    device_id: &str,
-    identity: &SyncIdentity,
-    message: &str,
-) -> Result<SyncBootstrapResult, String> {
-    let payload_key_version = identity.key_version.unwrap_or(1).max(1);
-    create_client()
-        .request_snapshot(
-            token,
-            device_id,
-            SnapshotRequestPayload {
-                min_schema_version: Some(1),
-                covers_tables: Some(APP_SYNC_TABLES.iter().map(|v| v.to_string()).collect()),
-                payload: encrypt_sync_payload("{}", identity, payload_key_version)?,
-                payload_key_version,
-            },
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-
-    Ok(SyncBootstrapResult {
-        status: "requested".to_string(),
-        message: message.to_string(),
-        snapshot_id: None,
-        cursor: None,
-    })
 }
 
 pub async fn sync_bootstrap_snapshot_if_needed(
@@ -563,13 +622,10 @@ pub async fn sync_bootstrap_snapshot_if_needed(
 
     let snapshot_id = latest.snapshot_id.trim().to_string();
     if snapshot_id.is_empty() {
-        return request_snapshot_generation(
-            &token,
-            &device_id,
-            &identity,
-            "Latest snapshot metadata was invalid. Requested a fresh snapshot.",
-        )
-        .await;
+        return Err(
+            "Latest snapshot metadata had empty snapshot_id. No valid snapshot available."
+                .to_string(),
+        );
     }
 
     let snapshot_oplog_seq = latest.oplog_seq;
@@ -584,10 +640,21 @@ pub async fn sync_bootstrap_snapshot_if_needed(
         latest.covers_tables
     };
 
-    let (headers, blob) = create_client()
+    let (headers, blob) = match create_client()
         .download_snapshot(&token, &device_id, &snapshot_id)
         .await
-        .map_err(|e| e.to_string())?;
+    {
+        Ok(value) => value,
+        Err(err) => {
+            if err.status_code() == Some(404) {
+                return Err(format!(
+                    "Snapshot {} is no longer available. No valid snapshot to download.",
+                    snapshot_id
+                ));
+            }
+            return Err(err.to_string());
+        }
+    };
     let actual_checksum = sha256_checksum(&blob);
     if headers.checksum != actual_checksum {
         return Err(format!(
@@ -716,6 +783,7 @@ pub async fn generate_snapshot_now(
         key_version,
     )?;
 
+    let base_seq = state.app_sync_repository.get_cursor().ok();
     let upload_headers = wealthfolio_device_sync::SnapshotUploadHeaders {
         event_id: Some(Uuid::now_v7().to_string()),
         schema_version: 1,
@@ -724,6 +792,7 @@ pub async fn generate_snapshot_now(
         checksum,
         metadata_payload,
         payload_key_version: key_version,
+        base_seq,
     };
 
     let response = create_client()
@@ -753,4 +822,43 @@ pub async fn cancel_snapshot_upload(state: Arc<AppState>) {
         .device_sync_runtime
         .snapshot_upload_cancelled
         .store(true, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconcile_result_conversion_preserves_fields() {
+        let source = engine::SyncReadyReconcileResult {
+            status: "ok".to_string(),
+            message: "done".to_string(),
+            bootstrap_status: "applied".to_string(),
+            bootstrap_message: Some("bootstrap ok".to_string()),
+            bootstrap_snapshot_id: Some("snap-1".to_string()),
+            cycle_status: Some("ok".to_string()),
+            cycle_needs_bootstrap: false,
+            retry_attempted: true,
+            retry_cycle_status: Some("ok".to_string()),
+            background_status: "started".to_string(),
+        };
+
+        let converted: SyncReconcileReadyStateResult = source.clone().into();
+        assert_eq!(converted.status, source.status);
+        assert_eq!(converted.message, source.message);
+        assert_eq!(converted.bootstrap_status, source.bootstrap_status);
+        assert_eq!(converted.bootstrap_message, source.bootstrap_message);
+        assert_eq!(
+            converted.bootstrap_snapshot_id,
+            source.bootstrap_snapshot_id
+        );
+        assert_eq!(converted.cycle_status, source.cycle_status);
+        assert_eq!(
+            converted.cycle_needs_bootstrap,
+            source.cycle_needs_bootstrap
+        );
+        assert_eq!(converted.retry_attempted, source.retry_attempted);
+        assert_eq!(converted.retry_cycle_status, source.retry_cycle_status);
+        assert_eq!(converted.background_status, source.background_status);
+    }
 }
