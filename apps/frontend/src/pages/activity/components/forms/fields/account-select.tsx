@@ -11,12 +11,7 @@ import {
   SelectValue,
 } from "@wealthfolio/ui";
 import { useEffect } from "react";
-import {
-  useFormContext,
-  type FieldPath,
-  type FieldValues,
-  type PathValue,
-} from "react-hook-form";
+import { useFormContext, type FieldPath, type FieldValues, type PathValue } from "react-hook-form";
 
 export interface AccountSelectOption {
   value: string;
@@ -64,14 +59,7 @@ export function AccountSelect<TFieldValues extends FieldValues = FieldValues>({
       shouldDirty: false,
       shouldValidate: true,
     });
-  }, [
-    accounts,
-    currencyName,
-    getFieldState,
-    selectedAccountId,
-    setValue,
-    watchedCurrency,
-  ]);
+  }, [accounts, currencyName, getFieldState, selectedAccountId, setValue, watchedCurrency]);
 
   return (
     <FormField
@@ -88,7 +76,8 @@ export function AccountSelect<TFieldValues extends FieldValues = FieldValues>({
                 const selected = accounts.find((account) => account.value === value);
                 if (!selected) return;
                 const currentCurrency = (getValues(currencyName) as string | undefined)?.trim();
-                const shouldAutoSetCurrency = !getFieldState(currencyName).isDirty || !currentCurrency;
+                const shouldAutoSetCurrency =
+                  !getFieldState(currencyName).isDirty || !currentCurrency;
                 if (shouldAutoSetCurrency) {
                   setValue(
                     currencyName,

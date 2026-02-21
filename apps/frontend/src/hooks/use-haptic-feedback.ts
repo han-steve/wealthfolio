@@ -42,7 +42,7 @@ export function useHapticFeedback() {
   }, [isMobile, isTauri]);
 
   const triggerHapticPattern = useCallback(
-    (count: number = 3, intervalMs: number = 80) => {
+    (count = 3, intervalMs = 80) => {
       if (!isMobile || !isTauri) {
         return;
       }

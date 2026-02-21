@@ -27,6 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let state = build_state(&config).await?;
 
     #[cfg(feature = "device-sync")]
+    #[allow(clippy::collapsible_if)]
     if features::device_sync_enabled() {
         if state
             .device_enroll_service

@@ -23,7 +23,15 @@ impl DeviceSyncRuntimeState {
             snapshot_upload_cancelled: AtomicBool::new(false),
         }
     }
+}
 
+impl Default for DeviceSyncRuntimeState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceSyncRuntimeState {
     pub async fn run_cycle<P>(&self, ports: &P) -> Result<SyncCycleResult, String>
     where
         P: OutboxStore + ReplayStore + SyncTransport + CredentialStore + Send + Sync,

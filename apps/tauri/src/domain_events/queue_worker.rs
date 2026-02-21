@@ -14,9 +14,9 @@ use wealthfolio_core::constants::PORTFOLIO_TOTAL_ACCOUNT_ID;
 use wealthfolio_core::events::DomainEvent;
 use wealthfolio_core::health::HealthServiceTrait;
 
-use super::planner::{plan_asset_enrichment, plan_portfolio_job};
 #[cfg(feature = "connect-sync")]
 use super::planner::plan_broker_sync;
+use super::planner::{plan_asset_enrichment, plan_portfolio_job};
 #[cfg(feature = "connect-sync")]
 use crate::commands::brokers_sync::perform_broker_sync;
 use crate::context::ServiceContext;

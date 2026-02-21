@@ -6,10 +6,10 @@ use std::sync::Arc;
 
 #[cfg(feature = "connect-sync")]
 use tokio::time::{interval, Duration};
-#[cfg(feature = "connect-sync")]
-use tracing::{debug, info, warn};
 #[cfg(not(feature = "connect-sync"))]
 use tracing::info;
+#[cfg(feature = "connect-sync")]
+use tracing::{debug, info, warn};
 
 #[cfg(feature = "connect-sync")]
 use crate::api::connect::perform_broker_sync;

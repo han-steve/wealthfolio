@@ -55,6 +55,7 @@ pub struct BrokerSyncService {
 }
 
 impl BrokerSyncService {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         account_service: Arc<dyn AccountServiceTrait>,
         asset_service: Arc<dyn AssetServiceTrait>,
@@ -1144,12 +1145,13 @@ mod tests {
     }
 
     fn snapshot_with_positions(positions: Vec<Position>) -> AccountStateSnapshot {
-        let mut snapshot = AccountStateSnapshot::default();
-        snapshot.positions = positions
-            .into_iter()
-            .map(|p| (p.asset_id.clone(), p))
-            .collect::<HashMap<_, _>>();
-        snapshot
+        AccountStateSnapshot {
+            positions: positions
+                .into_iter()
+                .map(|p| (p.asset_id.clone(), p))
+                .collect::<HashMap<_, _>>(),
+            ..Default::default()
+        }
     }
 
     fn positions_map(positions: Vec<Position>) -> HashMap<String, Position> {

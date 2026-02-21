@@ -237,13 +237,18 @@ where
         }
     };
 
-    debug!("[DeviceSync] Reconcile action={}, cursor={:?}", reconcile.action, reconcile.cursor);
-    
+    debug!(
+        "[DeviceSync] Reconcile action={}, cursor={:?}",
+        reconcile.action, reconcile.cursor
+    );
+
     let has_pending = ports.has_pending_outbox().await.unwrap_or(false);
     match reconcile.action.as_str() {
         "NOOP" => {
             if !has_pending {
-                debug!("[DeviceSync] Reconcile action=NOOP and no pending outbox, skipping push+pull");
+                debug!(
+                    "[DeviceSync] Reconcile action=NOOP and no pending outbox, skipping push+pull"
+                );
                 ports
                     .mark_cycle_outcome(
                         "ok".to_string(),
@@ -342,7 +347,10 @@ where
         .list_pending_outbox(500)
         .await
         .map_err(|e| e.to_string())?;
-    debug!("[DeviceSync] Retrieved {} pending outbox events", pending.len());
+    debug!(
+        "[DeviceSync] Retrieved {} pending outbox events",
+        pending.len()
+    );
     let mut push_events = Vec::new();
     let mut push_event_ids = Vec::new();
     let mut invalid_entity_id_event_ids = Vec::new();

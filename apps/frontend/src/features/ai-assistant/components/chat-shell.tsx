@@ -94,7 +94,7 @@ function MobileSidebar() {
       </SheetTrigger>
       <SheetContent
         side="left"
-        className="flex w-[280px] flex-col gap-0 px-0 pt-[max(env(safe-area-inset-top),0.75rem)] pb-[max(env(safe-area-inset-bottom),0.75rem)]"
+        className="flex w-[280px] flex-col gap-0 px-0 pb-[max(env(safe-area-inset-bottom),0.75rem)] pt-[max(env(safe-area-inset-top),0.75rem)]"
       >
         <SheetHeader className="sr-only">
           <SheetTitle>Conversations</SheetTitle>
