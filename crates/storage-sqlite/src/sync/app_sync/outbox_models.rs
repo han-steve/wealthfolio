@@ -6,6 +6,7 @@ use crate::ai_chat::{AiMessageDB, AiThreadDB, AiThreadTagDB};
 use crate::assets::AssetDB;
 use crate::goals::{GoalDB, GoalsAllocationDB};
 use crate::limits::ContributionLimitDB;
+use crate::market_data::QuoteDB;
 use crate::portfolio::snapshot::AccountStateSnapshotDB;
 use crate::sync::platform::PlatformDB;
 use crate::sync::SyncOutboxModel;
@@ -41,6 +42,18 @@ impl SyncOutboxModel for AssetDB {
 
     fn sync_entity_id(&self) -> &str {
         &self.id
+    }
+}
+
+impl SyncOutboxModel for QuoteDB {
+    const ENTITY: SyncEntity = SyncEntity::Quote;
+
+    fn sync_entity_id(&self) -> &str {
+        &self.id
+    }
+
+    fn should_sync_outbox(&self, _op: SyncOperation) -> bool {
+        self.source.eq_ignore_ascii_case("MANUAL") && Uuid::parse_str(&self.id).is_ok()
     }
 }
 

@@ -314,6 +314,7 @@ fn entity_storage_mapping(entity: &SyncEntity) -> Option<(&'static str, &'static
     match entity {
         SyncEntity::Account => Some(("accounts", "id")),
         SyncEntity::Asset => Some(("assets", "id")),
+        SyncEntity::Quote => Some(("quotes", "id")),
         SyncEntity::AssetTaxonomyAssignment => Some(("asset_taxonomy_assignments", "id")),
         SyncEntity::Activity => Some(("activities", "id")),
         SyncEntity::ActivityImportProfile => Some(("activity_import_profiles", "account_id")),
@@ -1289,12 +1290,21 @@ impl AppSyncRepository {
                     .on_conflict(sync_engine_state::id)
                     .do_update()
                     .set((
-                        sync_engine_state::last_cycle_status.eq(Some(status_value)),
+                        sync_engine_state::last_cycle_status.eq(Some(status_value.clone())),
                         sync_engine_state::last_cycle_duration_ms.eq(Some(duration_ms_value)),
-                        sync_engine_state::next_retry_at.eq(next_retry_at_value),
+                        sync_engine_state::next_retry_at.eq(next_retry_at_value.clone()),
                     ))
                     .execute(conn)
                     .map_err(StorageError::from)?;
+                if status_value == "ok" {
+                    diesel::update(sync_engine_state::table.filter(sync_engine_state::id.eq(1)))
+                        .set((
+                            sync_engine_state::last_error.eq::<Option<String>>(None),
+                            sync_engine_state::consecutive_failures.eq(0),
+                        ))
+                        .execute(conn)
+                        .map_err(StorageError::from)?;
+                }
                 Ok(())
             })
             .await
@@ -1305,8 +1315,8 @@ impl AppSyncRepository {
         /// Tables not listed here are exported unfiltered.
         const SYNC_TABLE_EXPORT_FILTERS: &[(&str, &str)] = &[(
             "holdings_snapshots",
-            "source IN ('MANUAL_ENTRY', 'CSV_IMPORT', 'SYNTHETIC')",
-        )];
+            "source IN ('MANUAL_ENTRY', 'CSV_IMPORT', 'SYNTHETIC', 'BROKER_IMPORTED')",
+        ), ("quotes", "source = 'MANUAL'")];
 
         let pool = Arc::clone(&self.pool);
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>> {
@@ -1864,6 +1874,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ok_cycle_outcome_clears_previous_engine_error() {
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool, writer);
+
+        repo.mark_engine_error("pull failed".to_string())
+            .await
+            .expect("mark error");
+
+        let status_before = repo.get_engine_status().expect("status before");
+        assert!(
+            status_before.last_error.is_some(),
+            "expected previous error to be set"
+        );
+        assert!(
+            status_before.consecutive_failures > 0,
+            "expected previous failure count to be > 0"
+        );
+
+        repo.mark_cycle_outcome("ok".to_string(), 7, None)
+            .await
+            .expect("mark ok");
+
+        let status_after = repo.get_engine_status().expect("status after");
+        assert_eq!(
+            status_after.last_error, None,
+            "ok outcome should clear stale last_error"
+        );
+        assert_eq!(
+            status_after.consecutive_failures, 0,
+            "ok outcome should reset failure counter"
+        );
+        assert_eq!(
+            status_after.last_cycle_status.as_deref(),
+            Some("ok"),
+            "status should record successful cycle"
+        );
+    }
+
+    #[tokio::test]
     async fn snapshot_restore_handles_source_with_extra_columns() {
         let (pool, writer) = setup_db();
         let repo = AppSyncRepository::new(pool.clone(), writer);
@@ -2051,6 +2100,7 @@ mod tests {
         let entities = [
             SyncEntity::Account,
             SyncEntity::Asset,
+            SyncEntity::Quote,
             SyncEntity::AssetTaxonomyAssignment,
             SyncEntity::Activity,
             SyncEntity::ActivityImportProfile,
@@ -2318,6 +2368,92 @@ mod tests {
             payload.starts_with(b"SQLite format 3\0"),
             "expected exported payload to be sqlite image"
         );
+    }
+
+    #[tokio::test]
+    async fn snapshot_export_filters_broker_snapshots_and_manual_quotes() {
+        #[derive(diesel::QueryableByName)]
+        struct CountRow {
+            #[diesel(sql_type = diesel::sql_types::BigInt)]
+            c: i64,
+        }
+
+        let (pool, writer) = setup_db();
+        let repo = AppSyncRepository::new(pool.clone(), writer);
+        let mut conn = get_connection(&pool).expect("conn");
+
+        insert_account_for_test(&mut conn, "acc-export-filter").expect("insert account");
+        diesel::sql_query(
+            "INSERT INTO assets (id, kind, name, display_code, notes, metadata, is_active, quote_mode, quote_ccy, instrument_type, instrument_symbol, instrument_exchange_mic, provider_config, created_at, updated_at)
+             VALUES ('asset-export-filter', 'INVESTMENT', 'Export Asset', 'EXPA', NULL, NULL, 1, 'MANUAL', 'USD', NULL, NULL, NULL, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        )
+        .execute(&mut conn)
+        .expect("insert asset");
+
+        diesel::sql_query(
+            "INSERT INTO holdings_snapshots (id, account_id, snapshot_date, currency, positions, cash_balances, cost_basis, net_contribution, calculated_at, net_contribution_base, cash_total_account_currency, cash_total_base_currency, source)
+             VALUES
+             ('11111111-1111-4111-8111-111111111111', 'acc-export-filter', '2026-01-01', 'USD', '{}', '{}', '0', '0', '2026-01-01T00:00:00Z', '0', '0', '0', 'MANUAL_ENTRY'),
+             ('22222222-2222-4222-8222-222222222222', 'acc-export-filter', '2026-01-02', 'USD', '{}', '{}', '0', '0', '2026-01-02T00:00:00Z', '0', '0', '0', 'BROKER_IMPORTED'),
+             ('33333333-3333-4333-8333-333333333333', 'acc-export-filter', '2026-01-03', 'USD', '{}', '{}', '0', '0', '2026-01-03T00:00:00Z', '0', '0', '0', 'CALCULATED')",
+        )
+        .execute(&mut conn)
+        .expect("insert snapshots");
+
+        diesel::sql_query(
+            "INSERT INTO quotes (id, asset_id, day, source, open, high, low, close, adjclose, volume, currency, notes, created_at, timestamp)
+             VALUES
+             ('44444444-4444-4444-8444-444444444444', 'asset-export-filter', '2026-01-01', 'MANUAL', NULL, NULL, NULL, '100', NULL, NULL, 'USD', NULL, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z'),
+             ('55555555-5555-4555-8555-555555555555', 'asset-export-filter', '2026-01-02', 'YAHOO', NULL, NULL, NULL, '101', NULL, NULL, 'USD', NULL, '2026-01-02T00:00:00Z', '2026-01-02T00:00:00Z')",
+        )
+        .execute(&mut conn)
+        .expect("insert quotes");
+
+        let payload = repo
+            .export_snapshot_sqlite_image(vec![
+                "holdings_snapshots".to_string(),
+                "quotes".to_string(),
+            ])
+            .await
+            .expect("export snapshot with filters");
+
+        let exported_dir = tempdir().expect("tempdir");
+        let exported_path = exported_dir.path().join("snapshot.db");
+        std::fs::write(&exported_path, payload).expect("write snapshot db");
+        let mut exported_conn =
+            SqliteConnection::establish(exported_path.to_string_lossy().as_ref())
+                .expect("open snapshot db");
+
+        let snapshot_count: CountRow =
+            diesel::sql_query("SELECT COUNT(*) AS c FROM holdings_snapshots")
+                .get_result(&mut exported_conn)
+                .expect("count snapshot rows");
+        assert_eq!(snapshot_count.c, 2, "manual + broker snapshots should export");
+
+        let broker_count: CountRow = diesel::sql_query(
+            "SELECT COUNT(*) AS c FROM holdings_snapshots WHERE source = 'BROKER_IMPORTED'",
+        )
+        .get_result(&mut exported_conn)
+        .expect("count broker snapshots");
+        assert_eq!(broker_count.c, 1, "broker snapshots should be included");
+
+        let calculated_count: CountRow = diesel::sql_query(
+            "SELECT COUNT(*) AS c FROM holdings_snapshots WHERE source = 'CALCULATED'",
+        )
+        .get_result(&mut exported_conn)
+        .expect("count calculated snapshots");
+        assert_eq!(calculated_count.c, 0, "calculated snapshots should not export");
+
+        let quote_count: CountRow = diesel::sql_query("SELECT COUNT(*) AS c FROM quotes")
+            .get_result(&mut exported_conn)
+            .expect("count quote rows");
+        assert_eq!(quote_count.c, 1, "manual quotes only should export");
+
+        let provider_quote_count: CountRow =
+            diesel::sql_query("SELECT COUNT(*) AS c FROM quotes WHERE source != 'MANUAL'")
+                .get_result(&mut exported_conn)
+                .expect("count provider quote rows");
+        assert_eq!(provider_quote_count.c, 0, "provider quotes should not export");
     }
 
     #[test]

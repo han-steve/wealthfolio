@@ -38,6 +38,7 @@ fn sync_entity_name(entity: &SyncEntity) -> &'static str {
     match entity {
         SyncEntity::Account => "account",
         SyncEntity::Asset => "asset",
+        SyncEntity::Quote => "quote",
         SyncEntity::AssetTaxonomyAssignment => "asset_taxonomy_assignment",
         SyncEntity::Activity => "activity",
         SyncEntity::ActivityImportProfile => "activity_import_profile",
@@ -367,7 +368,6 @@ where
             invalid_entity_id_event_ids.push(event.event_id.clone());
             continue;
         }
-
         max_retry_count = max_retry_count.max(event.retry_count);
         let event_type = format!(
             "{}.{}.v1",

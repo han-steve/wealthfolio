@@ -1048,11 +1048,11 @@ where
         for asset in assets.iter().filter(|a| self.should_sync_asset(a)) {
             let existing = self.sync_state_store.get_by_asset_id(&asset.id)?;
             if existing.is_none() {
+                // Don't set data_source here - it will be populated after first successful sync
+                // Using empty string so errors aren't incorrectly attributed to a specific provider
                 let mut state = QuoteSyncState::new(
                     asset.id.clone(),
-                    asset
-                        .preferred_provider()
-                        .unwrap_or_else(|| DATA_SOURCE_YAHOO.to_string()),
+                    String::new(),
                 );
                 // is_active is derived from position_closed_date (None = active)
                 // QuoteSyncState::new() already sets position_closed_date = None

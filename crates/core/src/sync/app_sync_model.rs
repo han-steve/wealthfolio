@@ -4,10 +4,12 @@ use serde::{Deserialize, Serialize};
 
 /// Canonical list of local tables that participate in app-side device sync.
 /// Order matters: parent tables before children (FK dependencies).
-pub const APP_SYNC_TABLES: [&str; 14] = [
+pub const APP_SYNC_TABLES: [&str; 15] = [
     // Base tables (no FK deps)
     "platforms",
     "assets",
+    // Depends on: assets
+    "quotes",
     "goals",
     "ai_threads",
     "contribution_limits",
@@ -31,6 +33,7 @@ pub const APP_SYNC_TABLES: [&str; 14] = [
 pub enum SyncEntity {
     Account,
     Asset,
+    Quote,
     AssetTaxonomyAssignment,
     Activity,
     ActivityImportProfile,
@@ -247,6 +250,7 @@ mod tests {
         let actual = [
             SyncEntity::Account,
             SyncEntity::Asset,
+            SyncEntity::Quote,
             SyncEntity::AssetTaxonomyAssignment,
             SyncEntity::Activity,
             SyncEntity::ActivityImportProfile,
@@ -266,6 +270,7 @@ mod tests {
         let expected = vec![
             "\"account\"",
             "\"asset\"",
+            "\"quote\"",
             "\"asset_taxonomy_assignment\"",
             "\"activity\"",
             "\"activity_import_profile\"",
