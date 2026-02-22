@@ -21,11 +21,12 @@ use wealthfolio_device_sync::{
     CompletePairingRequest, ConfirmPairingRequest, ConfirmPairingResponse, CreatePairingRequest,
     CreatePairingResponse, Device, DeviceSyncClient, EnrollDeviceResponse, GetPairingResponse,
     InitializeKeysResult, PairingMessagesResponse, RegisterDeviceRequest, ResetTeamSyncResponse,
-    RotateKeysResponse, SuccessResponse, UpdateDeviceRequest,
+    RotateKeysResponse, SuccessResponse, SyncIdentity, UpdateDeviceRequest,
 };
 
 // Storage keys (without prefix - the SecretStore adds "wealthfolio_" prefix)
 const DEVICE_ID_KEY: &str = "sync_device_id";
+const SYNC_IDENTITY_KEY: &str = "sync_identity";
 
 fn cloud_api_base_url() -> String {
     crate::features::cloud_api_base_url().unwrap_or_default()
@@ -38,17 +39,42 @@ async fn get_access_token(state: &AppState) -> ApiResult<String> {
 
 /// Get the device ID from secret store.
 fn get_device_id(state: &AppState) -> Option<String> {
+    // Preferred source: sync_identity (used by DeviceEnrollService).
+    match state.secret_store.get_secret(SYNC_IDENTITY_KEY) {
+        Ok(Some(identity_json)) => {
+            match serde_json::from_str::<SyncIdentity>(&identity_json) {
+                Ok(identity) => {
+                    if let Some(device_id) = identity.device_id {
+                        debug!("[DeviceSync] Using device ID from sync_identity: {}", device_id);
+                        return Some(device_id);
+                    }
+                    debug!("[DeviceSync] sync_identity present but missing deviceId");
+                }
+                Err(e) => {
+                    tracing::warn!("[DeviceSync] Failed to parse sync_identity: {}", e);
+                }
+            }
+        }
+        Ok(None) => {
+            debug!("[DeviceSync] No sync_identity in store");
+        }
+        Err(e) => {
+            tracing::warn!("[DeviceSync] Failed to read sync_identity: {}", e);
+        }
+    }
+
+    // Legacy fallback for older flows.
     match state.secret_store.get_secret(DEVICE_ID_KEY) {
         Ok(Some(id)) => {
-            debug!("[DeviceSync] Using device ID from store: {}", id);
+            debug!("[DeviceSync] Using legacy device ID from store: {}", id);
             Some(id)
         }
         Ok(None) => {
-            debug!("[DeviceSync] No device ID in store");
+            debug!("[DeviceSync] No legacy device ID in store");
             None
         }
         Err(e) => {
-            tracing::warn!("[DeviceSync] Failed to read device ID: {}", e);
+            tracing::warn!("[DeviceSync] Failed to read legacy device ID: {}", e);
             None
         }
     }

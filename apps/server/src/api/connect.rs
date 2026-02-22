@@ -35,6 +35,7 @@ use wealthfolio_device_sync::{EnableSyncResult, SyncState, SyncStateResult};
 // Storage keys (without prefix - the SecretStore adds "wealthfolio_" prefix)
 const CLOUD_REFRESH_TOKEN_KEY: &str = "sync_refresh_token";
 const CLOUD_ACCESS_TOKEN_KEY: &str = "sync_access_token";
+const DEVICE_ID_KEY: &str = "sync_device_id";
 
 /// Seconds before actual expiry to treat a cached token as expired (buffer for clock skew / latency).
 const TOKEN_EXPIRY_BUFFER_SECS: u64 = 60;
@@ -964,6 +965,12 @@ async fn enable_device_sync(
         .await
         .map_err(|e| ApiError::Internal(e.message))?;
 
+    // Backward compatibility: keep legacy device-id key in sync.
+    state
+        .secret_store
+        .set_secret(DEVICE_ID_KEY, &result.device_id)
+        .map_err(|e| ApiError::Internal(format!("Failed to store device ID: {}", e)))?;
+
     if result.state == SyncState::Ready {
         let _ = device_sync_engine::ensure_background_engine_started(Arc::clone(&state)).await;
     }
@@ -981,6 +988,10 @@ async fn clear_device_sync_data(State(state): State<Arc<AppState>>) -> ApiResult
         .device_enroll_service
         .clear_sync_data()
         .map_err(|e| ApiError::Internal(e.message))?;
+    state
+        .secret_store
+        .delete_secret(DEVICE_ID_KEY)
+        .map_err(|e| ApiError::Internal(format!("Failed to clear device ID: {}", e)))?;
     let _ = device_sync_engine::ensure_background_engine_stopped(Arc::clone(&state)).await;
 
     info!("[Connect] Device sync data cleared");
@@ -1000,6 +1011,12 @@ async fn reinitialize_device_sync(
         .reinitialize_sync()
         .await
         .map_err(|e| ApiError::Internal(e.message))?;
+
+    // Backward compatibility: keep legacy device-id key in sync.
+    state
+        .secret_store
+        .set_secret(DEVICE_ID_KEY, &result.device_id)
+        .map_err(|e| ApiError::Internal(format!("Failed to store device ID: {}", e)))?;
 
     if result.state == SyncState::Ready {
         let _ = device_sync_engine::ensure_background_engine_started(Arc::clone(&state)).await;

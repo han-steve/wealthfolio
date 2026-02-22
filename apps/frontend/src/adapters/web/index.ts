@@ -216,6 +216,8 @@ export {
   deviceSyncReconcileReadyState,
   syncBootstrapSnapshotIfNeeded,
   syncTriggerCycle,
+  deviceSyncStartBackgroundEngine,
+  deviceSyncStopBackgroundEngine,
   getDevice,
   listDevices,
   updateDevice,
