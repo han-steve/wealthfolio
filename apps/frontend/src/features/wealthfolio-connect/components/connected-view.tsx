@@ -434,39 +434,31 @@ export function ConnectedView() {
               </div>
               <p className="text-muted-foreground truncate text-sm">{user?.email}</p>
             </div>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <ActionConfirm
-                    handleConfirm={handleSignOut}
-                    isPending={isSigningOut}
-                    confirmTitle="Sign out of Wealthfolio Connect?"
-                    confirmMessage="You'll need to sign in again to access your synced broker accounts. Your local data will not be affected."
-                    confirmButtonText="Sign Out"
-                    pendingText="Signing out..."
-                    cancelButtonText="Cancel"
-                    confirmButtonVariant="destructive"
-                    button={
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-muted-foreground hover:text-foreground h-8 w-8 shrink-0"
-                        disabled={isSigningOut || isLoading}
-                      >
-                        {isSigningOut ? (
-                          <Icons.Spinner className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <Icons.LogOut className="h-4 w-4" />
-                        )}
-                      </Button>
-                    }
-                  />
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>
-                <p>Sign out</p>
-              </TooltipContent>
-            </Tooltip>
+            <ActionConfirm
+              handleConfirm={handleSignOut}
+              isPending={isSigningOut}
+              confirmTitle="Sign out of Wealthfolio Connect?"
+              confirmMessage="You'll need to sign in again to access your synced broker accounts. Your local data will not be affected."
+              confirmButtonText="Sign Out"
+              pendingText="Signing out..."
+              cancelButtonText="Cancel"
+              confirmButtonVariant="destructive"
+              button={
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="text-muted-foreground hover:text-foreground shrink-0"
+                  disabled={isSigningOut || isLoading}
+                >
+                  {isSigningOut ? (
+                    <Icons.Spinner className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Icons.LogOut className="h-4 w-4" />
+                  )}
+                  <span>Sign out</span>
+                </Button>
+              }
+            />
           </div>
         </CardContent>
       </Card>
