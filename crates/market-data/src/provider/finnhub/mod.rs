@@ -548,7 +548,7 @@ impl MarketDataProvider for FinnhubProvider {
             coverage: Coverage::global_best_effort(),
             supports_latest: true,
             // Historical candles require premium subscription
-            supports_historical: false,
+            supports_historical: true,
             supports_search: true,
             supports_profile: true,
         }
