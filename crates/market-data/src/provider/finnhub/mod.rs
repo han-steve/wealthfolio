@@ -679,7 +679,7 @@ mod tests {
         let caps = provider.capabilities();
         assert!(caps.instrument_kinds.contains(&InstrumentKind::Equity));
         assert!(caps.supports_latest);
-        assert!(!caps.supports_historical); // Historical candles require premium subscription
+        assert!(caps.supports_historical);
         assert!(caps.supports_search);
         assert!(caps.supports_profile);
     }
