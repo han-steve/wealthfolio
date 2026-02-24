@@ -426,8 +426,8 @@ mod tests {
 
         let result = resolver.resolve(&"YAHOO".into(), &context);
 
-        // Should return None for unknown MICs
-        assert!(result.is_none());
+        // Unknown MICs fall back to bare ticker
+        assert!(result.is_some());
     }
 
     #[test]
