@@ -88,6 +88,14 @@ export const isSplitActivity = (activityType: string): boolean => {
   return activityType === ActivityType.SPLIT;
 };
 
+// Format a split ratio stored as a decimal multiplier into a human-readable ratio string.
+// Values >= 1 are forward splits (e.g. 2 → "2:1"), values < 1 are reverse splits (e.g. 0.2 → "1:5").
+export const formatSplitRatio = (amount: number): string => {
+  if (!amount || amount <= 0) return "0:1";
+  if (amount >= 1) return `${Math.round(amount)}:1`;
+  return `1:${Math.round(1 / amount)}`;
+};
+
 /**
  * Gets the fee amount from an activity
  * @param activity The activity to get the fee from
