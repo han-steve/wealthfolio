@@ -189,6 +189,12 @@ describe("Activity Utilities", () => {
       expect(formatSplitRatio(0.1)).toBe("1:10");
     });
 
+    it("formats non-unit numerator splits correctly", () => {
+      expect(formatSplitRatio(0.3)).toBe("3:10");
+      expect(formatSplitRatio(1.5)).toBe("3:2");
+      expect(formatSplitRatio(2 / 3)).toBe("2:3");
+    });
+
     it("formats 1:1 split (amount=1) as 1:1", () => {
       expect(formatSplitRatio(1)).toBe("1:1");
     });
