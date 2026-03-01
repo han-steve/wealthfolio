@@ -183,6 +183,7 @@ mod tests {
             account_ids: vec!["acc1".to_string()],
             asset_ids: vec!["AAPL".to_string()],
             currencies: vec!["USD".to_string()],
+            earliest_activity_date: None,
         }];
 
         let result = plan_portfolio_job(&events);
@@ -226,6 +227,7 @@ mod tests {
                 account_ids: vec!["acc1".to_string()],
                 asset_ids: vec!["equity-uuid".to_string()],
                 currencies: vec!["USD".to_string()],
+                earliest_activity_date: None,
             },
             DomainEvent::AssetsCreated {
                 asset_ids: vec!["fx-uuid".to_string()],

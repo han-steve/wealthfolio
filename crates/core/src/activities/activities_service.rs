@@ -1422,6 +1422,7 @@ impl ActivityServiceTrait for ActivityService {
             account_ids,
             asset_ids,
             currencies,
+            Some(created.activity_date.date_naive()),
         ));
 
         Ok(created)
@@ -1463,6 +1464,7 @@ impl ActivityServiceTrait for ActivityService {
             account_ids,
             asset_ids,
             currencies,
+            None,
         ));
 
         Ok(updated)
@@ -1483,6 +1485,7 @@ impl ActivityServiceTrait for ActivityService {
             account_ids,
             asset_ids,
             currencies,
+            None,
         ));
 
         Ok(deleted)
@@ -1677,6 +1680,7 @@ impl ActivityServiceTrait for ActivityService {
                 account_ids,
                 asset_ids,
                 currencies,
+                None,
             ));
         }
 
@@ -2362,6 +2366,7 @@ impl ActivityServiceTrait for ActivityService {
                 vec![account_id.clone()],
                 asset_ids,
                 currencies,
+                None,
             ));
         }
 
@@ -2493,6 +2498,7 @@ impl ActivityServiceTrait for ActivityService {
                 account_ids,
                 asset_ids,
                 currencies,
+                None,
             ));
         }
 

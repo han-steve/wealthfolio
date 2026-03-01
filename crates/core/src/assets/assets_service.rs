@@ -1118,6 +1118,7 @@ impl AssetServiceTrait for AssetService {
                 account_ids,
                 asset_ids,
                 currencies,
+                None,
             ));
         }
 
