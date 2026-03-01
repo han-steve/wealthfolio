@@ -2561,7 +2561,10 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc
+            .recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast)
+            .await
+            .unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
