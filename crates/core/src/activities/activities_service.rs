@@ -1460,11 +1460,15 @@ impl ActivityServiceTrait for ActivityService {
         let account_ids: Vec<String> = account_ids_set.into_iter().collect();
         let asset_ids: Vec<String> = asset_ids_set.into_iter().collect();
         let currencies: Vec<String> = currencies_set.into_iter().collect();
+        let earliest_date = existing
+            .activity_date
+            .date_naive()
+            .min(updated.activity_date.date_naive());
         self.event_sink.emit(DomainEvent::activities_changed(
             account_ids,
             asset_ids,
             currencies,
-            None,
+            Some(earliest_date),
         ));
 
         Ok(updated)
@@ -1485,7 +1489,7 @@ impl ActivityServiceTrait for ActivityService {
             account_ids,
             asset_ids,
             currencies,
-            None,
+            Some(deleted.activity_date.date_naive()),
         ));
 
         Ok(deleted)
