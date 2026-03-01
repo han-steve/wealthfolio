@@ -20,7 +20,7 @@ mod tests {
     use crate::errors::{Error, Result as AppResult};
     use crate::fx::{ExchangeRate, FxServiceTrait, NewExchangeRate};
     use crate::portfolio::snapshot::{
-        AccountStateSnapshot, Lot, Position, SnapshotRepositoryTrait, SnapshotService,
+        AccountStateSnapshot, Lot, Position, SnapshotRecalcMode, SnapshotRepositoryTrait, SnapshotService,
         SnapshotServiceTrait,
     };
     use crate::utils::time_utils::valuation_date_today;
@@ -1067,7 +1067,7 @@ mod tests {
         );
 
         // Call the public method under test
-        let result = snapshot_service.calculate_total_portfolio_snapshots().await;
+        let result = snapshot_service.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
 
         log::info!("result: {:?}", result);
 
@@ -1272,7 +1272,7 @@ mod tests {
             mock_fx_service_arc.clone(),
         );
 
-        let result = snapshot_service.calculate_total_portfolio_snapshots().await;
+        let result = snapshot_service.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
         assert!(result.is_ok());
 
         let saved_snapshots = mock_snapshot_repo_arc.get_saved_snapshots();
@@ -1352,7 +1352,7 @@ mod tests {
         );
 
         // should insert keyframes without error
-        let saved = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let saved = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert!(saved >= 2, "at least two keyframes expected");
     }
 
@@ -1398,7 +1398,7 @@ mod tests {
         );
 
         // No new dates remain to calculate (effective_start_date would be tomorrow), so no writes.
-        let saved = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let saved = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert_eq!(saved, 0);
         assert!(snapshot_repo.get_saved_snapshots().is_empty());
     }
@@ -1468,7 +1468,7 @@ mod tests {
         );
 
         // should compile & run without type errors and save >= 1 frame
-        let saved = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let saved = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert!(saved >= 1, "expected at least one keyframe saved");
 
         // dividend must NOT change net_contribution, but other activities (like deposits) should.
@@ -1549,7 +1549,7 @@ mod tests {
             fx,
         );
 
-        let saved = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let saved = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert!(saved >= 1);
 
         let frames = snapshot_repo.get_saved_snapshots();
@@ -1637,7 +1637,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -1715,7 +1715,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -1782,7 +1782,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -1846,7 +1846,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -1912,7 +1912,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -1976,7 +1976,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -2049,7 +2049,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -2120,7 +2120,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -2187,7 +2187,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -2241,7 +2241,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         assert!(!frames.is_empty());
@@ -2309,7 +2309,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -2388,7 +2388,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -2585,7 +2585,7 @@ mod tests {
             Arc::new(fx),
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         assert!(!frames.is_empty());
@@ -2656,7 +2656,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         // Use get_snapshots_by_account instead of get_saved_snapshots since
         // the mock clears saved_snapshots on each save operation
@@ -2746,7 +2746,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
 
@@ -2815,7 +2815,7 @@ mod tests {
         );
 
         // First calculate to create keyframes
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         // Now get daily snapshots with gap filling
         let daily = svc
@@ -2895,7 +2895,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         // Get keyframes only (no gap filling)
         let keyframes = svc
@@ -2947,12 +2947,12 @@ mod tests {
         );
 
         // First calculation
-        let first_count = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let first_count = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert!(first_count >= 1);
 
         // Force recalculation
         let second_count = svc
-            .force_recalculate_holdings_snapshots(None)
+            .recalculate_holdings_snapshots(None, SnapshotRecalcMode::Full)
             .await
             .unwrap();
         assert!(second_count >= 1);
@@ -2987,7 +2987,7 @@ mod tests {
             fx,
         );
 
-        let count = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let count = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert_eq!(count, 0, "Empty account should create no keyframes");
     }
 
@@ -3052,7 +3052,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         assert_eq!(frames.len(), 1); // Single keyframe for the day
@@ -3113,7 +3113,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let latest = svc.get_latest_holdings_snapshot(&acc.id).unwrap();
         assert!(latest.is_some());
@@ -3142,7 +3142,7 @@ mod tests {
             fx,
         );
 
-        let count = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let count = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
         assert_eq!(count, 0);
     }
 
@@ -3200,7 +3200,7 @@ mod tests {
             Arc::new(fx),
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let frame = &frames[0];
@@ -3267,7 +3267,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let frame = &frames[0];
@@ -3345,7 +3345,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo.get_saved_snapshots();
         let mut sorted = frames.clone();
@@ -3419,7 +3419,7 @@ mod tests {
 
         // Calculate only for acc1
         let _ = svc
-            .calculate_holdings_snapshots(Some(&["acc1".to_string()]))
+            .recalculate_holdings_snapshots(Some(&["acc1".to_string()]), SnapshotRecalcMode::IncrementalFromLast)
             .await
             .unwrap();
 
@@ -3498,7 +3498,7 @@ mod tests {
             fx,
         );
 
-        let _ = svc.calculate_holdings_snapshots(None).await.unwrap();
+        let _ = svc.recalculate_holdings_snapshots(None, SnapshotRecalcMode::IncrementalFromLast).await.unwrap();
 
         let frames = snapshot_repo
             .get_snapshots_by_account("acc1", None, None)
@@ -4369,7 +4369,7 @@ mod tests {
         );
 
         // Run TOTAL calculation
-        let result = svc.calculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
         assert!(result.is_ok(), "TOTAL calculation should succeed");
 
         // Assert: closed but non-archived account's history is included in TOTAL
@@ -4435,7 +4435,7 @@ mod tests {
         );
 
         // Run TOTAL calculation
-        let result = svc.calculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
         assert!(result.is_ok(), "TOTAL calculation should succeed");
 
         // Assert: archived account's history is NOT included in TOTAL
@@ -4513,7 +4513,7 @@ mod tests {
         );
 
         // Run TOTAL calculation
-        let result = svc.calculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
         assert!(result.is_ok(), "TOTAL calculation should succeed");
 
         // Assert: Only A and B contribute to TOTAL (C and D excluded because archived)
@@ -4582,7 +4582,7 @@ mod tests {
         );
 
         // Run TOTAL calculation
-        let result = svc.calculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
         assert!(result.is_ok(), "TOTAL calculation should succeed");
 
         // Assert: Empty or zero-value result
@@ -4634,7 +4634,7 @@ mod tests {
         );
 
         // First: Account is NOT archived, should be included
-        let result = svc.force_recalculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::Full).await;
         assert!(result.is_ok());
 
         let saved = mock_snapshot_repo.get_saved_snapshots();
@@ -4654,7 +4654,7 @@ mod tests {
         mock_snapshot_repo.update_non_archived_accounts(non_archived_ids.clone());
 
         // Assert: TOTAL now excludes this account
-        let result = svc.force_recalculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::Full).await;
         assert!(result.is_ok());
 
         let saved = mock_snapshot_repo.get_saved_snapshots();
@@ -4668,7 +4668,7 @@ mod tests {
         mock_snapshot_repo.update_non_archived_accounts(non_archived_ids);
 
         // Assert: TOTAL now includes this account again
-        let result = svc.force_recalculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::Full).await;
         assert!(result.is_ok());
 
         let saved = mock_snapshot_repo.get_saved_snapshots();
@@ -4733,7 +4733,7 @@ mod tests {
             fx,
         );
 
-        let result = svc.calculate_total_portfolio_snapshots().await;
+        let result = svc.recalculate_total_portfolio_snapshots(SnapshotRecalcMode::IncrementalFromLast).await;
         assert!(result.is_ok());
 
         let saved = mock_snapshot_repo.get_saved_snapshots();

@@ -5,7 +5,12 @@
 
 use std::collections::HashSet;
 
-use wealthfolio_core::{accounts::TrackingMode, events::DomainEvent, quotes::MarketSyncMode};
+use wealthfolio_core::{
+    accounts::TrackingMode,
+    events::DomainEvent,
+    portfolio::{snapshot::SnapshotRecalcMode, valuation::ValuationRecalcMode},
+    quotes::MarketSyncMode,
+};
 
 use crate::api::shared::PortfolioJobConfig;
 
@@ -113,7 +118,8 @@ pub fn plan_portfolio_job(events: &[DomainEvent]) -> Option<PortfolioJobConfig> 
                 Some(asset_ids.into_iter().collect())
             },
         },
-        force_full_recalculation: true,
+        snapshot_mode: SnapshotRecalcMode::Full,
+        valuation_mode: ValuationRecalcMode::Full,
     })
 }
 
