@@ -20,7 +20,7 @@ import { useState } from "react";
 import { useForm, type Resolver, type SubmitHandler } from "react-hook-form";
 import { toast } from "sonner";
 import { useActivityMutations } from "../../hooks/use-activity-mutations";
-import type { AccountSelectOption } from "../forms/fields";
+import { showValidationToast, type AccountSelectOption } from "../forms/fields";
 import { newActivitySchema, type NewActivityFormValues } from "../forms/schemas";
 import { MobileActivitySteps } from "./mobile-activity-steps";
 
@@ -152,6 +152,7 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
           "TRANSFER_OUT",
           "FEE",
           "TAX",
+          "CREDIT",
           "ADJUSTMENT",
         ].includes(type)
       : false;
@@ -400,7 +401,11 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
       }
 
       if (id) {
-        await updateActivityMutation.mutateAsync({ id, ...submitData });
+        await updateActivityMutation.mutateAsync({
+          id,
+          existingAssetId: activity?.assetId,
+          ...submitData,
+        } as NewActivityFormValues & { id: string; existingAssetId?: string });
       } else {
         await addActivityMutation.mutateAsync(submitData);
       }
@@ -416,6 +421,9 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
       return;
     }
   };
+  const handleValidatedSubmit = form.handleSubmit(onSubmit, (errors) => {
+    showValidationToast(errors, form.getValues);
+  });
 
   const handleNext = async () => {
     const fields = getFieldsForStep(currentStep);
@@ -446,11 +454,18 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
           }
           return [...baseFields, "assetId", "quantity", "unitPrice", "fee"];
         }
-        if (["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT"].includes(activityType ?? "")) {
+        if (
+          ["DEPOSIT", "WITHDRAWAL", "TRANSFER_IN", "TRANSFER_OUT", "CREDIT"].includes(
+            activityType ?? "",
+          )
+        ) {
           return [...baseFields, "amount", "fee"];
         }
         if (["DIVIDEND", "INTEREST"].includes(activityType ?? "")) {
           return [...baseFields, "assetId", "amount"];
+        }
+        if (activityType === "ADJUSTMENT") {
+          return [...baseFields, "assetId"];
         }
         return ["amount", ...baseFields];
       }
@@ -488,7 +503,7 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
         <div className="flex-1 overflow-y-auto">
           <div className="p-4">
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="flex h-full flex-col">
+              <form onSubmit={handleValidatedSubmit} className="flex h-full flex-col">
                 <MobileActivitySteps
                   currentStep={currentStep}
                   accounts={accounts}
@@ -529,7 +544,7 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
               <Button
                 type="button"
                 size="default"
-                onClick={form.handleSubmit(onSubmit)}
+                onClick={handleValidatedSubmit}
                 className="flex-1 font-medium"
                 disabled={isLoading}
               >

@@ -92,16 +92,20 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
   const subtype = watch("subtype");
   const isDrip = activityType === "DIVIDEND" && subtype === ACTIVITY_SUBTYPES.DRIP;
 
+  const isCreditActivity = activityType === "CREDIT";
+  const isAdjustmentActivity = activityType === "ADJUSTMENT";
   const isFeeActivity = activityType === "FEE";
   const isTaxActivity = activityType === "TAX";
   const needsAssetSymbol =
-    ["BUY", "SELL", "DIVIDEND", "SPLIT"].includes(activityType) || isSecuritiesTransfer;
-  const needsQuantity = ["BUY", "SELL"].includes(activityType) || isSecuritiesTransfer;
+    ["BUY", "SELL", "DIVIDEND", "SPLIT", "ADJUSTMENT"].includes(activityType) ||
+    isSecuritiesTransfer;
+  const needsQuantity =
+    ["BUY", "SELL"].includes(activityType) || isSecuritiesTransfer || isAdjustmentActivity;
   const needsUnitPrice =
     ["BUY", "SELL"].includes(activityType) ||
     (isSecuritiesTransfer && isExternal && direction === "in");
   const needsAmount =
-    ["DEPOSIT", "WITHDRAWAL", "DIVIDEND", "INTEREST", "TAX"].includes(activityType) ||
+    ["DEPOSIT", "WITHDRAWAL", "DIVIDEND", "INTEREST", "TAX", "CREDIT"].includes(activityType) ||
     isCashTransfer;
   const needsFee = [
     "BUY",
@@ -483,7 +487,9 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
                         ? "Interest Amount"
                         : isTaxActivity
                           ? "Tax Amount"
-                          : "Amount"}
+                          : isCreditActivity
+                            ? "Credit Amount"
+                            : "Amount"}
                   </FormLabel>
                   <FormControl>
                     <MoneyInput {...field} />
