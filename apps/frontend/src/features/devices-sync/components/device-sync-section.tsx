@@ -169,6 +169,9 @@ export function DeviceSyncSection() {
       if (result.status === "error") {
         throw new Error(result.message);
       }
+      if (result.status === "not_ready") {
+        throw new Error(result.message);
+      }
       setOverwriteRisk(null);
       setShowBootstrapOverwriteDialog(false);
     } catch (err) {
@@ -202,6 +205,9 @@ export function DeviceSyncSection() {
         }
 
         if (result.status === "error") {
+          throw new Error(result.message);
+        }
+        if (result.status === "not_ready") {
           throw new Error(result.message);
         }
 

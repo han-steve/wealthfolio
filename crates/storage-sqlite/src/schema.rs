@@ -418,6 +418,7 @@ diesel::table! {
         entity_id -> Text,
         last_event_id -> Text,
         last_client_timestamp -> Text,
+        last_op -> Text,
         last_seq -> BigInt,
     }
 }

@@ -26,6 +26,32 @@ use tauri::{AppHandle, Emitter, Manager};
 use events::emit_app_ready;
 use tauri_plugin_deep_link::DeepLinkExt;
 
+#[cfg(feature = "device-sync")]
+fn start_sync_outbox_wake_worker(
+    mut receiver: tokio::sync::mpsc::Receiver<()>,
+    context: Arc<context::ServiceContext>,
+) {
+    tauri::async_runtime::spawn(async move {
+        while receiver.recv().await.is_some() {
+            while receiver.try_recv().is_ok() {}
+            let was_running = context.device_sync_runtime().is_background_running().await;
+            if let Err(err) =
+                crate::commands::device_sync::ensure_background_engine_started(Arc::clone(&context))
+                    .await
+            {
+                warn!(
+                    "Failed to start background device sync engine after local outbox write: {}",
+                    err
+                );
+                continue;
+            }
+            if was_running {
+                context.device_sync_runtime().notify_sync_work_available();
+            }
+        }
+    });
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Desktop-only setup
 // ─────────────────────────────────────────────────────────────────────────────
@@ -66,9 +92,13 @@ mod desktop {
         })?;
         let context = Arc::new(init_result.context);
         let event_receiver = init_result.event_receiver;
+        let sync_outbox_wake_receiver = init_result.sync_outbox_wake_receiver;
 
         // Make context available to all commands
         handle.manage(Arc::clone(&context));
+
+        #[cfg(feature = "device-sync")]
+        start_sync_outbox_wake_worker(sync_outbox_wake_receiver, Arc::clone(&context));
 
         // Start the domain event queue worker now that context is managed
         // This must be done in an async context since it spawns a tokio task
@@ -155,8 +185,12 @@ mod mobile {
                 Ok(init_result) => {
                     let context = Arc::new(init_result.context);
                     let event_receiver = init_result.event_receiver;
+                    let sync_outbox_wake_receiver = init_result.sync_outbox_wake_receiver;
 
                     handle.manage(Arc::clone(&context));
+
+                    #[cfg(feature = "device-sync")]
+                    start_sync_outbox_wake_worker(sync_outbox_wake_receiver, Arc::clone(&context));
 
                     // Start the domain event queue worker now that context is managed
                     domain_events::TauriDomainEventSink::start_queue_worker(
@@ -167,8 +201,28 @@ mod mobile {
 
                     // Notify frontend that app is ready
                     // The frontend will trigger the initial portfolio update after it's mounted
-                    // For mobile, foreground sync is triggered from frontend via app lifecycle events
                     emit_app_ready(&handle);
+
+                    // Start background device sync while the mobile app is active.
+                    // The loop self-skips when identity is not configured, and frontend lifecycle
+                    // triggers still cover resume/online cases after iOS suspends the process.
+                    #[cfg(feature = "device-sync")]
+                    {
+                        let device_sync_context = Arc::clone(&context);
+                        tauri::async_runtime::spawn(async move {
+                            if let Err(err) =
+                                crate::commands::device_sync::ensure_background_engine_started(
+                                    device_sync_context,
+                                )
+                                .await
+                            {
+                                log::warn!(
+                                    "Failed to start background device sync engine: {}",
+                                    err
+                                );
+                            }
+                        });
+                    }
                 }
                 Err(e) => {
                     error!("Failed to initialize context on mobile: {}", e);
