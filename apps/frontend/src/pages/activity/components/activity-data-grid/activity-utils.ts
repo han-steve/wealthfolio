@@ -483,6 +483,10 @@ export function buildSavePayload(
     if (isNew) {
       // Build CREATE payload - NO asset.id allowed, only asset.symbol + asset.exchangeMic
       const createPayload: ActivityCreatePayload = { ...basePayload };
+      const idempotencyKey = normalizeOptionalString(transaction.idempotencyKey);
+      if (idempotencyKey) {
+        createPayload.idempotencyKey = idempotencyKey;
+      }
 
       if (!isCash) {
         // For NEW market activities: send asset with symbol + exchangeMic

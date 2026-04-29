@@ -9,6 +9,7 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { resolveSymbolQuote } from "@/adapters";
 import { CreateCustomAssetDialog } from "@/components/create-custom-asset-dialog";
 import { ActivityType } from "@/lib/constants";
+import { generateId } from "@/lib/id";
 import { LinkTransferModal } from "../link-transfer-modal";
 import { useActivityMutations } from "../../hooks/use-activity-mutations";
 import { ActivityDataGridPagination } from "./activity-data-grid-pagination";
@@ -166,6 +167,8 @@ export function ActivityDataGrid({
         createdAt: now,
         updatedAt: now,
         isNew: true,
+        comment: "Duplicated",
+        idempotencyKey: generateId("manual-duplicate"),
       };
       setLocalTransactions((prev) => [duplicated, ...prev]);
       markDirtyBatch([duplicated.id]);
