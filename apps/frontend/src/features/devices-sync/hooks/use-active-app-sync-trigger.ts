@@ -7,11 +7,15 @@ const VISIBLE_SYNC_INTERVAL_MS = 60_000;
 
 interface UseActiveAppSyncTriggerOptions {
   enabled: boolean;
+  requireWindowFocusForInterval?: boolean;
 }
 
 type ActiveAppSyncReason = "focus" | "online" | "visible";
 
-export function useActiveAppSyncTrigger({ enabled }: UseActiveAppSyncTriggerOptions) {
+export function useActiveAppSyncTrigger({
+  enabled,
+  requireWindowFocusForInterval = false,
+}: UseActiveAppSyncTriggerOptions) {
   // The backend starts the background sync loop on app startup; seed the
   // throttle so startup focus/online events do not queue a duplicate cycle.
   const lastAttemptAtRef = useRef(Date.now());
@@ -66,15 +70,23 @@ export function useActiveAppSyncTrigger({ enabled }: UseActiveAppSyncTriggerOpti
         });
     };
 
+    const isActiveForInterval = () =>
+      document.visibilityState === "visible" &&
+      (!requireWindowFocusForInterval || document.hasFocus());
+
     const handleVisibilityChange = () => {
-      if (document.visibilityState === "visible") {
+      if (isActiveForInterval()) {
         triggerSync("visible");
       }
     };
-    const handleFocus = () => triggerSync("focus");
+    const handleFocus = () => {
+      if (document.visibilityState === "visible") {
+        triggerSync("focus");
+      }
+    };
     const handleOnline = () => triggerSync("online");
     const visibleIntervalId = window.setInterval(() => {
-      if (document.visibilityState === "visible") {
+      if (isActiveForInterval()) {
         triggerSync("visible");
       }
     }, VISIBLE_SYNC_INTERVAL_MS);
@@ -89,5 +101,5 @@ export function useActiveAppSyncTrigger({ enabled }: UseActiveAppSyncTriggerOpti
       window.removeEventListener("online", handleOnline);
       window.clearInterval(visibleIntervalId);
     };
-  }, [enabled]);
+  }, [enabled, requireWindowFocusForInterval]);
 }

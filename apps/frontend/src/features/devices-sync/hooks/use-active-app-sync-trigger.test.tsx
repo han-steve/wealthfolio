@@ -24,6 +24,13 @@ function setVisibilityState(value: DocumentVisibilityState) {
   });
 }
 
+function setDocumentHasFocus(value: boolean) {
+  Object.defineProperty(document, "hasFocus", {
+    configurable: true,
+    value: () => value,
+  });
+}
+
 async function flushLifecycleTrigger() {
   await Promise.resolve();
   await Promise.resolve();
@@ -40,6 +47,7 @@ describe("useActiveAppSyncTrigger", () => {
     storageMocks.syncStorage.getDeviceId.mockResolvedValue("device-1");
     storageMocks.syncStorage.getRootKey.mockResolvedValue("root-key");
     setVisibilityState("visible");
+    setDocumentHasFocus(true);
   });
 
   afterEach(() => {
@@ -142,6 +150,39 @@ describe("useActiveAppSyncTrigger", () => {
 
     act(() => {
       setVisibilityState("visible");
+      vi.advanceTimersByTime(60_000);
+    });
+    await flushLifecycleTrigger();
+    expect(adapterMocks.syncTriggerCycle).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not run desktop interval sync while visible but unfocused", async () => {
+    setDocumentHasFocus(false);
+    renderHook(() =>
+      useActiveAppSyncTrigger({ enabled: true, requireWindowFocusForInterval: true }),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(60_000);
+    });
+    await flushLifecycleTrigger();
+    expect(adapterMocks.syncTriggerCycle).not.toHaveBeenCalled();
+
+    act(() => {
+      setDocumentHasFocus(true);
+      window.dispatchEvent(new Event("focus"));
+    });
+    await flushLifecycleTrigger();
+    expect(adapterMocks.syncTriggerCycle).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps mobile interval sync based on visibility without requiring focus", async () => {
+    setDocumentHasFocus(false);
+    renderHook(() =>
+      useActiveAppSyncTrigger({ enabled: true, requireWindowFocusForInterval: false }),
+    );
+
+    act(() => {
       vi.advanceTimersByTime(60_000);
     });
     await flushLifecycleTrigger();

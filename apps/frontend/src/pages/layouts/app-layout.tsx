@@ -37,7 +37,7 @@ const AppLayoutContent = () => {
 
   useGlobalEventListener();
   useNavigationEventListener();
-  useActiveAppSyncTrigger({ enabled: isTauri });
+  useActiveAppSyncTrigger({ enabled: isTauri, requireWindowFocusForInterval: !isMobile });
 
   if (!isSettingsReady) {
     return (
