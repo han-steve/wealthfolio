@@ -151,7 +151,7 @@ export function RetirementSnapshotTable({
                   {mobileMetrics.map((metric) => (
                     <div key={metric.label} className="min-w-0">
                       <div className="text-muted-foreground leading-3">{metric.label}</div>
-                      <div className="truncate font-medium leading-4 tabular-nums">
+                      <div className="truncate font-medium tabular-nums leading-4">
                         <SnapshotAmount
                           value={metric.value}
                           age={snap.age}
