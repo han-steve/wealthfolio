@@ -136,8 +136,8 @@ mod tests {
     use super::*;
     use tokio::sync::mpsc;
 
-    #[test]
-    fn test_sink_sends_events() {
+    #[tokio::test]
+    async fn test_sink_sends_events() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let sink = WebDomainEventSink::with_sender(tx);
 
@@ -152,10 +152,12 @@ mod tests {
             }
             _ => panic!("Expected AssetsCreated event"),
         }
+
+        assert!(rx.try_recv().is_err());
     }
 
-    #[test]
-    fn test_sink_batch_sends_all_events() {
+    #[tokio::test]
+    async fn test_sink_batch_sends_all_events() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let sink = WebDomainEventSink::with_sender(tx);
 
@@ -173,5 +175,20 @@ mod tests {
 
         assert!(matches!(event1, DomainEvent::AssetsCreated { .. }));
         assert!(matches!(event2, DomainEvent::AssetsCreated { .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn pull_complete_is_sent_to_queue() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let sink = WebDomainEventSink::with_sender(tx);
+
+        sink.emit(DomainEvent::device_sync_pull_complete());
+
+        assert!(matches!(
+            rx.try_recv().unwrap(),
+            DomainEvent::DeviceSyncPullComplete
+        ));
+        assert!(rx.try_recv().is_err());
     }
 }

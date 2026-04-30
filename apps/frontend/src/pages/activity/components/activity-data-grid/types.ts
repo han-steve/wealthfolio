@@ -168,6 +168,8 @@ export interface SymbolInput {
  * IMPORTANT: symbol.id is NOT allowed for creates - backend generates canonical IDs
  */
 export interface ActivityCreatePayload extends ActivityBasePayload {
+  /** Explicit key for intentional manual duplicates. */
+  idempotencyKey?: string;
   /** Symbol input - consolidates id, symbol, exchangeMic, kind, name, quoteMode */
   symbol?: SymbolInput;
 }

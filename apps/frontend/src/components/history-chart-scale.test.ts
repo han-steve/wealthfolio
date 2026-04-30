@@ -19,7 +19,7 @@ describe("getAutomaticHistoryChartScale", () => {
     expect(scale.scale).toBe("linear");
     expect(scale.showNetContribution).toBe(true);
     expect(scale.domain[0]).toBe(0);
-    expect(scale.domain[1]).toBeCloseTo(1820);
+    expect(scale.domain[1]).toBeCloseTo(1725);
   });
 
   it("keeps linear scale when total value includes zero or negative values", () => {
@@ -32,20 +32,32 @@ describe("getAutomaticHistoryChartScale", () => {
     expect(scale.scale).toBe("linear");
     expect(scale.showNetContribution).toBe(true);
     expect(scale.domain[0]).toBe(0);
-    expect(scale.domain[1]).toBeCloseTo(1950);
+    expect(scale.domain[1]).toBeCloseTo(1725);
   });
 
   it("keeps linear scale when the visible value range is narrow", () => {
     const scale = getAutomaticHistoryChartScale([
-      { totalValue: 1000, netContribution: 900 },
-      { totalValue: 1500, netContribution: 1200 },
-      { totalValue: 1800, netContribution: 1300 },
+      { totalValue: 1700, netContribution: 1690 },
+      { totalValue: 1750, netContribution: 1720 },
+      { totalValue: 1800, netContribution: 1740 },
     ]);
 
     expect(scale.scale).toBe("linear");
     expect(scale.showNetContribution).toBe(true);
-    expect(scale.domain[0]).toBeCloseTo(880);
-    expect(scale.domain[1]).toBeCloseTo(1920);
+    expect(scale.domain[0]).toBeCloseTo(1685);
+    expect(scale.domain[1]).toBeCloseTo(1815);
+  });
+
+  it("anchors material positive ranges to zero for visual context", () => {
+    const scale = getAutomaticHistoryChartScale([
+      { totalValue: 2000, netContribution: 0 },
+      { totalValue: 1500, netContribution: 0 },
+      { totalValue: 2000, netContribution: 0 },
+    ]);
+
+    expect(scale.scale).toBe("linear");
+    expect(scale.showNetContribution).toBe(true);
+    expect(scale.domain).toEqual([0, 2300]);
   });
 
   it("keeps high-value low-volatility periods readable", () => {
@@ -69,8 +81,21 @@ describe("getAutomaticHistoryChartScale", () => {
 
     expect(scale.scale).toBe("linear");
     expect(scale.showNetContribution).toBe(true);
-    expect(scale.domain[0]).toBeCloseTo(28_000);
-    expect(scale.domain[1]).toBeCloseTo(158_000);
+    expect(scale.domain[0]).toBe(0);
+    expect(scale.domain[1]).toBeCloseTo(164_450);
+  });
+
+  it("anchors material negative ranges to zero for visual context", () => {
+    const scale = getAutomaticHistoryChartScale([
+      { totalValue: -2000, netContribution: -1800 },
+      { totalValue: -1500, netContribution: -1600 },
+      { totalValue: -2000, netContribution: -1700 },
+    ]);
+
+    expect(scale.scale).toBe("linear");
+    expect(scale.showNetContribution).toBe(true);
+    expect(scale.domain[0]).toBeCloseTo(-2300);
+    expect(scale.domain[1]).toBe(0);
   });
 
   it("keeps a valid domain for zero balances", () => {

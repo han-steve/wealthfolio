@@ -424,8 +424,7 @@ impl GoalRepositoryTrait for GoalRepository {
     ) -> Result<()> {
         let goal_id_owned = goal_id.to_string();
         self.writer
-            .exec_tx(move |tx| -> Result<()> {
-                let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ").to_string();
+            .exec(move |conn| -> Result<()> {
                 diesel::update(goals::table.find(&goal_id_owned))
                     .set((
                         goals::summary_target_amount.eq(update.summary_target_amount),
@@ -435,16 +434,9 @@ impl GoalRepositoryTrait for GoalRepository {
                         goals::projected_value_at_target_date
                             .eq(update.projected_value_at_target_date),
                         goals::status_health.eq(update.status_health),
-                        goals::updated_at.eq(now),
                     ))
-                    .execute(tx.conn())
+                    .execute(conn)
                     .map_err(StorageError::from)?;
-                // Re-read for sync outbox
-                let updated_db = goals::table
-                    .find(&goal_id_owned)
-                    .first::<GoalDB>(tx.conn())
-                    .map_err(StorageError::from)?;
-                tx.update(&updated_db)?;
                 Ok(())
             })
             .await

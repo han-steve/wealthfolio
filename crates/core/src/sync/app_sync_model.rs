@@ -113,6 +113,7 @@ pub struct SyncEntityMetadata {
     pub entity_id: String,
     pub last_event_id: String,
     pub last_client_timestamp: String,
+    pub last_op: SyncOperation,
     pub last_seq: i64,
 }
 

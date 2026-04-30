@@ -9,6 +9,7 @@ import { splitFormSchema } from "../split-form";
 import { feeFormSchema } from "../fee-form";
 import { interestFormSchema } from "../interest-form";
 import { taxFormSchema } from "../tax-form";
+import { newActivitySchema } from "../schemas";
 import { ACTIVITY_FORM_CONFIG } from "../../../config/activity-form-config";
 
 describe("Form Schemas Validation", () => {
@@ -863,6 +864,40 @@ describe("Form Schemas Validation", () => {
 
       const payload = ACTIVITY_FORM_CONFIG.TRANSFER.toPayload(formData as any) as any;
       expect(payload.unitPrice).toBeUndefined();
+    });
+  });
+
+  describe("newActivitySchema extended mobile edit types", () => {
+    it("accepts credit activities", () => {
+      const result = newActivitySchema.safeParse({
+        accountId: "acc-123",
+        activityType: "CREDIT",
+        activityDate: new Date(),
+        amount: 25,
+        currency: "USD",
+        exchangeMic: null,
+      });
+
+      expect(result.success).toBe(true);
+    });
+
+    it("accepts adjustment activities with zero unit price", () => {
+      const result = newActivitySchema.safeParse({
+        accountId: "acc-123",
+        activityType: "ADJUSTMENT",
+        activityDate: new Date(),
+        assetId: "AAPL",
+        quantity: 1,
+        unitPrice: 0,
+        currency: "USD",
+        assetMetadata: {
+          name: null,
+          kind: null,
+          exchangeMic: null,
+        },
+      });
+
+      expect(result.success).toBe(true);
     });
   });
 });

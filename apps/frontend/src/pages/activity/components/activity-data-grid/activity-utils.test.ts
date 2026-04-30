@@ -362,6 +362,30 @@ describe("activity-utils", () => {
       );
     });
 
+    it("should preserve explicit idempotency keys for new manual duplicates", () => {
+      const transactions: LocalTransaction[] = [
+        createMockTransaction({
+          id: "temp-new-1",
+          isNew: true,
+          idempotencyKey: "manual-duplicate-123",
+        }),
+      ];
+      const dirtyIds = new Set(["temp-new-1"]);
+
+      const result = buildSavePayload(
+        transactions,
+        dirtyIds,
+        new Set(),
+        mockResolveTransactionCurrency,
+        dirtyCurrencyLookup,
+        assetCurrencyLookup,
+        "USD",
+      );
+
+      expect(result.creates).toHaveLength(1);
+      expect(result.creates[0].idempotencyKey).toBe("manual-duplicate-123");
+    });
+
     it("should include quoteCcy hint for existing assets when symbol is unchanged", () => {
       const transactions: LocalTransaction[] = [
         createMockTransaction({
