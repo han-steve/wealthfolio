@@ -31,10 +31,7 @@ function getLinearDomain(values: number[]): [number, number] {
     }
 
     if (maxValue <= 0) {
-      return [
-        Math.min(minValue * (1 + LINEAR_DOMAIN_PADDING_RATIO), -LINEAR_MIN_VISIBLE_SPAN),
-        0,
-      ];
+      return [Math.min(minValue * (1 + LINEAR_DOMAIN_PADDING_RATIO), -LINEAR_MIN_VISIBLE_SPAN), 0];
     }
   }
 
