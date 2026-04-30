@@ -75,6 +75,7 @@ describe("buildRecordActivitiesCreatePayload", () => {
               name: "Apple Inc.",
               currency: "USD",
               exchangeMic: "XNAS",
+              instrumentType: "EQUITY",
             },
           },
           {
@@ -102,10 +103,44 @@ describe("buildRecordActivitiesCreatePayload", () => {
     );
     expect(creates).toHaveLength(1);
     expect(creates[0].activityType).toBe("BUY");
-    expect(creates[0].symbol?.symbol).toBe("AAPL");
-    expect(creates[0].symbol?.exchangeMic).toBe("XNAS");
+    expect(creates[0].asset?.id).toBe("SEC:AAPL:XNAS");
+    expect(creates[0].asset?.symbol).toBe("AAPL");
+    expect(creates[0].asset?.exchangeMic).toBe("XNAS");
+    expect(creates[0].asset?.quoteCcy).toBe("USD");
+    expect(creates[0].asset?.instrumentType).toBe("EQUITY");
     expect(rowIndexByTempId.get("record-activities-0")).toBe(0);
     expect(rowIndexByTempId.get("record-activities-1")).toBeUndefined();
+  });
+
+  it("does not use activity currency as an asset quote currency fallback", () => {
+    const normalized = normalizeRecordActivitiesResult(
+      {
+        drafts: [
+          {
+            rowIndex: 0,
+            draft: {
+              activityType: "BUY",
+              activityDate: "2026-02-01",
+              symbol: "VOD",
+              quantity: 1,
+              unitPrice: 80,
+              currency: "GBP",
+              accountId: "acc-1",
+            },
+            validation: { isValid: true, missingFields: [], errors: [] },
+            errors: [],
+            availableSubtypes: [],
+          },
+        ],
+        validation: { totalRows: 1, validRows: 1, errorRows: 0 },
+        availableAccounts: [],
+      },
+      "USD",
+    );
+
+    const { creates } = buildRecordActivitiesCreatePayload(normalized?.drafts ?? []);
+
+    expect(creates[0].asset?.quoteCcy).toBeUndefined();
   });
 });
 

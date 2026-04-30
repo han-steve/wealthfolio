@@ -1,4 +1,5 @@
 import { logger } from "@/adapters";
+import { buildAssetResolutionInput } from "@/lib/asset-resolution-input";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Form } from "@wealthfolio/ui/components/ui/form";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
@@ -14,7 +15,7 @@ import { ActivityType, METADATA_CONTRACT_MULTIPLIER, QuoteMode } from "@/lib/con
 import { isSymbolRequired } from "@/lib/activity-utils";
 import { buildOccSymbol, parseOccSymbol } from "@/lib/occ-symbol";
 import { generateId } from "@/lib/id";
-import type { ActivityCreate, ActivityDetails, SymbolInput } from "@/lib/types";
+import type { ActivityCreate, ActivityDetails } from "@/lib/types";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useState } from "react";
 import { useForm, type Resolver, type SubmitHandler } from "react-hook-form";
@@ -321,6 +322,7 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
         // Extract symbol-related and fxRate fields from flat form data
         const {
           assetId,
+          existingAssetId,
           fxRate,
           exchangeMic,
           quoteMode,
@@ -338,18 +340,19 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
           delete sharedFields.amount;
         }
 
-        // Build nested symbol object for securities transfers
-        const symbolInput: ActivityCreate["symbol"] =
+        // Build nested asset object for securities transfers
+        const assetInput: ActivityCreate["asset"] =
           isSecuritiesTransfer && assetId
-            ? {
+            ? buildAssetResolutionInput({
+                id: existingAssetId as string | undefined,
                 symbol: assetId as string,
                 exchangeMic: exchangeMic as string | undefined,
-                quoteMode: quoteMode as SymbolInput["quoteMode"],
+                quoteMode: quoteMode as string | undefined,
                 quoteCcy: symbolQuoteCcy as string | undefined,
                 instrumentType: symbolInstrumentType as string | undefined,
                 name: (assetMetadata as { name?: string })?.name,
                 kind: (assetMetadata as { kind?: string })?.kind,
-              }
+              })
             : undefined;
 
         const transferOutActivity: ActivityCreate = {
@@ -358,7 +361,7 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
           activityType: ActivityType.TRANSFER_OUT,
           currency: fromAccount?.currency,
           sourceGroupId,
-          symbol: symbolInput,
+          asset: assetInput,
         } as ActivityCreate;
 
         const transferInActivity: ActivityCreate = {
@@ -367,7 +370,7 @@ export function MobileActivityForm({ accounts, activity, open, onClose }: Mobile
           activityType: ActivityType.TRANSFER_IN,
           currency: toAccount?.currency,
           sourceGroupId,
-          symbol: symbolInput,
+          asset: assetInput,
           fxRate: fxRate as ActivityCreate["fxRate"],
         } as ActivityCreate;
 

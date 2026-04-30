@@ -387,6 +387,7 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
                 currencyName="currency"
                 quoteCcyName="symbolQuoteCcy"
                 instrumentTypeName="symbolInstrumentType"
+                existingAssetIdName="existingAssetId"
                 assetMetadataName="assetMetadata"
                 defaultCurrency={accountCurrency}
               />

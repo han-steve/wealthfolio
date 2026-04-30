@@ -30,6 +30,8 @@ export const baseActivitySchema = z.object({
   symbolQuoteCcy: z.string().nullable().optional(),
   // Optional symbol-level instrument type hint from search/provider (e.g., "EQUITY", "CRYPTO")
   symbolInstrumentType: z.string().nullable().optional(),
+  // Existing asset id selected from symbol search, when available
+  existingAssetId: z.string().nullable().optional(),
 });
 
 // Transfer schema: TRANSFER_IN/OUT supports both cash (amount) and securities (assetId + quantity + unitPrice)

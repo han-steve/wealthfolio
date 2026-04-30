@@ -202,18 +202,22 @@ export function ActivityDataGrid({
 
       // Currency fallback: search result (from exchange) → account → base
       const provisionalCurrency = result.currency;
+      let dirtyId: string | undefined;
 
       setLocalTransactions((prev) => {
         const updated = [...prev];
         if (updated[rowIndex]) {
           const row = updated[rowIndex];
+          dirtyId = row.id;
           const currency = provisionalCurrency ?? row.accountCurrency ?? fallbackCurrency;
           updated[rowIndex] = {
             ...row,
+            assetSymbol: result.symbol,
             exchangeMic: result.exchangeMic,
             assetQuoteMode: result.dataSource === "MANUAL" ? "MANUAL" : "MARKET",
             currency,
             instrumentType: result.quoteType,
+            pendingAssetId: result.existingAssetId,
             // Capture asset metadata for custom assets
             pendingAssetName: result.longName,
             pendingAssetKind: result.assetKind,
@@ -223,6 +227,9 @@ export function ActivityDataGrid({
         }
         return updated;
       });
+      if (dirtyId) {
+        markDirtyBatch([dirtyId]);
+      }
 
       // Resolve quote to confirm currency and get latest price
       if (result.dataSource !== "MANUAL") {
@@ -298,10 +305,12 @@ export function ActivityDataGrid({
       if (rowIndex < 0) return;
 
       // Update the transaction with the symbol and asset metadata
+      let dirtyId: string | undefined;
       setLocalTransactions((prev) => {
         const updated = [...prev];
         if (updated[rowIndex]) {
           const row = updated[rowIndex];
+          dirtyId = row.id;
           const currency = result.currency ?? row.accountCurrency ?? fallbackCurrency;
           updated[rowIndex] = {
             ...row,
@@ -310,6 +319,7 @@ export function ActivityDataGrid({
             assetQuoteMode: "MANUAL",
             currency,
             instrumentType: result.quoteType,
+            pendingAssetId: result.existingAssetId,
             pendingAssetName: result.longName,
             pendingAssetKind: result.assetKind,
             pendingQuoteCcy: result.currency,
@@ -320,14 +330,13 @@ export function ActivityDataGrid({
       });
 
       // Mark the transaction as dirty
-      const transaction = localTransactions[rowIndex];
-      if (transaction) {
-        markDirtyBatch([transaction.id]);
+      if (dirtyId) {
+        markDirtyBatch([dirtyId]);
       }
 
       setCustomAssetDialog({ open: false, rowIndex: -1, symbol: "" });
     },
-    [customAssetDialog, setLocalTransactions, fallbackCurrency, localTransactions, markDirtyBatch],
+    [customAssetDialog, setLocalTransactions, fallbackCurrency, markDirtyBatch],
   );
 
   // Column definitions

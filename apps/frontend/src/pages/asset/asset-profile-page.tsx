@@ -367,7 +367,7 @@ export const AssetProfilePage = () => {
           activityType: "ADJUSTMENT",
           subtype: "OPTION_EXPIRY",
           activityDate: optionSpec?.expiration ?? new Date().toISOString().split("T")[0],
-          symbol: { id: assetId },
+          asset: { id: assetId },
           quantity: String(h.quantity),
           unitPrice: "0",
           fee: "0",

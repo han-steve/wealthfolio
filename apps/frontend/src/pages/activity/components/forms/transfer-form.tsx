@@ -55,6 +55,7 @@ export const transferFormSchema = z
       .nullable(),
     // Fields for security transfers
     assetId: z.string().optional().nullable(),
+    existingAssetId: z.string().nullable().optional(),
     quantity: z.coerce
       .number({
         invalid_type_error: "Quantity must be a number.",
@@ -461,6 +462,7 @@ export function TransferForm({
                   currencyName="currency"
                   quoteCcyName="symbolQuoteCcy"
                   instrumentTypeName="symbolInstrumentType"
+                  existingAssetIdName="existingAssetId"
                   assetMetadataName="assetMetadata"
                 />
                 {/* Hidden fields to register assetMetadata for react-hook-form */}
@@ -468,6 +470,7 @@ export function TransferForm({
                 <input type="hidden" {...form.register("assetMetadata.kind")} />
                 <input type="hidden" {...form.register("symbolQuoteCcy")} />
                 <input type="hidden" {...form.register("symbolInstrumentType")} />
+                <input type="hidden" {...form.register("existingAssetId")} />
                 <QuantityInput name="quantity" label="Quantity" />
                 {/* Cost basis only needed for external transfer in - backend calculates for transfer out */}
                 {isExternal && direction === "in" && (

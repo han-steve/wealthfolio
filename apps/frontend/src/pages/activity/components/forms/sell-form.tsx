@@ -42,6 +42,7 @@ export const sellFormSchema = z
     assetKind: z.string().optional(),
     accountId: z.string().min(1, { message: "Please select an account." }),
     assetId: z.string().default(""),
+    existingAssetId: z.string().nullable().optional(),
     activityDate: z.date({ required_error: "Please select a date." }),
     quantity: z.coerce
       .number({
@@ -408,6 +409,7 @@ export function SellForm({
                   currencyName="currency"
                   quoteCcyName="symbolQuoteCcy"
                   instrumentTypeName="symbolInstrumentType"
+                  existingAssetIdName="existingAssetId"
                   assetMetadataName="assetMetadata"
                 />
                 {/* Hidden fields to register assetMetadata for react-hook-form */}
@@ -415,6 +417,7 @@ export function SellForm({
                 <input type="hidden" {...form.register("assetMetadata.kind")} />
                 <input type="hidden" {...form.register("symbolQuoteCcy")} />
                 <input type="hidden" {...form.register("symbolInstrumentType")} />
+                <input type="hidden" {...form.register("existingAssetId")} />
               </>
             )}
 

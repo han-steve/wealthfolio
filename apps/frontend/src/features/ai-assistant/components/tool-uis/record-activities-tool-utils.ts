@@ -1,3 +1,4 @@
+import { buildAssetResolutionInput } from "@/lib/asset-resolution-input";
 import type { ActivityBulkMutationResult, ActivityCreate } from "@/lib/types";
 import type {
   RecordActivitiesDraft,
@@ -131,6 +132,10 @@ function normalizeRow(
           (resolvedAssetRaw.exchangeMic as string) ??
           (resolvedAssetRaw.exchange_mic as string) ??
           undefined,
+        instrumentType:
+          (resolvedAssetRaw.instrumentType as string) ??
+          (resolvedAssetRaw.instrument_type as string) ??
+          undefined,
       }
     : undefined;
 
@@ -220,6 +225,8 @@ export function normalizeRecordActivitiesResult(
         currency: (entry.currency as string) ?? fallbackCurrency,
         exchange: (entry.exchange as string) ?? undefined,
         exchangeMic: (entry.exchangeMic as string) ?? (entry.exchange_mic as string) ?? undefined,
+        instrumentType:
+          (entry.instrumentType as string) ?? (entry.instrument_type as string) ?? undefined,
       })),
     submitted: Boolean(candidate.submitted ?? false),
     createdCount: pickNumber(candidate, "createdCount", "created_count"),
@@ -252,11 +259,15 @@ export function buildRecordActivitiesCreatePayload(rows: RecordActivitiesDraftRo
       activityType: row.draft.activityType,
       subtype: row.draft.subtype ?? undefined,
       activityDate: row.draft.activityDate,
-      symbol: row.draft.symbol
-        ? {
+      asset: row.draft.symbol
+        ? buildAssetResolutionInput({
+            id: row.resolvedAsset?.assetId ?? row.draft.assetId,
             symbol: row.draft.symbol,
             exchangeMic: row.resolvedAsset?.exchangeMic,
-          }
+            name: row.resolvedAsset?.name ?? row.draft.assetName,
+            quoteCcy: row.resolvedAsset?.currency,
+            instrumentType: row.resolvedAsset?.instrumentType,
+          })
         : undefined,
       quantity: row.draft.quantity,
       unitPrice: row.draft.unitPrice,

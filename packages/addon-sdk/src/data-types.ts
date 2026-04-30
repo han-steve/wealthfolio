@@ -273,14 +273,19 @@ export interface ActivitySearchResponse {
   };
 }
 
-export interface SymbolInput {
+export interface AssetResolutionInput {
   id?: string;
   symbol?: string;
   exchangeMic?: string;
   kind?: string;
   name?: string;
   quoteMode?: QuoteMode;
+  quoteCcy?: string;
+  instrumentType?: string;
 }
+
+/** @deprecated Use AssetResolutionInput. */
+export type SymbolInput = AssetResolutionInput;
 
 export interface ActivityCreate {
   id?: string;
@@ -289,7 +294,9 @@ export interface ActivityCreate {
   subtype?: string | null;
   activityDate: string | Date;
   sourceGroupId?: string;
-  symbol?: SymbolInput;
+  asset?: AssetResolutionInput;
+  /** @deprecated Use asset. */
+  symbol?: AssetResolutionInput;
   quantity?: string | number | null;
   unitPrice?: string | number | null;
   amount?: string | number | null;
@@ -307,7 +314,9 @@ export interface ActivityUpdate {
   subtype?: string | null;
   activityDate: string | Date;
   sourceGroupId?: string;
-  symbol?: SymbolInput;
+  asset?: AssetResolutionInput;
+  /** @deprecated Use asset. */
+  symbol?: AssetResolutionInput;
   quantity?: string | number | null;
   unitPrice?: string | number | null;
   amount?: string | number | null;
@@ -351,6 +360,7 @@ export interface ActivityImport {
   subtype?: string;
   date?: Date | string;
   symbol?: string;
+  assetId?: string;
   amount?: number | string | null;
   quantity?: number | string | null;
   unitPrice?: number | string | null;
@@ -373,6 +383,7 @@ export interface ActivityImport {
   isValid: boolean;
   lineNumber?: number;
   isDraft: boolean;
+  forceImport?: boolean;
   comment?: string;
 }
 
