@@ -1,6 +1,7 @@
 const LOG_SCALE_MIN_POINTS = 3;
 const LOG_SCALE_MIN_RATIO = 10;
 const LINEAR_DOMAIN_PADDING_RATIO = 0.15;
+const LINEAR_ZERO_ANCHOR_RANGE_RATIO = 0.2;
 const LINEAR_MIN_VISIBLE_SPAN_RATIO = 0.0001;
 const LINEAR_MIN_VISIBLE_SPAN = 0.01;
 
@@ -20,8 +21,24 @@ export interface HistoryChartScaleConfig {
 function getLinearDomain(values: number[]): [number, number] {
   const minValue = Math.min(...values);
   const maxValue = Math.max(...values);
-  const center = (minValue + maxValue) / 2;
   const range = maxValue - minValue;
+  const maxMagnitude = Math.max(Math.abs(minValue), Math.abs(maxValue));
+  const relativeRange = maxMagnitude > 0 ? range / maxMagnitude : 0;
+
+  if (relativeRange >= LINEAR_ZERO_ANCHOR_RANGE_RATIO) {
+    if (minValue >= 0) {
+      return [0, Math.max(maxValue * (1 + LINEAR_DOMAIN_PADDING_RATIO), LINEAR_MIN_VISIBLE_SPAN)];
+    }
+
+    if (maxValue <= 0) {
+      return [
+        Math.min(minValue * (1 + LINEAR_DOMAIN_PADDING_RATIO), -LINEAR_MIN_VISIBLE_SPAN),
+        0,
+      ];
+    }
+  }
+
+  const center = (minValue + maxValue) / 2;
   const minVisibleSpan = Math.max(
     Math.abs(center) * LINEAR_MIN_VISIBLE_SPAN_RATIO,
     LINEAR_MIN_VISIBLE_SPAN,
