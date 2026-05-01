@@ -204,28 +204,21 @@ export interface ActivitySearchResponse {
 }
 
 /**
- * Payload for creating a NEW activity.
- *
- * Asset identification:
- * - Send symbol + exchangeMic, backend generates the canonical asset ID
- * - For CASH activities: don't send symbol, backend generates CASH:{currency}
- *
- * IMPORTANT: assetId is NOT allowed for creates - backend generates canonical IDs
+ * Input used by the backend to resolve an activity asset before persistence.
  */
-/**
- * Symbol input for creating/updating activities.
- * Groups all symbol-related fields into a single nested object.
- */
-export interface SymbolInput {
-  id?: string; // Only for updates (backend generates ID for creates)
+export interface AssetResolutionInput {
+  id?: string; // Existing asset ID
   symbol?: string; // e.g., "AAPL" or undefined for cash
   exchangeMic?: string; // e.g., "XNAS" or undefined
-  kind?: string; // e.g., "INVESTMENT", "OTHER" - asset kind
-  name?: string; // Asset name (for custom assets)
+  kind?: string; // e.g., "INVESTMENT", "OTHER" - asset kind hint
+  name?: string; // Asset name hint for custom assets
   quoteMode?: QuoteMode;
   quoteCcy?: string; // Optional quote currency hint from search/provider (e.g., "GBp")
   instrumentType?: string; // Optional instrument type hint (e.g., "EQUITY", "CRYPTO")
 }
+
+/** @deprecated Use AssetResolutionInput. */
+export type SymbolInput = AssetResolutionInput;
 
 export interface ActivityCreate {
   id?: string;
@@ -236,7 +229,9 @@ export interface ActivityCreate {
   activityDate: string | Date;
   /** Optional grouping key (links paired transfer legs). */
   sourceGroupId?: string;
-  symbol?: SymbolInput;
+  asset?: AssetResolutionInput;
+  /** @deprecated Use asset. */
+  symbol?: AssetResolutionInput;
   quantity?: string | number | null;
   unitPrice?: string | number | null;
   amount?: string | number | null;
@@ -258,7 +253,9 @@ export interface ActivityUpdate {
   activityDate: string | Date;
   /** Optional grouping key (links paired transfer legs). */
   sourceGroupId?: string;
-  symbol?: SymbolInput;
+  asset?: AssetResolutionInput;
+  /** @deprecated Use asset. */
+  symbol?: AssetResolutionInput;
   quantity?: string | number | null;
   unitPrice?: string | number | null;
   amount?: string | number | null;

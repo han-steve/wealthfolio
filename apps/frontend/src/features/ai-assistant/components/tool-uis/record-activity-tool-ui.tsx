@@ -88,6 +88,7 @@ interface ResolvedAsset {
   currency: string;
   exchange?: string;
   exchangeMic?: string;
+  instrumentType?: string;
 }
 
 interface RecordActivityOutput {
@@ -287,6 +288,8 @@ function normalizeResult(result: unknown, fallbackCurrency: string): RecordActiv
         exchange: (assetRaw.exchange as string) ?? undefined,
         exchangeMic:
           (assetRaw.exchangeMic as string) ?? (assetRaw.exchange_mic as string) ?? undefined,
+        instrumentType:
+          (assetRaw.instrumentType as string) ?? (assetRaw.instrument_type as string) ?? undefined,
       }
     : undefined;
 
@@ -504,6 +507,7 @@ function draftToPseudoActivity(
     comment: draft.notes,
     subtype: draft.subtype,
     exchangeMic: resolvedAsset?.exchangeMic,
+    instrumentType: resolvedAsset?.instrumentType,
     assetQuoteMode: draft.quoteMode === "MANUAL" ? QuoteMode.MANUAL : QuoteMode.MARKET,
     // metadata.flow.is_external is what TransferForm uses to derive isExternal=true
     metadata: isTransfer ? { flow: { is_external: true } } : undefined,
@@ -512,9 +516,7 @@ function draftToPseudoActivity(
 
 /**
  * Layer AI-specific fields on top of config defaults. The config can't infer
- * symbolQuoteCcy or assetMetadata for a draft (they aren't on ActivityDetails)
- * and that's exactly what causes the "Quote currency is required" backend
- * error if we don't populate them here.
+ * resolver-only form fields for a draft (they aren't on ActivityDetails).
  */
 function aiSpecificDefaultOverrides(
   draft: ActivityDraft,
@@ -525,6 +527,12 @@ function aiSpecificDefaultOverrides(
   // Authoritative quote currency from the AI's symbol resolver, when present.
   if (resolvedAsset?.currency) {
     overrides.symbolQuoteCcy = resolvedAsset.currency;
+  }
+  if (resolvedAsset?.assetId) {
+    overrides.existingAssetId = resolvedAsset.assetId;
+  }
+  if (resolvedAsset?.instrumentType) {
+    overrides.symbolInstrumentType = resolvedAsset.instrumentType;
   }
   // For AI-flagged custom assets, fall back to the activity currency the user
   // already approved. Safe because the asset is being created fresh — there is

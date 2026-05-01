@@ -498,6 +498,7 @@ mod tests {
                 long_name: "Apple Inc.".to_string(),
                 exchange_mic: Some("XNAS".to_string()),
                 exchange_name: Some("NASDAQ".to_string()),
+                quote_type: "EQUITY".to_string(),
                 currency: Some("USD".to_string()),
                 existing_asset_id: Some("SEC:AAPL:XNAS".to_string()),
                 ..SymbolSearchResult::default()
@@ -555,6 +556,13 @@ mod tests {
             Some("STAKING_REWARD")
         );
         assert_eq!(output.drafts[2].draft.subtype.as_deref(), Some("BONUS"));
+        assert_eq!(
+            output.drafts[0]
+                .resolved_asset
+                .as_ref()
+                .and_then(|asset| asset.instrument_type.as_deref()),
+            Some("EQUITY")
+        );
         assert!(output.drafts[0]
             .available_subtypes
             .iter()

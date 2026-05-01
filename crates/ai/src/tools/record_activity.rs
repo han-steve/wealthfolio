@@ -157,6 +157,8 @@ pub struct ResolvedAsset {
     pub exchange: Option<String>,
     /// Exchange MIC code (e.g., "XNAS").
     pub exchange_mic: Option<String>,
+    /// Instrument type from the search provider (e.g., "EQUITY", "ETF", "BOND").
+    pub instrument_type: Option<String>,
 }
 
 /// A subtype option for the dropdown.
@@ -336,6 +338,8 @@ impl<E: AiEnvironment> RecordActivityTool<E> {
                             .unwrap_or_else(|| currency.clone()),
                         exchange: top_result.exchange_name.clone(),
                         exchange_mic: top_result.exchange_mic.clone(),
+                        instrument_type: (!top_result.quote_type.trim().is_empty())
+                            .then(|| top_result.quote_type.clone()),
                     };
                     (
                         Some(asset.clone()),

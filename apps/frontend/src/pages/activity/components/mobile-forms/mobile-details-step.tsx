@@ -128,6 +128,11 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
     setValue("transferMode" as any, mode, { shouldValidate: false });
     if (mode === "cash") {
       setValue("assetId" as any, null);
+      setValue("existingAssetId" as any, undefined);
+      setValue("exchangeMic" as any, undefined);
+      setValue("symbolQuoteCcy" as any, undefined);
+      setValue("symbolInstrumentType" as any, undefined);
+      setValue("assetMetadata" as any, undefined);
       setValue("quantity" as any, null);
       setValue("unitPrice" as any, null);
     } else {
@@ -169,6 +174,11 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
       setValue("assetKind" as any, undefined);
     }
     setValue("assetId" as any, "");
+    setValue("existingAssetId" as any, undefined);
+    setValue("exchangeMic" as any, undefined);
+    setValue("symbolQuoteCcy" as any, undefined);
+    setValue("symbolInstrumentType" as any, undefined);
+    setValue("assetMetadata" as any, undefined);
   };
 
   // Filter destination accounts to exclude source account (for internal transfers)
@@ -387,6 +397,7 @@ export function MobileDetailsStep({ accounts, activityType, isEditing }: MobileD
                 currencyName="currency"
                 quoteCcyName="symbolQuoteCcy"
                 instrumentTypeName="symbolInstrumentType"
+                existingAssetIdName="existingAssetId"
                 assetMetadataName="assetMetadata"
                 defaultCurrency={accountCurrency}
               />
