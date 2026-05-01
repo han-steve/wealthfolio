@@ -647,12 +647,30 @@ export interface Settings {
   syncEnabled: boolean;
 }
 
+export type GoalType = 'retirement' | 'education' | 'wedding' | 'home' | 'car' | 'custom_save_up';
+export type GoalLifecycle = 'active' | 'achieved' | 'archived';
+export type GoalHealth = 'on_track' | 'at_risk' | 'off_track' | 'not_applicable';
+
 export interface Goal {
   id: string;
+  goalType?: GoalType;
   title: string;
   description?: string;
   targetAmount: number;
-  statusLifecycle?: 'active' | 'achieved' | 'archived';
+  statusLifecycle?: GoalLifecycle;
+  statusHealth?: GoalHealth;
+  priority?: number;
+  coverImageKey?: string;
+  currency?: string;
+  startDate?: string;
+  targetDate?: string;
+  summaryCurrentValue?: number;
+  summaryProgress?: number;
+  projectedCompletionDate?: string;
+  projectedValueAtTargetDate?: number;
+  summaryTargetAmount?: number;
+  createdAt?: string;
+  updatedAt?: string;
   allocations?: GoalAllocation[];
 }
 
@@ -665,11 +683,14 @@ export interface GoalAllocation {
 }
 
 export interface GoalProgress {
+  goalId: string;
   name: string;
   targetValue: number;
   currentValue: number;
   progress: number;
   currency: string;
+  statusHealth?: GoalHealth;
+  targetDate?: string;
 }
 
 export interface IncomeByAsset {

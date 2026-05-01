@@ -219,13 +219,31 @@ export function createSDKHostAPIBridge(
     debug: (message: string) => internalAPI.logDebug(`[${prefix}] ${message}`),
   });
 
-  const toSDKGoal = (goal: Goal): SDKGoal => ({
-    id: goal.id,
-    title: goal.title,
-    description: goal.description,
-    targetAmount: goal.targetAmount ?? goal.summaryTargetAmount ?? 0,
-    statusLifecycle: goal.statusLifecycle,
-  });
+  const toSDKGoal = (goal: Goal): SDKGoal => {
+    const targetAmount = goal.targetAmount ?? goal.summaryTargetAmount ?? 0;
+
+    return {
+      id: goal.id,
+      goalType: goal.goalType,
+      title: goal.title,
+      description: goal.description ?? undefined,
+      targetAmount,
+      statusLifecycle: goal.statusLifecycle,
+      statusHealth: goal.statusHealth,
+      priority: goal.priority,
+      coverImageKey: goal.coverImageKey ?? undefined,
+      currency: goal.currency ?? undefined,
+      startDate: goal.startDate ?? undefined,
+      targetDate: goal.targetDate ?? undefined,
+      summaryCurrentValue: goal.summaryCurrentValue ?? undefined,
+      summaryProgress: goal.summaryProgress ?? undefined,
+      projectedCompletionDate: goal.projectedCompletionDate ?? undefined,
+      projectedValueAtTargetDate: goal.projectedValueAtTargetDate ?? undefined,
+      summaryTargetAmount: goal.summaryTargetAmount ?? targetAmount,
+      createdAt: goal.createdAt ?? undefined,
+      updatedAt: goal.updatedAt ?? undefined,
+    };
+  };
 
   const toSDKGoalAllocation = (rule: GoalFundingRule): SDKGoalAllocation => ({
     id: rule.id,
