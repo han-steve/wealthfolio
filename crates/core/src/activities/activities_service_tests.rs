@@ -7,7 +7,7 @@ mod tests {
         Asset, AssetKind, AssetServiceTrait, InstrumentType, ProviderProfile, QuoteMode,
         UpdateAssetProfile,
     };
-    use crate::errors::{Error, Result};
+    use crate::errors::{DatabaseError, Error, Result};
     use crate::events::{DomainEvent, MockDomainEventSink};
     use crate::fx::{ExchangeRate, FxServiceTrait, NewExchangeRate};
     use crate::quotes::service::ProviderInfo;
@@ -137,7 +137,11 @@ mod tests {
                 .iter()
                 .find(|a| a.id == asset_id)
                 .cloned()
-                .ok_or_else(|| crate::errors::Error::Unexpected("Asset not found".to_string()))
+                .ok_or_else(|| {
+                    Error::Database(DatabaseError::NotFound(format!(
+                        "Asset not found: {asset_id}",
+                    )))
+                })
         }
 
         async fn delete_asset(&self, _asset_id: &str) -> Result<()> {
@@ -2148,7 +2152,9 @@ mod tests {
         let activity_repository = Arc::new(MockActivityRepository::new());
 
         account_service.add_account(create_test_account("acc-1", "USD"));
-        asset_service.set_get_asset_by_id_error("database temporarily unavailable");
+        asset_service.set_get_asset_by_id_error(
+            "Asset not found lookup failed: database temporarily unavailable",
+        );
 
         let quote_service = Arc::new(MockQuoteService);
         let activity_service = ActivityService::new(

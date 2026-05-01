@@ -252,6 +252,8 @@ export function buildRecordActivitiesCreatePayload(rows: RecordActivitiesDraftRo
 
     const tempId = `record-activities-${row.rowIndex}`;
     rowIndexByTempId.set(tempId, row.rowIndex);
+    const resolvedSymbol = row.resolvedAsset?.symbol.trim();
+    const assetSymbol = resolvedSymbol || row.draft.symbol?.trim();
 
     creates.push({
       id: tempId,
@@ -259,10 +261,10 @@ export function buildRecordActivitiesCreatePayload(rows: RecordActivitiesDraftRo
       activityType: row.draft.activityType,
       subtype: row.draft.subtype ?? undefined,
       activityDate: row.draft.activityDate,
-      asset: row.draft.symbol
+      asset: assetSymbol
         ? buildAssetResolutionInput({
             id: row.resolvedAsset?.assetId ?? row.draft.assetId,
-            symbol: row.draft.symbol,
+            symbol: assetSymbol,
             exchangeMic: row.resolvedAsset?.exchangeMic,
             name: row.resolvedAsset?.name ?? row.draft.assetName,
             quoteCcy: row.resolvedAsset?.currency,

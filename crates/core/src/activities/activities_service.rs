@@ -1047,8 +1047,6 @@ impl ActivityService {
 
     fn is_asset_not_found_error(err: &Error) -> bool {
         matches!(err, Error::Database(DatabaseError::NotFound(_)))
-            || matches!(err, Error::Unexpected(message) if message.to_lowercase().contains("asset not found"))
-            || matches!(err, Error::Asset(message) if message.to_lowercase().contains("asset not found"))
     }
 
     fn has_submitted_asset_identity(
