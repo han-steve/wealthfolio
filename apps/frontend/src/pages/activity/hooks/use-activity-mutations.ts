@@ -49,19 +49,27 @@ export function useActivityMutations(
     includeId: boolean;
   }): ActivityCreate["asset"] => {
     const normalizedAssetId = normalizeOptionalString(assetId);
-    const normalizedExistingAssetId = normalizeOptionalString(existingAssetId);
+    const normalizedInstrumentType = normalizeOptionalString(symbolInstrumentType);
+    const normalizedExistingAssetId =
+      normalizedAssetId && normalizedInstrumentType?.toUpperCase() !== "OPTION"
+        ? normalizeOptionalString(existingAssetId)
+        : undefined;
     const normalizedCurrentAssetId = includeId
       ? normalizeOptionalString(currentAssetId)
       : undefined;
+    if (!normalizedAssetId && !normalizedCurrentAssetId) return undefined;
+
     return buildAssetResolutionInput({
       id: normalizedExistingAssetId ?? normalizedCurrentAssetId,
       symbol: normalizedAssetId,
-      exchangeMic,
-      kind: normalizeOptionalString(assetKind) ?? normalizeOptionalString(assetMetadata?.kind),
-      name: assetMetadata?.name,
-      quoteMode,
-      quoteCcy: symbolQuoteCcy,
-      instrumentType: symbolInstrumentType,
+      exchangeMic: normalizedAssetId ? exchangeMic : undefined,
+      kind: normalizedAssetId
+        ? (normalizeOptionalString(assetKind) ?? normalizeOptionalString(assetMetadata?.kind))
+        : undefined,
+      name: normalizedAssetId ? assetMetadata?.name : undefined,
+      quoteMode: normalizedAssetId ? quoteMode : undefined,
+      quoteCcy: normalizedAssetId ? symbolQuoteCcy : undefined,
+      instrumentType: normalizedAssetId ? normalizedInstrumentType : undefined,
     });
   };
 

@@ -237,6 +237,11 @@ export function SellForm({
       setValue("assetKind", undefined);
     }
     setValue("assetId", "");
+    setValue("existingAssetId", undefined);
+    setValue("exchangeMic", undefined);
+    setValue("symbolQuoteCcy", undefined);
+    setValue("symbolInstrumentType", undefined);
+    setValue("assetMetadata", undefined);
   };
 
   const quantityLabel = isOption ? "Contracts" : assetType === "bond" ? "Bonds" : "Quantity";
@@ -352,6 +357,7 @@ export function SellForm({
         data.strikePrice,
       );
       data.assetId = occSymbol;
+      data.existingAssetId = undefined;
       data.symbolInstrumentType = "OPTION";
       data.assetMetadata = {
         ...data.assetMetadata,
