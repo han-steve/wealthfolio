@@ -453,7 +453,7 @@ export function DeviceSyncSection() {
         {/* Pairing Dialog */}
         <Dialog open={isPairingOpen} onOpenChange={setIsPairingOpen}>
           <DialogContent
-            className="max-w-[calc(100vw-2rem)] sm:max-w-sm"
+            className="md:max-w-lg"
             mobileClassName="pb-8"
             showCloseButton={false}
             onEscapeKeyDown={(e) => e.preventDefault()}
@@ -507,7 +507,7 @@ export function DeviceSyncSection() {
         {/* Pairing Dialog */}
         <Dialog open={isPairingOpen} onOpenChange={setIsPairingOpen}>
           <DialogContent
-            className="max-w-[calc(100vw-2rem)] sm:max-w-sm"
+            className="md:max-w-lg"
             mobileClassName="pb-8"
             showCloseButton={false}
             onEscapeKeyDown={(e) => e.preventDefault()}
@@ -751,7 +751,7 @@ export function DeviceSyncSection() {
           }}
         >
           <DialogContent
-            className="max-w-[calc(100vw-2rem)] sm:max-w-sm"
+            className="md:max-w-lg"
             mobileClassName="pb-8"
             showCloseButton={false}
             onEscapeKeyDown={(e) => e.preventDefault()}
