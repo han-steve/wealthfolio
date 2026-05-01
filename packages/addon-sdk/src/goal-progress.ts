@@ -68,7 +68,8 @@ export function calculateGoalProgress(
 
     const currentValue = getFiniteAmount(goal.summaryCurrentValue) ?? totalAllocatedValue;
     const progress =
-      getFiniteAmount(goal.summaryProgress) ?? (targetAmount > 0 ? currentValue / targetAmount : 0);
+      getFiniteAmount(goal.summaryProgress) ??
+      (targetAmount > 0 ? currentValue / targetAmount : 0);
 
     return {
       goalId: goal.id,

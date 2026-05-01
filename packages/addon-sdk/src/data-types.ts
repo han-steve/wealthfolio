@@ -647,7 +647,13 @@ export interface Settings {
   syncEnabled: boolean;
 }
 
-export type GoalType = 'retirement' | 'education' | 'wedding' | 'home' | 'car' | 'custom_save_up';
+export type GoalType =
+  | 'retirement'
+  | 'education'
+  | 'wedding'
+  | 'home'
+  | 'car'
+  | 'custom_save_up';
 export type GoalLifecycle = 'active' | 'achieved' | 'archived';
 export type GoalHealth = 'on_track' | 'at_risk' | 'off_track' | 'not_applicable';
 
