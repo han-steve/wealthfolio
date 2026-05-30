@@ -19,21 +19,21 @@
     ],
     "copyright": "2026 Teymz Inc.",
     "category": "public.app-category.finance",
-    "createUpdaterArtifacts": false,
+    "createUpdaterArtifacts": "v1Compatible",
     "iOS": {
-      "developmentTeam": "28WWVY5RN2",
+      "developmentTeam": "DYDJ2RNL5H",
       "infoPlist": "Info.ios.plist"
     },
     "macOS": {
       "bundleVersion": "20260301.1",
-      "signingIdentity": null,
+      "signingIdentity": "Apple Distribution: Teymz Inc (DYDJ2RNL5H)",
       "minimumSystemVersion": "10.13"
     }
   },
   "productName": "Wealthfolio",
   "mainBinaryName": "Wealthfolio",
-  "version": "3.4.0",
-  "identifier": "com.wealthfolio.app",
+  "version": "3.5.0",
+  "identifier": "com.teymz.wealthfolio",
   "plugins": {
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY0RjI4MkRFOUYwRDM3N0QKUldSOU53MmYzb0x5WlBySmErU21wcjVHZFNtMW9zdGcyZTBBRWpVcHRDMkoyKzF1bkQ1VmdKbkYK",
@@ -43,6 +43,10 @@
       }
     },
     "deep-link": {
+      "mobile": [
+        { "host": "connect.wealthfolio.app", "pathPrefix": ["/deeplink"] },
+        { "host": "connect-staging.wealthfolio.app", "pathPrefix": ["/deeplink"] }
+      ],
       "desktop": {
         "schemes": ["wealthfolio"]
       },

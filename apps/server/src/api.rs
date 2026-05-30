@@ -21,6 +21,7 @@ use utoipa::OpenApi;
 mod accounts;
 mod activities;
 mod addons;
+mod allocation_targets;
 mod ai_chat;
 mod ai_providers;
 mod alternative_assets;
@@ -47,6 +48,7 @@ mod portfolios;
 mod secrets;
 mod settings;
 pub mod shared;
+mod spending;
 #[cfg(feature = "device-sync")]
 mod sync_crypto;
 pub mod sync_server;
@@ -116,7 +118,9 @@ pub fn app_router(state: Arc<AppState>, config: &Config, sync_state: Option<Arc<
         .merge(ai_providers::router())
         .merge(ai_chat::router())
         .merge(health::router())
-        .merge(custom_providers::router());
+        .merge(custom_providers::router())
+        .merge(spending::router())
+        .merge(allocation_targets::router());
 
     #[cfg(feature = "device-sync")]
     {

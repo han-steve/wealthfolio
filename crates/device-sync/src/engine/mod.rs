@@ -2,10 +2,11 @@ use chrono::Utc;
 use log::{debug, info, warn};
 use std::sync::Arc;
 use std::time::Duration;
-use uuid::Uuid;
 use wealthfolio_core::sync::{SyncEntity, SyncOperation};
 
-use crate::{ApiRetryClass, SyncPushEventRequest, SyncPushRequest, SyncState};
+use crate::{
+    sync_entity_from_remote, ApiRetryClass, SyncPushEventRequest, SyncPushRequest, SyncState,
+};
 
 pub mod ports;
 mod runtime;
@@ -36,6 +37,7 @@ pub const DEVICE_SYNC_NOT_READY_BACKOFF_CAP_SECS: u64 = 60 * 60;
 pub const DEVICE_SYNC_OUTBOX_PRUNE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 pub const DEVICE_SYNC_SENT_OUTBOX_RETENTION_DAYS: i64 = 7;
 pub const DEVICE_SYNC_DEAD_OUTBOX_RETENTION_DAYS: i64 = 30;
+const MAX_REMOTE_ENTITY_ID_LEN: usize = 256;
 
 /// Exponential backoff in seconds with cap.
 pub fn backoff_seconds(consecutive_failures: i32) -> i64 {
@@ -46,8 +48,12 @@ pub fn backoff_seconds(consecutive_failures: i32) -> i64 {
     2_i64.pow(capped as u32) * BASE_DELAY_SECONDS
 }
 
-fn remote_entity_id_is_valid(entity_id: &str) -> bool {
-    Uuid::parse_str(entity_id).is_ok()
+fn remote_entity_id_is_valid(_entity: &SyncEntity, entity_id: &str) -> bool {
+    !entity_id.is_empty()
+        && entity_id.len() <= MAX_REMOTE_ENTITY_ID_LEN
+        && entity_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b':' | b'-'))
 }
 
 fn sync_entity_name(entity: &SyncEntity) -> &'static str {
@@ -73,6 +79,16 @@ fn sync_entity_name(entity: &SyncEntity) -> &'static str {
         SyncEntity::ImportRun => "import_run",
         SyncEntity::Portfolio => "portfolio",
         SyncEntity::PortfolioAccount => "portfolio_account",
+        SyncEntity::SpendingSetting => "spending_setting",
+        SyncEntity::ActivityTaxonomyAssignment => "activity_taxonomy_assignment",
+        SyncEntity::SpendingActivityEvent => "spending_activity_event",
+        SyncEntity::SpendingCategorizationRule => "spending_categorization_rule",
+        SyncEntity::SpendingEvent => "spending_event",
+        SyncEntity::SpendingEventType => "spending_event_type",
+        SyncEntity::BudgetGroup => "budget_group",
+        SyncEntity::BudgetGroupAssignment => "budget_group_assignment",
+        SyncEntity::BudgetTarget => "budget_target",
+        SyncEntity::BudgetRolloverSetting => "budget_rollover_setting",
     }
 }
 
@@ -429,9 +445,9 @@ where
     let mut future_key_version_event_ids = Vec::new();
 
     for event in pending {
-        if !remote_entity_id_is_valid(&event.entity_id) {
+        if !remote_entity_id_is_valid(&event.entity, &event.entity_id) {
             warn!(
-                "[DeviceSync] Marking outbox event dead due to non-UUID entity_id (event_id={}, entity={:?}, entity_id={})",
+                "[DeviceSync] Marking outbox event dead due to invalid entity_id (event_id={}, entity={:?}, entity_id={})",
                 event.event_id,
                 event.entity,
                 event.entity_id
