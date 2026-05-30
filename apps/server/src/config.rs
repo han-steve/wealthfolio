@@ -13,6 +13,10 @@ pub struct Config {
     pub raw_secret_key: Vec<u8>,
     /// HKDF-derived key for secrets encryption
     pub secrets_encryption_key: [u8; 32],
+    /// HKDF-derived key for JWT signing (sync server)
+    pub jwt_key: [u8; 32],
+    pub sync_db_path: String,
+    pub sync_snapshot_dir: String,
     pub auth: Option<AuthConfig>,
 }
 
@@ -54,6 +58,15 @@ impl Config {
                 .to_string_lossy()
                 .into_owned()
         });
+        let db_parent = std::path::Path::new(&db_path)
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .to_string_lossy()
+            .into_owned();
+        let sync_db_path = std::env::var("WF_SYNC_DB_PATH")
+            .unwrap_or_else(|_| format!("{}/sync.db", db_parent));
+        let sync_snapshot_dir = std::env::var("WF_SYNC_SNAPSHOT_DIR")
+            .unwrap_or_else(|_| format!("{}/sync-snapshots", db_parent));
         let auth = std::env::var("WF_AUTH_PASSWORD_HASH")
             .ok()
             .map(|hash| hash.trim().to_string())
@@ -123,6 +136,9 @@ impl Config {
             addons_root,
             raw_secret_key,
             secrets_encryption_key,
+            jwt_key,
+            sync_db_path,
+            sync_snapshot_dir,
             auth,
         }
     }

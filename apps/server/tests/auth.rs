@@ -31,7 +31,7 @@ async fn build_test_router(password: &str) -> axum::Router {
 
     let config = Config::from_env();
     let state = build_state(&config).await.unwrap();
-    app_router(state, &config)
+    app_router(state, &config, None)
 }
 
 fn cleanup_env() {

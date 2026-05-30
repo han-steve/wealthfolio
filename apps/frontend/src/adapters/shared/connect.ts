@@ -334,3 +334,37 @@ export const storeSyncSession = async (refreshToken: string): Promise<void> => {
 export const clearSyncSession = async (): Promise<void> => {
   return invoke<void>("clear_sync_session");
 };
+
+// ============================================================================
+// Server-as-Device Pairing Commands
+// ============================================================================
+
+export interface ServerDeviceInfo {
+  deviceId: string;
+  displayName: string;
+  platform: string;
+  hasRootKey: boolean;
+  pairingCode?: string;
+}
+
+export interface ServerPairResponse {
+  success: boolean;
+  sessionId: string;
+  serverEphemeralKey: string;
+  encryptedKeyBundle: string;
+  keyVersion: number;
+}
+
+export const getServerDeviceInfo = async (): Promise<ServerDeviceInfo> => {
+  return invoke<ServerDeviceInfo>("get_server_device_info");
+};
+
+export const pairWithServer = async (
+  ephemeralPublicKey: string,
+  code: string,
+): Promise<ServerPairResponse> => {
+  return invoke<ServerPairResponse>("pair_with_server", {
+    ephemeralPublicKey,
+    code,
+  });
+};

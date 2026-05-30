@@ -334,8 +334,11 @@ function EnabledWealthfolioConnectProvider({ children }: { children: ReactNode }
             refresh_token: refreshToken,
           });
           if (setErr) {
-            logger.debug("Failed to set session from backend tokens.");
-            await storeTokens(null);
+            // Session could not be applied in the JS client (e.g. malformed JWT or
+            // clock skew), but the stored refresh token may still be valid for
+            // future launches. Don't clear the token here — that would lock the
+            // user out permanently until they manually re-authenticate.
+            logger.warn(`Failed to set session from backend tokens: ${setErr.message}`);
           } else if (data.session && !cancelled) {
             setSession(data.session);
             setUser(data.session.user);

@@ -20,10 +20,16 @@ const settingsSections = [
         subtitle: "Theme, font, and menu bar",
         icon: <Icons.Monitor className="size-5" />,
       },
+      {
+        title: "Security",
+        href: "security",
+        subtitle: "Biometric lock and privacy",
+        icon: <Icons.Shield className="size-5" />,
+      },
     ],
   },
   {
-    title: "Finance",
+    title: "Portfolio",
     items: [
       {
         title: "Accounts",
@@ -42,12 +48,6 @@ const settingsSections = [
         href: "contribution-limits",
         subtitle: "Limits by year and account",
         icon: <Icons.TrendingUp className="size-5" />,
-      },
-      {
-        title: "Spending Tracker",
-        href: "spending",
-        subtitle: "Enable + pick spending accounts",
-        icon: <Icons.Wallet className="size-5" />,
       },
     ],
   },

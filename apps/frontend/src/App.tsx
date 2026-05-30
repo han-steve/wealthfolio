@@ -1,6 +1,6 @@
 import { isWeb } from "@/adapters";
 import { AuthGate, AuthProvider } from "@/context/auth-context";
-import { EventDialogProvider } from "@/features/spending/components/event-dialog-provider";
+import { BiometricGate } from "@/components/biometric-gate";
 import { WealthfolioConnectProvider } from "@/features/wealthfolio-connect";
 import { SettingsProvider } from "@/lib/settings-provider";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -34,7 +34,9 @@ function App() {
       <AppRoutes />
     </AuthGate>
   ) : (
-    <AppRoutes />
+    <BiometricGate>
+      <AppRoutes />
+    </BiometricGate>
   );
 
   return (
@@ -43,9 +45,7 @@ function App() {
         <WealthfolioConnectProvider>
           <PrivacyProvider>
             <SettingsProvider>
-              <TooltipProvider>
-                <EventDialogProvider>{routedContent}</EventDialogProvider>
-              </TooltipProvider>
+              <TooltipProvider>{routedContent}</TooltipProvider>
             </SettingsProvider>
           </PrivacyProvider>
         </WealthfolioConnectProvider>

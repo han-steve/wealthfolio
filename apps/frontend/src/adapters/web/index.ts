@@ -155,7 +155,6 @@ export {
   checkHoldingsImport,
   deleteSnapshot,
   getAssetHoldings,
-  getAssetLots,
   getHistoricalValuations,
   getHolding,
   getHoldings,
@@ -177,7 +176,7 @@ export {
   createAsset,
   deleteAsset,
   deleteQuote,
-  fetchDividends,
+  fetchYahooDividends,
   getAssetProfile,
   getAssets,
   getExchanges,
@@ -284,6 +283,8 @@ export {
   syncBrokerData,
   syncTriggerCycle,
   updateDevice,
+  getServerDeviceInfo,
+  pairWithServer,
 } from "../shared/connect";
 
 // AI Providers Commands
@@ -318,21 +319,6 @@ export {
   runHealthChecks,
   updateHealthConfig,
 } from "../shared/health";
-
-// Allocation Target Commands
-export {
-  activateTargetProfile,
-  archiveTargetProfile,
-  createTargetProfile,
-  deleteTargetProfile,
-  getTargetDrift,
-  getTargetDriftForProfile,
-  getTargetProfile,
-  listTargetNodes,
-  listTargetProfiles,
-  saveTargetNodes,
-  updateTargetProfile,
-} from "../shared/allocation-targets";
 
 // Data Export Commands
 export { exportDataFile } from "./exports";
@@ -391,6 +377,7 @@ export {
   updateSettings,
 } from "./settings";
 export type { DatabaseBackup } from "./settings";
+export type { ServerDeviceInfo, ServerPairResponse } from "../shared/connect";
 
 // Addon Commands (web-specific implementations)
 export {

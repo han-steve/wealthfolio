@@ -95,6 +95,8 @@ export function DeviceSyncSection() {
   const [prepareError, setPrepareError] = useState<string | null>(null);
   const [showReinitConfirmDialog, setShowReinitConfirmDialog] = useState(false);
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
+  // Track whether user explicitly dismissed the recovery dialog so we don't re-open it every poll cycle.
+  const [hasUserDismissedRecovery, setHasUserDismissedRecovery] = useState(false);
   const [showBootstrapOverwriteDialog, setShowBootstrapOverwriteDialog] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isBackingUpBeforeBootstrap, setIsBackingUpBeforeBootstrap] = useState(false);
@@ -356,10 +358,20 @@ export function DeviceSyncSection() {
     await runReinitAndOpenPairing();
   }, [runReinitAndOpenPairing]);
 
-  // Keep recovery dialog strictly in sync with RECOVERY state.
+  // Keep recovery dialog in sync with RECOVERY state, but respect user dismissal.
+  // Without the dismissed guard the useEffect re-opens the dialog every poll cycle
+  // even after the user clicks "Not now".
   useEffect(() => {
-    setShowRecoveryDialog(status.syncState === SyncStates.RECOVERY);
-  }, [status.syncState]);
+    if (status.syncState === SyncStates.RECOVERY) {
+      if (!hasUserDismissedRecovery) {
+        setShowRecoveryDialog(true);
+      }
+    } else {
+      // Leaving RECOVERY — hide dialog and reset dismissed flag
+      setShowRecoveryDialog(false);
+      setHasUserDismissedRecovery(false);
+    }
+  }, [status.syncState, hasUserDismissedRecovery]);
 
   useEffect(() => {
     if (status.syncState !== SyncStates.READY) return;
@@ -908,7 +920,13 @@ export function DeviceSyncSection() {
       </Card>
 
       {/* Recovery Dialog */}
-      <RecoveryDialog open={showRecoveryDialog} onOpenChange={setShowRecoveryDialog} />
+      <RecoveryDialog
+        open={showRecoveryDialog}
+        onOpenChange={(open) => {
+          setShowRecoveryDialog(open);
+          if (!open) setHasUserDismissedRecovery(true);
+        }}
+      />
     </>
   );
 }

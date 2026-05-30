@@ -11,7 +11,7 @@ async fn healthz_works() {
     std::env::set_var("WF_LISTEN_ADDR", "127.0.0.1:0");
     let config = Config::from_env();
     let state = build_state(&config).await.unwrap();
-    let app = app_router(state, &config);
+    let app = app_router(state, &config, None);
 
     let response = app
         .oneshot(

@@ -230,10 +230,11 @@ impl SyncTransport for TauriEnginePorts {
         &self,
         token: &str,
         device_id: &str,
+        local_cursor: i64,
     ) -> Result<ReconcileReadyStateResponse, TransportError> {
         create_client()
             .map_err(transport_err_permanent)?
-            .get_reconcile_ready_state(token, device_id)
+            .get_reconcile_ready_state(token, device_id, local_cursor)
             .await
             .map_err(transport_err_from_sync)
     }

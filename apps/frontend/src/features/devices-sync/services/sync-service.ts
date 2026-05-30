@@ -35,8 +35,10 @@ import {
   syncBootstrapSnapshotIfNeeded as syncBootstrapSnapshotIfNeededApi,
   syncTriggerCycle as syncTriggerCycleApi,
   updateDevice as updateDeviceApi,
+  getServerDeviceInfo as getServerDeviceInfoApi,
+  pairWithServer as pairWithServerApi,
 } from "@/adapters";
-import type { ConfirmPairingWithBootstrapResult } from "@/adapters";
+import type { ConfirmPairingWithBootstrapResult, ServerDeviceInfo } from "@/adapters";
 import * as crypto from "../crypto";
 import { syncStorage } from "../storage/keyring";
 import type {
@@ -469,6 +471,70 @@ class SyncService {
       };
     } catch (err) {
       logger.error(`[SyncService] Failed to claim pairing session: ${err}`);
+      throw SyncError.from(err);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // SERVER-AS-DEVICE PAIRING
+  // ═══════════════════════════════════════════════════════════════════════════
+
+  /**
+   * Get the homeserver's device info including the 6-digit pairing code.
+   */
+  async getServerDeviceInfo(): Promise<ServerDeviceInfo> {
+    try {
+      return await getServerDeviceInfoApi();
+    } catch (err) {
+      logger.error(`[SyncService] Failed to get server device info: ${err}`);
+      throw SyncError.from(err);
+    }
+  }
+
+  /**
+   * Pair directly with the homeserver to receive the root key.
+   *
+   * 1. Generate an ephemeral X25519 key pair.
+   * 2. POST /api/v1/sync/server/pair with code + public key.
+   * 3. ECDH: derive shared secret from server's ephemeral key.
+   * 4. Decrypt the encrypted key bundle.
+   * 5. Return the root key + key version.
+   */
+  async pairWithServer(code: string): Promise<KeyBundlePayload> {
+    try {
+      // Generate ephemeral key pair
+      const keypair = await crypto.generateEphemeralKeypair();
+
+      // Call server pair endpoint
+      const result = await pairWithServerApi(keypair.publicKey, code);
+
+      // Derive shared secret via ECDH
+      const sharedSecretB64 = await crypto.computeSharedSecret(
+        keypair.secretKey,
+        result.serverEphemeralKey,
+      );
+
+      // Decrypt the root key bundle (session key = shared secret directly, no extra derivation)
+      const decrypted = await crypto.decrypt(sharedSecretB64, result.encryptedKeyBundle);
+      const parsed = JSON.parse(decrypted);
+
+      if (
+        typeof parsed !== "object" ||
+        parsed === null ||
+        typeof parsed.rootKey !== "string" ||
+        typeof parsed.keyVersion !== "number" ||
+        !parsed.rootKey
+      ) {
+        throw new Error("Invalid key bundle structure from server");
+      }
+
+      return {
+        version: typeof parsed.version === "number" ? parsed.version : 1,
+        rootKey: parsed.rootKey,
+        keyVersion: parsed.keyVersion,
+      };
+    } catch (err) {
+      logger.error(`[SyncService] Failed to pair with server: ${err}`);
       throw SyncError.from(err);
     }
   }

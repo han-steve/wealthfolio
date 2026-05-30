@@ -1,7 +1,6 @@
-use crate::{context::ServiceContext, secret_store::KeyringSecretStore};
+use crate::{context::ServiceContext, secret_store::shared_secret_store};
 use std::sync::Arc;
 use tauri::State;
-use wealthfolio_core::secrets::SecretStore;
 
 #[tauri::command]
 pub async fn set_secret(
@@ -9,7 +8,7 @@ pub async fn set_secret(
     secret: String,
     _state: State<'_, Arc<ServiceContext>>, // keep signature consistent
 ) -> Result<(), String> {
-    KeyringSecretStore
+    shared_secret_store()
         .set_secret(&secret_key, &secret)
         .map_err(|e| e.to_string())
 }
@@ -19,7 +18,7 @@ pub async fn get_secret(
     secret_key: String,
     _state: State<'_, Arc<ServiceContext>>,
 ) -> Result<Option<String>, String> {
-    KeyringSecretStore
+    shared_secret_store()
         .get_secret(&secret_key)
         .map_err(|e| e.to_string())
 }
@@ -29,7 +28,7 @@ pub async fn delete_secret(
     secret_key: String,
     _state: State<'_, Arc<ServiceContext>>,
 ) -> Result<(), String> {
-    KeyringSecretStore
+    shared_secret_store()
         .delete_secret(&secret_key)
         .map_err(|e| e.to_string())
 }

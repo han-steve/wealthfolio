@@ -547,7 +547,7 @@ pub struct SyncEvent {
     pub device_id: String,
     #[serde(rename = "type")]
     pub event_type: String,
-    pub entity: String,
+    pub entity: SyncEntity,
     #[serde(alias = "entityId")]
     pub entity_id: String,
     #[serde(alias = "clientTimestamp")]
@@ -562,44 +562,6 @@ pub struct SyncEvent {
     pub team_id: String,
     #[serde(alias = "serverTimestamp")]
     pub server_timestamp: String,
-}
-
-/// Convert a remote wire entity string into the strict local sync entity enum.
-pub fn sync_entity_from_remote(entity: &str) -> Option<SyncEntity> {
-    match entity {
-        "account" => Some(SyncEntity::Account),
-        "asset" => Some(SyncEntity::Asset),
-        "quote" => Some(SyncEntity::Quote),
-        "asset_taxonomy_assignment" => Some(SyncEntity::AssetTaxonomyAssignment),
-        "activity" => Some(SyncEntity::Activity),
-        "activity_import_profile" => Some(SyncEntity::ActivityImportProfile),
-        "import_template" => Some(SyncEntity::ImportTemplate),
-        "goal" => Some(SyncEntity::Goal),
-        "goal_plan" => Some(SyncEntity::GoalPlan),
-        "goals_allocation" => Some(SyncEntity::GoalsAllocation),
-        "ai_thread" => Some(SyncEntity::AiThread),
-        "ai_message" => Some(SyncEntity::AiMessage),
-        "ai_thread_tag" => Some(SyncEntity::AiThreadTag),
-        "contribution_limit" => Some(SyncEntity::ContributionLimit),
-        "platform" => Some(SyncEntity::Platform),
-        "snapshot" => Some(SyncEntity::Snapshot),
-        "custom_provider" => Some(SyncEntity::CustomProvider),
-        "custom_taxonomy" => Some(SyncEntity::CustomTaxonomy),
-        "import_run" => Some(SyncEntity::ImportRun),
-        "portfolio" => Some(SyncEntity::Portfolio),
-        "portfolio_account" => Some(SyncEntity::PortfolioAccount),
-        "spending_setting" => Some(SyncEntity::SpendingSetting),
-        "activity_taxonomy_assignment" => Some(SyncEntity::ActivityTaxonomyAssignment),
-        "spending_activity_event" => Some(SyncEntity::SpendingActivityEvent),
-        "spending_categorization_rule" => Some(SyncEntity::SpendingCategorizationRule),
-        "spending_event" => Some(SyncEntity::SpendingEvent),
-        "spending_event_type" => Some(SyncEntity::SpendingEventType),
-        "budget_group" => Some(SyncEntity::BudgetGroup),
-        "budget_group_assignment" => Some(SyncEntity::BudgetGroupAssignment),
-        "budget_target" => Some(SyncEntity::BudgetTarget),
-        "budget_rollover_setting" => Some(SyncEntity::BudgetRolloverSetting),
-        _ => None,
-    }
 }
 
 /// Pull response with pagination and GC/snapshot hints.
@@ -712,50 +674,50 @@ pub struct SnapshotUploadResponse {
     pub created_at: String,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-as-Device Pairing
+// ─────────────────────────────────────────────────────────────────────────────
 
-    #[test]
-    fn pull_response_deserializes_unknown_remote_entity() {
-        let json = r#"{
-            "from": 10,
-            "to": 11,
-            "nextCursor": 11,
-            "hasMore": false,
-            "events": [{
-                "eventId": "evt-future-1",
-                "deviceId": "device-2",
-                "type": "future_entity.create.v1",
-                "entity": "future_entity",
-                "entityId": "future-1",
-                "clientTimestamp": "2026-05-25T00:00:00Z",
-                "payload": "not-json",
-                "payloadKeyVersion": 1,
-                "seq": 11,
-                "userId": "user-1",
-                "teamId": "team-1",
-                "serverTimestamp": "2026-05-25T00:00:01Z"
-            }]
-        }"#;
+/// Info about the homeserver device (for server-as-device pairing).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerDeviceInfo {
+    /// Server's stable device ID (from WF_DEVICE_ID env)
+    pub device_id: String,
+    /// Human-readable name
+    pub display_name: String,
+    /// Platform tag (always "server")
+    pub platform: String,
+    /// Whether the server has a root key loaded
+    pub has_root_key: bool,
+    /// 6-digit pairing code (only present when WF_ROOT_KEY is set)
+    pub pairing_code: Option<String>,
+}
 
-        let response: SyncPullResponse =
-            serde_json::from_str(json).expect("unknown entities should not break pull parsing");
+/// Request to pair with the homeserver as if it were a trusted device.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPairRequest {
+    /// Caller's device ID (must already be enrolled in the team)
+    pub device_id: String,
+    /// Caller's X25519 ephemeral public key (base64, 32 bytes)
+    pub ephemeral_key: String,
+    /// 6-digit pairing code from `ServerDeviceInfo.pairing_code`
+    pub code: String,
+}
 
-        assert_eq!(response.events.len(), 1);
-        assert_eq!(response.events[0].entity, "future_entity");
-        assert_eq!(sync_entity_from_remote(&response.events[0].entity), None);
-    }
-
-    #[test]
-    fn remote_entity_conversion_accepts_known_entities() {
-        assert_eq!(
-            sync_entity_from_remote("account"),
-            Some(SyncEntity::Account)
-        );
-        assert_eq!(
-            sync_entity_from_remote("budget_rollover_setting"),
-            Some(SyncEntity::BudgetRolloverSetting)
-        );
-    }
+/// Response from server-as-device pairing.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ServerPairResponse {
+    /// Pairing succeeded
+    pub success: bool,
+    /// Pairing session ID
+    pub session_id: String,
+    /// Server's X25519 ephemeral public key for ECDH (base64, 32 bytes)
+    pub server_ephemeral_key: String,
+    /// Root key bundle encrypted with ECDH shared secret (XChaCha20-Poly1305)
+    pub encrypted_key_bundle: String,
+    /// Key version of the root key
+    pub key_version: i32,
 }

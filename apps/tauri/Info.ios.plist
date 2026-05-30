@@ -4,6 +4,8 @@
 <dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Wealthfolio needs camera access to scan QR codes for device pairing.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Wealthfolio uses Face ID to protect access to your financial data.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
     <false/>
 </dict>

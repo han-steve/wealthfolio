@@ -11,7 +11,6 @@ wealthfolio-connect = { workspace = true }
 wealthfolio-storage-sqlite = { workspace = true }
 wealthfolio-device-sync = { workspace = true }
 wealthfolio-ai = { workspace = true }
-wealthfolio-spending = { workspace = true }
 
 # Web framework
 axum = { version = "0.8", features = ["json", "macros", "multipart"] }
@@ -43,11 +42,13 @@ base64 = "0.21"
 argon2 = { version = "0.5", features = ["std"] }
 jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
 chacha20poly1305 = { version = "0.10", features = ["std"] }
+x25519-dalek = { workspace = true }
 hkdf = "0.12"
 sha2 = "0.10"
 rand = "0.8"
 urlencoding = "2"
 tower_governor = "0.8"
+rusqlite = { workspace = true }
 tokio-stream = { version = "0.1", features = ["sync"] }
 futures = "0.3"
 futures-core = "0.3"

@@ -162,6 +162,7 @@ pub trait SyncTransport: Send + Sync {
         &self,
         token: &str,
         device_id: &str,
+        local_cursor: i64,
     ) -> Result<ReconcileReadyStateResponse, TransportError>;
 }
 

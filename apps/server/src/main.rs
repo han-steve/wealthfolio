@@ -12,6 +12,7 @@ mod scheduler;
 mod secrets;
 
 use api::app_router;
+use api::sync_server::SyncServerState;
 use config::Config;
 use main_lib::{build_state, init_tracing};
 use tower_http::services::{ServeDir, ServeFile};
@@ -64,6 +65,17 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::from_env();
     init_tracing();
     let state = build_state(&config).await?;
+
+    let sync_state = match SyncServerState::new(&config.sync_db_path, &config.sync_snapshot_dir, &config.jwt_key) {
+        Ok(s) => {
+            tracing::info!("Sync server initialized: db={}", config.sync_db_path);
+            Some(std::sync::Arc::new(s))
+        }
+        Err(e) => {
+            tracing::warn!("Sync server disabled: {}", e);
+            None
+        }
+    };
 
     #[cfg(feature = "device-sync")]
     #[allow(clippy::collapsible_if)]
@@ -122,7 +134,7 @@ async fn main() -> anyhow::Result<()> {
     let static_dir = std::path::PathBuf::from(&config.static_dir);
     let index_file = static_dir.join("index.html");
     let static_service = ServeDir::new(static_dir).fallback(ServeFile::new(index_file));
-    let router = app_router(state, &config).fallback_service(static_service);
+    let router = app_router(state, &config, sync_state).fallback_service(static_service);
     if let Some(ref auth) = config.auth {
         tracing::info!(
             "Authentication enabled, cookie secure policy: {}",

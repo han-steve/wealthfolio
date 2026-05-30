@@ -23,7 +23,6 @@ mod activities;
 mod addons;
 mod ai_chat;
 mod ai_providers;
-mod allocation_targets;
 mod alternative_assets;
 mod assets;
 #[cfg(any(feature = "connect-sync", feature = "device-sync"))]
@@ -48,9 +47,9 @@ mod portfolios;
 mod secrets;
 mod settings;
 pub mod shared;
-mod spending;
 #[cfg(feature = "device-sync")]
 mod sync_crypto;
+pub mod sync_server;
 mod taxonomies;
 
 #[utoipa::path(get, path = "/api/v1/healthz", responses((status = 200, description = "Health")))]
@@ -72,9 +71,12 @@ pub async fn readyz() -> &'static str {
 pub struct ApiDoc;
 
 #[allow(deprecated)]
-pub fn app_router(state: Arc<AppState>, config: &Config) -> Router {
+pub fn app_router(state: Arc<AppState>, config: &Config, sync_state: Option<Arc<sync_server::SyncServerState>>) -> Router {
     let cors = if config.cors_allow.iter().any(|o| o == "*") {
-        CorsLayer::new().allow_origin(Any)
+        CorsLayer::new()
+            .allow_origin(Any)
+            .allow_headers(Any)
+            .allow_methods(Any)
     } else {
         let origins = config
             .cors_allow
@@ -114,9 +116,7 @@ pub fn app_router(state: Arc<AppState>, config: &Config) -> Router {
         .merge(ai_providers::router())
         .merge(ai_chat::router())
         .merge(health::router())
-        .merge(custom_providers::router())
-        .merge(spending::router())
-        .merge(allocation_targets::router());
+        .merge(custom_providers::router());
 
     #[cfg(feature = "device-sync")]
     {
@@ -167,9 +167,15 @@ pub fn app_router(state: Arc<AppState>, config: &Config) -> Router {
         .merge(protected_api)
         .with_state(state.clone());
 
-    Router::new()
+    let mut root = Router::new()
         .nest("/api/v1", api)
-        .with_state(state)
+        .with_state(state);
+
+    if let Some(ss) = sync_state {
+        root = root.merge(sync_server::sync_router(ss));
+    }
+
+    root
         .layer(cors)
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(PropagateRequestIdLayer::x_request_id())

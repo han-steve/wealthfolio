@@ -624,9 +624,10 @@ impl SyncTransport for ServerEnginePorts {
         &self,
         token: &str,
         device_id: &str,
+        local_cursor: i64,
     ) -> Result<ReconcileReadyStateResponse, TransportError> {
         create_client()
-            .get_reconcile_ready_state(token, device_id)
+            .get_reconcile_ready_state(token, device_id, local_cursor)
             .await
             .map_err(transport_err_from_sync)
     }
@@ -951,7 +952,7 @@ async fn classify_missing_snapshot_disposition(
     token: &str,
     device_id: &str,
 ) -> MissingSnapshotDisposition {
-    match client.get_reconcile_ready_state(token, device_id).await {
+    match client.get_reconcile_ready_state(token, device_id, 0).await {
         Ok(reconcile) => match reconcile.action.as_str() {
             "NOOP" | "PULL_TAIL" => MissingSnapshotDisposition::CompleteNoBootstrap {
                 message: "No remote snapshot is required for this device".to_string(),
@@ -991,6 +992,10 @@ async fn snapshot_satisfies_freshness_gate(
     latest: &wealthfolio_device_sync::SnapshotLatestResponse,
     min_created_at: &str,
 ) -> Result<bool, String> {
+    if latest.created_at.trim().is_empty() {
+        tracing::debug!("[DeviceSync] Snapshot created_at is empty, treating as stale");
+        return Ok(false);
+    }
     let latest_created_at = wealthfolio_device_sync::parse_sync_datetime_to_utc(&latest.created_at)
         .map_err(|e| format!("Invalid snapshot created_at in metadata: {}", e))?;
     let min_created_at = wealthfolio_device_sync::parse_sync_datetime_to_utc(min_created_at)
@@ -1087,8 +1092,9 @@ pub async fn sync_bootstrap_snapshot_if_needed(
     persist_device_config_from_identity(&state, &identity, "trusted").await;
 
     let sync_repo = Arc::clone(&state.app_sync_repository);
+    let local_cursor = sync_repo.get_cursor().unwrap_or(0);
     let reconcile_action = create_client()
-        .get_reconcile_ready_state(&token, &device_id)
+        .get_reconcile_ready_state(&token, &device_id, local_cursor)
         .await
         .ok()
         .map(|reconcile| reconcile.action);

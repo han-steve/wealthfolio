@@ -15,8 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use tauri::{AppHandle, State};
 
 use crate::context::ServiceContext;
-use crate::secret_store::KeyringSecretStore;
-use wealthfolio_core::secrets::SecretStore;
+use crate::secret_store::shared_secret_store;
 use wealthfolio_device_sync::engine as shared_sync_engine;
 use wealthfolio_device_sync::{
     ClaimPairingRequest, ClaimPairingResponse, CommitInitializeKeysRequest,
@@ -24,8 +23,8 @@ use wealthfolio_device_sync::{
     CompletePairingRequest, CompletePairingResponse, ConfirmPairingRequest, ConfirmPairingResponse,
     CreatePairingRequest, CreatePairingResponse, Device, DevicePlatform, DeviceSyncClient,
     EnrollDeviceResponse, GetPairingResponse, InitializeKeysResult, PairingMessagesResponse,
-    RegisterDeviceRequest, ResetTeamSyncResponse, RotateKeysResponse, SuccessResponse,
-    UpdateDeviceRequest,
+    RegisterDeviceRequest, ResetTeamSyncResponse, RotateKeysResponse, ServerDeviceInfo,
+    ServerPairRequest, ServerPairResponse, SuccessResponse, UpdateDeviceRequest,
 };
 use wealthfolio_storage_sqlite::sync::SyncTableRowCount;
 
@@ -57,7 +56,7 @@ pub(crate) struct SyncIdentity {
 fn get_sync_identity_from_store() -> Option<SyncIdentity> {
     const SYNC_IDENTITY_KEY: &str = "sync_identity";
 
-    match KeyringSecretStore.get_secret(SYNC_IDENTITY_KEY) {
+    match shared_secret_store().get_secret(SYNC_IDENTITY_KEY) {
         Ok(Some(json)) => match serde_json::from_str::<SyncIdentity>(&json) {
             Ok(identity) => {
                 if let Some(ref device_id) = identity.device_id {
@@ -94,6 +93,18 @@ fn get_sync_identity_from_store() -> Option<SyncIdentity> {
 
 fn sync_identity_can_run_background(identity: &SyncIdentity) -> bool {
     identity.device_id.is_some() && identity.root_key.is_some()
+}
+
+pub(super) async fn clear_sync_identity_and_bootstrap_state(context: &Arc<ServiceContext>) {
+    const SYNC_IDENTITY_KEY: &str = "sync_identity";
+
+    let _ = shared_secret_store().delete_secret(SYNC_IDENTITY_KEY);
+    clear_min_snapshot_created_at_from_store();
+    let _ = context.app_sync_repository().reset_local_sync_session().await;
+    let _ = context
+        .app_sync_repository()
+        .clear_all_min_snapshot_created_at()
+        .await;
 }
 
 fn get_device_id_from_store() -> Option<String> {
@@ -1927,6 +1938,52 @@ pub async fn confirm_pairing(
     }
 
     Ok(result)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Server-as-Device Pairing
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn get_server_device_info(
+    state: State<'_, Arc<ServiceContext>>,
+) -> Result<ServerDeviceInfo, String> {
+    info!("[DeviceSync] Getting server device info...");
+
+    let token = get_access_token(state.inner()).await?;
+    let device_id =
+        get_device_id_from_store().ok_or_else(|| "No device ID configured".to_string())?;
+
+    create_client()?
+        .get_server_device_info(&token, &device_id)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command(rename_all = "camelCase")]
+pub async fn pair_with_server(
+    ephemeral_public_key: String,
+    code: String,
+    state: State<'_, Arc<ServiceContext>>,
+) -> Result<ServerPairResponse, String> {
+    info!("[DeviceSync] Pairing with homeserver...");
+
+    let token = get_access_token(state.inner()).await?;
+    let device_id =
+        get_device_id_from_store().ok_or_else(|| "No device ID configured".to_string())?;
+
+    create_client()?
+        .pair_with_server(
+            &token,
+            &device_id,
+            ServerPairRequest {
+                device_id: device_id.clone(),
+                ephemeral_key: ephemeral_public_key,
+                code,
+            },
+        )
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

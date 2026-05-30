@@ -98,6 +98,10 @@ async fn snapshot_satisfies_freshness_gate(
     latest: &wealthfolio_device_sync::SnapshotLatestResponse,
     min_created_at: &str,
 ) -> Result<bool, String> {
+    if latest.created_at.trim().is_empty() {
+        debug!("[DeviceSync] Snapshot created_at is empty, treating as stale");
+        return Ok(false);
+    }
     let latest_created_at = wealthfolio_device_sync::parse_sync_datetime_to_utc(&latest.created_at)
         .map_err(|e| format!("Invalid snapshot created_at in metadata: {}", e))?;
     let min_created_at = wealthfolio_device_sync::parse_sync_datetime_to_utc(min_created_at)
@@ -147,7 +151,7 @@ async fn classify_missing_snapshot_disposition(
     token: &str,
     device_id: &str,
 ) -> MissingSnapshotDisposition {
-    match client.get_reconcile_ready_state(token, device_id).await {
+    match client.get_reconcile_ready_state(token, device_id, 0).await {
         Ok(reconcile) => match reconcile.action.as_str() {
             "NOOP" | "PULL_TAIL" => MissingSnapshotDisposition::CompleteNoBootstrap {
                 message: "No remote snapshot is required for this device".to_string(),
@@ -220,23 +224,48 @@ fn decode_snapshot_sqlite_payload(
         return Err("Invalid key version in sync identity".to_string());
     }
 
+    info!(
+        "[DeviceSync] decode_snapshot: blob_size={} key_version={}",
+        blob.len(),
+        key_version
+    );
+
     let blob_text = String::from_utf8(blob)
         .map_err(|_| "Snapshot payload is not valid UTF-8 (expected encrypted ciphertext)")?;
+    info!(
+        "[DeviceSync] decode_snapshot: UTF-8 ok, text_len={}",
+        blob_text.len()
+    );
 
     let dek = wealthfolio_device_sync::crypto::derive_dek(root_key, key_version as u32)
         .map_err(|e| format!("Failed to derive snapshot DEK: {}", e))?;
+    info!("[DeviceSync] decode_snapshot: DEK derived");
+
     let decrypted = wealthfolio_device_sync::crypto::decrypt(&dek, blob_text.trim())
         .map_err(|e| format!("Failed to decrypt snapshot payload: {}", e))?;
+    info!(
+        "[DeviceSync] decode_snapshot: decrypted ok, plaintext_len={}",
+        decrypted.len()
+    );
 
     let sqlite_bytes = BASE64_STANDARD
         .decode(decrypted.trim())
         .map_err(|e| format!("Failed to base64-decode decrypted snapshot: {}", e))?;
+    info!(
+        "[DeviceSync] decode_snapshot: base64 decoded, sqlite_len={}",
+        sqlite_bytes.len()
+    );
 
     if !is_sqlite_image(&sqlite_bytes) {
         return Err("Decrypted snapshot is not a valid SQLite image".to_string());
     }
+    info!("[DeviceSync] decode_snapshot: SQLite magic verified ✓");
 
     Ok(sqlite_bytes)
+}
+
+async fn recover_from_bootstrap_failure(context: &Arc<ServiceContext>) {
+    super::clear_sync_identity_and_bootstrap_state(context).await;
 }
 
 /// Bootstraps local sync tables from the latest snapshot when required.
@@ -294,9 +323,10 @@ pub async fn sync_bootstrap_snapshot_if_needed(
     persist_device_config_from_identity(context.as_ref(), &identity, "trusted").await;
 
     let sync_repo = context.app_sync_repository();
+    let local_cursor = sync_repo.get_cursor().unwrap_or(0);
     let client = create_client()?;
     let reconcile_action = client
-        .get_reconcile_ready_state(&token, &device_id)
+        .get_reconcile_ready_state(&token, &device_id, local_cursor)
         .await
         .ok()
         .map(|reconcile| reconcile.action);
@@ -520,9 +550,33 @@ pub async fn sync_bootstrap_snapshot_if_needed(
         }
     }
 
-    let sqlite_image = decode_snapshot_sqlite_payload(blob, &identity)?;
+    let sqlite_image = match decode_snapshot_sqlite_payload(blob, &identity) {
+        Ok(bytes) => {
+            info!(
+                "[DeviceSync] Snapshot decrypted successfully: {} bytes SQLite image",
+                bytes.len()
+            );
+            bytes
+        }
+        Err(err) => {
+            log::error!(
+                "[DeviceSync] Snapshot decryption FAILED: {}",
+                err
+            );
+            recover_from_bootstrap_failure(context).await;
+            return Err(format!(
+                "Snapshot bootstrap failed: {}. Sync state was reset; please pair again.",
+                err
+            ));
+        }
+    };
     let temp_snapshot_path =
         std::env::temp_dir().join(format!("wf_snapshot_{}.db", Uuid::new_v4()));
+    info!(
+        "[DeviceSync] Writing {} byte snapshot to temp file: {:?}",
+        sqlite_image.len(),
+        temp_snapshot_path
+    );
     std::fs::write(&temp_snapshot_path, sqlite_image)
         .map_err(|e| format!("Failed to persist snapshot image: {}", e))?;
     let snapshot_path_str = temp_snapshot_path.to_string_lossy().to_string();
@@ -538,6 +592,11 @@ pub async fn sync_bootstrap_snapshot_if_needed(
             .map(|table| table.to_string())
             .collect();
     }
+    info!(
+        "[DeviceSync] Restoring {} tables: {:?}",
+        tables_to_restore.len(),
+        tables_to_restore
+    );
 
     let restore_result = sync_repo
         .restore_snapshot_tables_from_file(
@@ -549,7 +608,18 @@ pub async fn sync_bootstrap_snapshot_if_needed(
         )
         .await;
     let _ = std::fs::remove_file(&temp_snapshot_path);
-    restore_result.map_err(|e| e.to_string())?;
+    if let Err(err) = restore_result {
+        log::error!(
+            "[DeviceSync] Table restore FAILED: {}",
+            err
+        );
+        recover_from_bootstrap_failure(context).await;
+        return Err(format!(
+            "Snapshot bootstrap failed while restoring local tables: {}. Sync state was reset; please pair again.",
+            err
+        ));
+    }
+    info!("[DeviceSync] Snapshot restore completed successfully ✓");
 
     let payload = PortfolioRequestPayload::builder()
         .account_ids(None)

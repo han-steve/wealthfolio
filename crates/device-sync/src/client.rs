@@ -809,15 +809,16 @@ impl DeviceSyncClient {
 
     /// Get the reconcile-ready-state for this device.
     ///
-    /// GET /api/v1/sync/events/reconcile-ready-state
+    /// GET /api/v1/sync/events/reconcile-ready-state?cursor=N
     pub async fn get_reconcile_ready_state(
         &self,
         token: &str,
         device_id: &str,
+        local_cursor: i64,
     ) -> Result<ReconcileReadyStateResponse> {
         self.send_json_no_body(
             Method::GET,
-            "/api/v1/sync/events/reconcile-ready-state".to_string(),
+            format!("/api/v1/sync/events/reconcile-ready-state?cursor={}", local_cursor),
             token,
             Some(device_id),
         )
@@ -1392,6 +1393,50 @@ impl DeviceSyncClient {
             ),
             token,
             Some(claimer_device_id),
+            &req,
+        )
+        .await
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Server-as-Device Pairing
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// Get info about the homeserver device (device ID + pairing code).
+    ///
+    /// GET /api/v1/sync/server/info
+    pub async fn get_server_device_info(
+        &self,
+        token: &str,
+        device_id: &str,
+    ) -> Result<ServerDeviceInfo> {
+        self.send_json_no_body(
+            Method::GET,
+            "/api/v1/sync/server/info".to_string(),
+            token,
+            Some(device_id),
+        )
+        .await
+    }
+
+    /// Pair directly with the homeserver to receive the encrypted root key.
+    ///
+    /// The caller generates an ephemeral X25519 key pair, sends the public key
+    /// along with the 6-digit pairing code from `get_server_device_info`, and
+    /// receives an encrypted root key bundle it can decrypt via ECDH.
+    ///
+    /// POST /api/v1/sync/server/pair
+    pub async fn pair_with_server(
+        &self,
+        token: &str,
+        device_id: &str,
+        req: ServerPairRequest,
+    ) -> Result<ServerPairResponse> {
+        self.send_json_body(
+            Method::POST,
+            "/api/v1/sync/server/pair".to_string(),
+            token,
+            Some(device_id),
             &req,
         )
         .await
