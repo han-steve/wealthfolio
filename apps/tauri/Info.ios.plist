@@ -8,5 +8,10 @@
 	<string>Wealthfolio uses Face ID to protect access to your financial data.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
     <false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
 </dict>
 </plist>
