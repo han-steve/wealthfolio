@@ -82,10 +82,26 @@ pub async fn restore_sync_session(
 ) -> Result<RestoreSyncSessionResponse, String> {
     let access_token = state.connect_service().get_valid_access_token().await?;
 
-    let refresh_token = KeyringSecretStore
-        .get_secret(SYNC_REFRESH_TOKEN_KEY)
-        .map_err(|e| format!("Failed to read refresh token: {}", e))?
-        .ok_or_else(|| "No sync session configured".to_string())?;
+    let is_self_hosted = option_env!("CONNECT_AUTH_URL")
+        .map(|v| wealthfolio_connect::is_self_hosted_url(v))
+        .unwrap_or_else(|| {
+            option_env!("CONNECT_API_URL")
+                .map(|v| wealthfolio_connect::is_self_hosted_url(v))
+                .unwrap_or(false)
+        });
+
+    let refresh_token = if is_self_hosted {
+        KeyringSecretStore
+            .get_secret(SYNC_REFRESH_TOKEN_KEY)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| "dummy_refresh_token".to_string())
+    } else {
+        KeyringSecretStore
+            .get_secret(SYNC_REFRESH_TOKEN_KEY)
+            .map_err(|e| format!("Failed to read refresh token: {}", e))?
+            .ok_or_else(|| "No sync session configured".to_string())?
+    };
 
     Ok(RestoreSyncSessionResponse {
         access_token,

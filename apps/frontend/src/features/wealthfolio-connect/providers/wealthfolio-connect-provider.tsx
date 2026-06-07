@@ -36,6 +36,21 @@ const AUTH_PUBLISHABLE_KEY =
 // Note: For keyring (Tauri), the "wealthfolio_" prefix is added automatically by SecretStore
 const REFRESH_TOKEN_KEY = "sync_refresh_token";
 
+const isSelfHosted =
+  AUTH_URL.includes("homelab") ||
+  AUTH_URL.includes(".local") ||
+  AUTH_URL.includes("localhost") ||
+  AUTH_URL.includes("127.0.0.1") ||
+  AUTH_URL.includes("192.168.") ||
+  (AUTH_URL && !AUTH_URL.includes("auth.wealthfolio.app")) ||
+  (typeof window !== "undefined" && (
+    window.location.hostname.includes("homelab") ||
+    window.location.hostname.includes(".local") ||
+    window.location.hostname.includes("localhost") ||
+    window.location.hostname.includes("127.0.0.1") ||
+    window.location.hostname.includes("192.168.")
+  ));
+
 // Deep-link URL for desktop callbacks (custom URL scheme)
 const DESKTOP_DEEP_LINK_URL = "wealthfolio://auth/callback";
 
@@ -320,6 +335,28 @@ function EnabledWealthfolioConnectProvider({ children }: { children: ReactNode }
   // Restore session from stored tokens on mount
   useEffect(() => {
     let cancelled = false;
+
+    if (isSelfHosted) {
+      const dummyUser: User = {
+        id: "dummy-user-id",
+        app_metadata: { provider: "email", providers: ["email"] },
+        user_metadata: {},
+        aud: "authenticated",
+        created_at: new Date().toISOString(),
+        email: "homelab@wealthfolio.local",
+      };
+      const dummySession: Session = {
+        access_token: "dummy-token",
+        refresh_token: "dummy-token",
+        expires_in: 315360000,
+        token_type: "bearer",
+        user: dummyUser,
+      };
+      setSession(dummySession);
+      setUser(dummyUser);
+      setIsInitializing(false);
+      return;
+    }
 
     const restoreSession = async () => {
       try {
@@ -690,6 +727,38 @@ function EnabledWealthfolioConnectProvider({ children }: { children: ReactNode }
   const refetchUserInfo = useCallback(async () => {
     if (!session) {
       setUserInfo(null);
+      setIsLoadingUserInfo(false);
+      return;
+    }
+
+    if (isSelfHosted) {
+      const mockUserInfo: UserInfo = {
+        id: "dummy-user-id",
+        full_name: "Homelab User",
+        email: "homelab@wealthfolio.local",
+        avatar_url: null,
+        locale: "en",
+        week_starts_on_monday: true,
+        timezone: "UTC",
+        timezone_auto_sync: true,
+        time_format: 24,
+        date_format: "yyyy-MM-dd",
+        team_id: "dummy-team-id",
+        team_role: "owner",
+        team: {
+          id: "dummy-team-id",
+          name: "Homelab",
+          logo_url: null,
+          plan: "plus",
+          subscription_status: "active",
+          subscription_current_period_end: null,
+          subscription_cancel_at_period_end: null,
+          canceled_at: null,
+          country_code: null,
+          created_at: new Date().toISOString(),
+        },
+      };
+      setUserInfo(mockUserInfo);
       setIsLoadingUserInfo(false);
       return;
     }

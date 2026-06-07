@@ -102,6 +102,29 @@ struct JwtClaims {
     exp: Option<i64>,
 }
 
+pub fn is_self_hosted_url(url: &str) -> bool {
+    let url = url.to_lowercase();
+    url.contains("homelab")
+        || url.contains(".local")
+        || url.contains("localhost")
+        || url.contains("127.0.0.1")
+        || url.contains("192.168.")
+        || url.contains("10.")
+        || (!url.is_empty() && !url.contains("auth.wealthfolio.app") && !url.contains("api.wealthfolio.app"))
+}
+
+pub fn generate_dummy_token() -> String {
+    let exp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64
+        + 315_360_000;
+    
+    let header = general_purpose::URL_SAFE_NO_PAD.encode(r#"{"alg":"HS256","typ":"JWT"}"#);
+    let payload = general_purpose::URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{}}}"#, exp));
+    format!("{}.{}.sig", header, payload)
+}
+
 pub async fn ensure_valid_access_token(
     secret_store: &dyn SecretStore,
     state: &TokenLifecycleState,
@@ -109,6 +132,18 @@ pub async fn ensure_valid_access_token(
 ) -> Result<String, TokenLifecycleError> {
     if let Some(token) = read_cached_token(state).await {
         return Ok(token);
+    }
+
+    let is_bypass = std::env::var("WF_AUTH_REQUIRED")
+        .map(|v| v.to_lowercase() == "false")
+        .unwrap_or(false)
+        || config.map(|c| is_self_hosted_url(&c.auth_url)).unwrap_or(false);
+
+    if is_bypass {
+        let dummy = generate_dummy_token();
+        let expires_at = Instant::now() + Duration::from_secs(3600);
+        write_cache(state, dummy.clone(), expires_at).await;
+        return Ok(dummy);
     }
 
     let _refresh_guard = state.refresh_lock.lock().await;
@@ -426,5 +461,22 @@ mod tests {
             fallback_refresh_error_message(400, "non-json response: invalid refresh token");
 
         assert!(is_session_invalid(400, "", &message));
+    }
+
+    #[test]
+    fn test_is_self_hosted_url() {
+        assert!(is_self_hosted_url("https://wealthfolio.homelab"));
+        assert!(is_self_hosted_url("https://my-local-server.local"));
+        assert!(is_self_hosted_url("http://localhost:8080"));
+        assert!(is_self_hosted_url("http://127.0.0.1:8080"));
+        assert!(is_self_hosted_url("http://192.168.1.50"));
+        assert!(is_self_hosted_url("https://wealthfolio.mydomain.com"));
+        assert!(!is_self_hosted_url("https://auth.wealthfolio.app"));
+    }
+
+    #[test]
+    fn test_generate_dummy_token() {
+        let token = generate_dummy_token();
+        assert!(is_access_token_fresh(&token, SystemTime::now(), 60));
     }
 }

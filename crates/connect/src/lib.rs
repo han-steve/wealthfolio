@@ -26,7 +26,7 @@ pub use broker::{
 pub use client::{fetch_subscription_plans_public, ConnectApiClient, DEFAULT_CLOUD_API_URL};
 pub use token_lifecycle::{
     ensure_valid_access_token, TokenLifecycleConfig, TokenLifecycleError, TokenLifecycleState,
-    CLOUD_ACCESS_TOKEN_KEY, CLOUD_REFRESH_TOKEN_KEY,
+    CLOUD_ACCESS_TOKEN_KEY, CLOUD_REFRESH_TOKEN_KEY, generate_dummy_token, is_self_hosted_url,
 };
 
 pub use broker_ingest::{

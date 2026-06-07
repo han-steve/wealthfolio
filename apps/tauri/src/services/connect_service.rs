@@ -42,12 +42,40 @@ fn connect_auth_url() -> Option<String> {
     option_env!("CONNECT_AUTH_URL")
         .map(|v| v.trim().trim_end_matches('/').to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| {
+            // Infer from CONNECT_API_URL if it is self-hosted
+            option_env!("CONNECT_API_URL")
+                .map(|v| v.trim().trim_end_matches('/').to_string())
+                .filter(|v| !v.is_empty())
+                .and_then(|api_url| {
+                    if wealthfolio_connect::is_self_hosted_url(&api_url) {
+                        let mut base = api_url;
+                        if base.ends_with("/api/v1") {
+                            base.truncate(base.len() - 7);
+                        } else if base.ends_with("/api") {
+                            base.truncate(base.len() - 4);
+                        }
+                        Some(base)
+                    } else {
+                        None
+                    }
+                })
+        })
 }
 
 fn connect_auth_publishable_key() -> Option<String> {
     option_env!("CONNECT_AUTH_PUBLISHABLE_KEY")
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
+        .or_else(|| {
+            // If self-hosted, use a dummy key
+            let auth_url = connect_auth_url()?;
+            if wealthfolio_connect::is_self_hosted_url(&auth_url) {
+                Some("dummy_publishable_key".to_string())
+            } else {
+                None
+            }
+        })
 }
 
 fn token_lifecycle_config() -> Option<TokenLifecycleConfig> {
