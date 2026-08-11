@@ -1,4 +1,4 @@
-import { syncTriggerCycle, updatePortfolio } from "@/adapters";
+import { isDesktop, syncTriggerCycle, updatePortfolio } from "@/adapters";
 import { usePullToRefresh } from "@/hooks/use-pull-to-refresh";
 import { useQueryClient } from "@tanstack/react-query";
 import { Icons, PageScrollContainer } from "@wealthfolio/ui";
@@ -11,7 +11,9 @@ export function MobileNavigationContainer() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const onRefresh = useCallback(async () => {
-    await updatePortfolio();
+    if (isDesktop) {
+      await updatePortfolio();
+    }
     await queryClient.invalidateQueries();
     await syncTriggerCycle().catch(() => undefined);
   }, [queryClient]);

@@ -85,6 +85,12 @@ export function getEffectiveCashActivityType(activity: {
   activityType: string;
   activityTypeOverride?: string | null;
 }): string {
+  if (
+    activity.activityTypeOverride === "UNKNOWN" &&
+    (activity.activityType === "TRANSFER_IN" || activity.activityType === "TRANSFER_OUT")
+  ) {
+    return activity.activityType;
+  }
   return activity.activityTypeOverride ?? activity.activityType;
 }
 
@@ -119,7 +125,9 @@ export function getActivitySpendingAmount(
   },
   accountType?: string,
 ): number {
-  const activityType = getEffectiveCashActivityType(activity);
+  // UNKNOWN hides a transfer from spending without changing how the transfer is
+  // labeled elsewhere in the UI.
+  const activityType = activity.activityTypeOverride ?? activity.activityType;
   const amount =
     typeof activity.amount === "number" ? activity.amount : parseFloat(activity.amount ?? "0") || 0;
   const absAmount = Math.abs(amount);

@@ -17,6 +17,15 @@ describe("spending constants", () => {
         }),
       ).toBe("TRANSFER_OUT");
     });
+
+    it("preserves transfer labels when UNKNOWN excludes them from spending", () => {
+      expect(
+        getEffectiveCashActivityType({
+          activityType: "TRANSFER_OUT",
+          activityTypeOverride: "UNKNOWN",
+        }),
+      ).toBe("TRANSFER_OUT");
+    });
   });
 
   describe("getActivityTypesForAccount", () => {
@@ -132,6 +141,19 @@ describe("spending constants", () => {
             amount: "100",
           },
           AccountType.CREDIT_CARD,
+        ),
+      ).toBe(0);
+    });
+
+    it("keeps UNKNOWN transfer overrides out of spending", () => {
+      expect(
+        getActivitySpendingAmount(
+          {
+            activityType: "TRANSFER_OUT",
+            activityTypeOverride: "UNKNOWN",
+            amount: "100",
+          },
+          AccountType.CASH,
         ),
       ).toBe(0);
     });

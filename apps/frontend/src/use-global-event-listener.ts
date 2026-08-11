@@ -398,8 +398,9 @@ const useGlobalEventListener = () => {
         Array.from(POST_LOGIN_REQUIRED_LISTENERS).every((name) => readyListeners.has(name)),
       );
 
-      // Trigger initial portfolio update after listeners are set up
-      if (!hasTriggeredInitialUpdate.current) {
+      // The self-hosted web service updates through its scheduled sync. Only
+      // desktop clients should recalculate the portfolio on initial load.
+      if (isDesktopEnv && !hasTriggeredInitialUpdate.current) {
         hasTriggeredInitialUpdate.current = true;
         logger.debug("Triggering initial portfolio update from frontend");
 
