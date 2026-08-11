@@ -64,6 +64,12 @@ impl IncomeService {
             Decimal::zero()
         }
     }
+
+    fn inclusive_month_count(start: NaiveDate, end: NaiveDate) -> u32 {
+        let months =
+            (end.year() - start.year()) * 12 + end.month() as i32 - start.month() as i32 + 1;
+        months.max(1) as u32
+    }
 }
 
 // Implement the trait for IncomeService
@@ -93,40 +99,30 @@ impl IncomeServiceTrait for IncomeService {
         let two_years_ago = current_year - 2;
         let current_month = current_date.month();
 
-        // Scope baseline date to member accounts so monthly-average denominators are correct.
-        // Falls back to portfolio-wide when no filter.
-        let oldest_date = if let Some(ids) = account_ids.filter(|ids| !ids.is_empty()) {
-            match self.activity_repository.get_first_activity_date(Some(ids)) {
-                Ok(Some(date)) => date,
-                Ok(None) => return Ok(Vec::new()),
-                Err(e) => {
-                    error!("Error getting first activity date for accounts: {:?}", e);
-                    return Err(e);
-                }
-            }
-        } else {
-            match self.activity_repository.get_first_activity_date_overall() {
-                Ok(date) => date,
-                Err(e) => {
-                    error!("Error getting first transaction date: {:?}", e);
-                    return Err(e);
-                }
-            }
-        };
-        let mut months_since_first_transaction: i32 =
-            (current_date.year() - oldest_date.year()) * 12;
-        months_since_first_transaction = months_since_first_transaction
-            + current_date.month() as i32
-            - oldest_date.month() as i32;
+        // The denominator must start with the first income row, not an unrelated
+        // buy, transfer, or spending activity elsewhere in the portfolio.
+        let oldest_income_date = activities
+            .iter()
+            .filter_map(|activity| {
+                NaiveDate::parse_from_str(&format!("{}-01", activity.date), "%Y-%m-%d").ok()
+            })
+            .min()
+            .ok_or_else(|| {
+                Error::Activity(ActivityError::InvalidData(
+                    "Income activities did not contain a valid month".to_string(),
+                ))
+            })?;
+        let months_since_first_income =
+            Self::inclusive_month_count(oldest_income_date, current_date);
 
         let mut months_in_last_year: i32 = 12;
-        if oldest_date.year() >= current_year - 1 {
-            months_in_last_year = 13 - oldest_date.month() as i32
+        if oldest_income_date.year() == current_year - 1 {
+            months_in_last_year = 13 - oldest_income_date.month() as i32
         }
 
         let mut months_two_years_ago: i32 = 12;
-        if oldest_date.year() >= current_year - 2 {
-            months_two_years_ago = 13 - oldest_date.month() as i32
+        if oldest_income_date.year() == current_year - 2 {
+            months_two_years_ago = 13 - oldest_income_date.month() as i32
         }
 
         let mut total_summary = IncomeSummary::new("ALL", base_currency.clone());
@@ -183,7 +179,7 @@ impl IncomeServiceTrait for IncomeService {
             }
         }
 
-        total_summary.calculate_monthly_average(Some(months_since_first_transaction as u32));
+        total_summary.calculate_monthly_average(Some(months_since_first_income));
         ytd_summary.calculate_monthly_average(Some(current_month));
         last_year_summary.calculate_monthly_average(Some(months_in_last_year as u32));
         two_years_ago_summary.calculate_monthly_average(Some(months_two_years_ago as u32));
@@ -246,5 +242,27 @@ impl IncomeServiceTrait for IncomeService {
 
         debug!("Income summary calculation and rounding completed successfully");
         Ok(rounded_summaries)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::IncomeService;
+    use chrono::NaiveDate;
+
+    #[test]
+    fn inclusive_month_count_includes_both_endpoint_months() {
+        let start = NaiveDate::from_ymd_opt(2022, 3, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 8, 10).unwrap();
+
+        assert_eq!(IncomeService::inclusive_month_count(start, end), 54);
+    }
+
+    #[test]
+    fn inclusive_month_count_is_one_within_same_month() {
+        let start = NaiveDate::from_ymd_opt(2026, 8, 1).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 8, 31).unwrap();
+
+        assert_eq!(IncomeService::inclusive_month_count(start, end), 1);
     }
 }

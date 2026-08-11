@@ -149,7 +149,7 @@ export default function IncomePage() {
   const dividendPercentage = totalIncome > 0 ? (dividendIncome / totalIncome) * 100 : 0;
   const interestPercentage = totalIncome > 0 ? (interestIncome / totalIncome) * 100 : 0;
 
-  const topDividendStocks = Object.values(periodSummary.byAsset)
+  const topIncomeAssets = Object.values(periodSummary.byAsset)
     .filter((asset) => asset.income > 0)
     .sort((a, b) => b.income - a.income)
     .slice(0, 10);
@@ -312,12 +312,18 @@ export default function IncomePage() {
                   isHidden={isBalanceHidden}
                 />
               </div>
-              <div className="flex items-center text-xs">
-                <GainPercent value={monthlyAverageChange} className="text-left text-xs" />
-                <span className="text-muted-foreground ml-2 text-xs">
-                  {t("income:since_last_period_label")}
+              {selectedPeriod === "ALL" ? (
+                <span className="text-muted-foreground text-xs">
+                  {t("income:per_month_since_first_investment_income")}
                 </span>
-              </div>
+              ) : (
+                <div className="flex items-center text-xs">
+                  <GainPercent value={monthlyAverageChange} className="text-left text-xs" />
+                  <span className="text-muted-foreground ml-2 text-xs">
+                    {t("income:since_last_period_label")}
+                  </span>
+                </div>
+              )}
             </CardContent>
           </Card>
           <Card className="border-yellow-500/10 bg-yellow-500/10">
@@ -399,7 +405,7 @@ export default function IncomePage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="flex-1 overflow-auto">
-              {topDividendStocks.length === 0 ? (
+              {topIncomeAssets.length === 0 ? (
                 <EmptyPlaceholder
                   className="mx-auto flex h-[300px] max-w-[420px] items-center justify-center"
                   icon={<Icons.DollarSign className="h-10 w-10" />}
@@ -411,8 +417,8 @@ export default function IncomePage() {
                   {/* Horizontal Bar Chart - Separated Bars */}
                   <div className="flex w-full space-x-0.5">
                     {(() => {
-                      const top5Stocks = topDividendStocks.slice(0, 5);
-                      const otherStocks = topDividendStocks.slice(5);
+                      const top5Stocks = topIncomeAssets.slice(0, 5);
+                      const otherStocks = topIncomeAssets.slice(5);
                       const otherTotal = otherStocks.reduce((sum, asset) => sum + asset.income, 0);
 
                       const chartItems = [
@@ -446,8 +452,7 @@ export default function IncomePage() {
                       ];
 
                       return chartItems.map((item, index) => {
-                        const percentage =
-                          dividendIncome > 0 ? (item.income / dividendIncome) * 100 : 0;
+                        const percentage = totalIncome > 0 ? (item.income / totalIncome) * 100 : 0;
 
                         return (
                           <div
@@ -483,7 +488,7 @@ export default function IncomePage() {
                     })()}
                   </div>
 
-                  {topDividendStocks.map((asset) => (
+                  {topIncomeAssets.map((asset) => (
                     <div key={asset.assetId} className="flex items-center justify-between">
                       <div className="flex items-center">
                         <Badge className="bg-primary mr-2 flex min-w-[55px] items-center justify-center rounded-sm text-xs">
