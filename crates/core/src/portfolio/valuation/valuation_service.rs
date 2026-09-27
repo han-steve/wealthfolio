@@ -670,6 +670,22 @@ impl ValuationService {
         }
         Self::validate_scoped_history_completeness(account_ids, &histories)?;
 
+        Self::sum_scoped_valuations(
+            scope_id,
+            base_currency,
+            histories,
+            external_flows_by_date,
+            internal_transfer_flow_adjustments_by_date,
+        )
+    }
+
+    fn sum_scoped_valuations(
+        scope_id: &str,
+        base_currency: &str,
+        histories: Vec<Vec<DailyAccountValuation>>,
+        external_flows_by_date: Option<&HashMap<NaiveDate, DailyFlowAmounts>>,
+        internal_transfer_flow_adjustments_by_date: Option<&HashMap<NaiveDate, (Decimal, Decimal)>>,
+    ) -> CoreResult<Vec<DailyAccountValuation>> {
         let mut by_date: std::collections::BTreeMap<NaiveDate, DailyAccountValuation> =
             std::collections::BTreeMap::new();
 
@@ -760,14 +776,53 @@ impl ValuationService {
         base_currency: &str,
         histories: Vec<Vec<DailyAccountValuation>>,
     ) -> CoreResult<Vec<DailyAccountValuation>> {
-        Self::aggregate_scoped_valuations(
-            scope_id,
-            account_ids,
-            base_currency,
-            histories,
-            None,
-            None,
-        )
+        if histories.len() != account_ids.len() {
+            Self::validate_scoped_history_completeness(account_ids, &histories)?;
+        }
+        if account_ids.is_empty() || histories.iter().any(Vec::is_empty) {
+            return Ok(Vec::new());
+        }
+
+        // Charts can show complete dates around an outage. Never substitute zero
+        // for an established account's missing valuation or reuse this for returns.
+        let mut complete_dates: BTreeSet<_> = histories
+            .iter()
+            .flatten()
+            .map(|value| value.valuation_date)
+            .collect();
+        for history in &histories {
+            let first = history
+                .iter()
+                .map(|value| value.valuation_date)
+                .min()
+                .unwrap();
+            let last = history
+                .iter()
+                .max_by_key(|value| value.valuation_date)
+                .unwrap();
+            let valued_dates: HashSet<_> = history
+                .iter()
+                .filter(|value| value.value_status.is_complete())
+                .map(|value| value.valuation_date)
+                .collect();
+            complete_dates.retain(|date| {
+                *date < first
+                    || valued_dates.contains(date)
+                    || (*date > last.valuation_date
+                        && last.value_status.is_complete()
+                        && last.total_value_base.is_zero())
+            });
+        }
+        let complete_histories = histories
+            .into_iter()
+            .map(|history| {
+                history
+                    .into_iter()
+                    .filter(|value| complete_dates.contains(&value.valuation_date))
+                    .collect()
+            })
+            .collect();
+        Self::sum_scoped_valuations(scope_id, base_currency, complete_histories, None, None)
     }
 
     fn validate_scoped_history_completeness(
@@ -2910,9 +2965,11 @@ impl ValuationServiceTrait for ValuationService {
         start_date_opt: Option<NaiveDate>,
         end_date_opt: Option<NaiveDate>,
     ) -> CoreResult<Vec<DailyAccountValuation>> {
+        // Coverage must include accounts whose last valuation precedes the requested
+        // window; otherwise a short range can silently become a partial portfolio.
         let max_calculated_at = self
             .valuation_repository
-            .get_max_calculated_at_for_accounts(account_ids, start_date_opt, end_date_opt)?
+            .get_max_calculated_at_for_accounts(account_ids, None, None)?
             .unwrap_or_default();
         let cache_key = ScopedValuationCacheKey {
             service_instance_id: self.service_instance_id,
@@ -2929,11 +2986,7 @@ impl ValuationServiceTrait for ValuationService {
             let mut cache_key = cache_key;
             let records = self
                 .valuation_repository
-                .get_historical_valuations_for_accounts(
-                    account_ids,
-                    start_date_opt,
-                    end_date_opt,
-                )?;
+                .get_historical_valuations_for_accounts(account_ids, None, None)?;
 
             let loaded_max_calculated_at = records
                 .iter()
@@ -2960,12 +3013,17 @@ impl ValuationServiceTrait for ValuationService {
                 .map(|account_id| histories_by_account.remove(account_id).unwrap_or_default())
                 .collect();
 
-            let aggregate = Self::aggregate_scoped_valuation_totals(
+            let mut aggregate = Self::aggregate_scoped_valuation_totals(
                 scope_id,
                 account_ids,
                 base_currency,
                 histories,
             )?;
+
+            aggregate.retain(|value| {
+                start_date_opt.is_none_or(|start| value.valuation_date >= start)
+                    && end_date_opt.is_none_or(|end| value.valuation_date <= end)
+            });
 
             self.insert_scoped_history_cache(cache_key, &aggregate);
             Ok(aggregate)
@@ -5877,6 +5935,139 @@ mod tests {
             .to_string()
             .contains("Incomplete scoped valuation history for account 'a1'"));
         assert!(err.to_string().contains("2026-05-02"));
+    }
+
+    fn chart_row(account: &str, day: u32, value: Decimal) -> DailyAccountValuation {
+        valuation(
+            account,
+            &format!("2026-05-{day:02}"),
+            value,
+            value,
+            Decimal::ZERO,
+            Decimal::ZERO,
+        )
+    }
+
+    fn chart_totals(histories: Vec<Vec<DailyAccountValuation>>) -> Vec<DailyAccountValuation> {
+        ValuationService::aggregate_scoped_valuation_totals(
+            "all",
+            &["a".into(), "b".into()],
+            "USD",
+            histories,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn chart_totals_omit_gap_dates_instead_of_partial_account_sums() {
+        let values = chart_totals(vec![
+            vec![chart_row("a", 1, dec!(100)), chart_row("a", 3, dec!(110))],
+            vec![
+                chart_row("b", 1, dec!(50)),
+                chart_row("b", 2, dec!(60)),
+                chart_row("b", 3, dec!(70)),
+            ],
+        ]);
+        assert_eq!(
+            values
+                .iter()
+                .map(|v| (v.valuation_date, v.total_value_base))
+                .collect::<Vec<_>>(),
+            vec![
+                (date("2026-05-01"), dec!(150)),
+                (date("2026-05-03"), dec!(180))
+            ]
+        );
+    }
+
+    #[test]
+    fn chart_totals_never_drop_stale_nonzero_accounts_from_recent_dates() {
+        let values = chart_totals(vec![
+            vec![chart_row("a", 1, dec!(100))],
+            vec![chart_row("b", 1, dec!(50)), chart_row("b", 2, dec!(60))],
+        ]);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].total_value_base, dec!(150));
+        // Date filtering happens after coverage, so a recent-only window is empty,
+        // not a plausible-looking total containing just the fresh account.
+        assert!(!values
+            .iter()
+            .any(|v| v.valuation_date >= date("2026-05-02")));
+    }
+
+    #[test]
+    fn chart_totals_allow_pre_inception_and_closed_zero_tails() {
+        let values = chart_totals(vec![
+            vec![
+                chart_row("a", 1, dec!(100)),
+                chart_row("a", 2, Decimal::ZERO),
+            ],
+            vec![chart_row("b", 2, dec!(50)), chart_row("b", 3, dec!(60))],
+        ]);
+        assert_eq!(
+            values
+                .iter()
+                .map(|v| v.total_value_base)
+                .collect::<Vec<_>>(),
+            vec![dec!(100), dec!(50), dec!(60)]
+        );
+    }
+
+    #[test]
+    fn chart_totals_use_original_coverage_when_zero_close_date_is_in_a_gap() {
+        let values = chart_totals(vec![
+            vec![
+                chart_row("a", 1, dec!(100)),
+                chart_row("a", 2, Decimal::ZERO),
+            ],
+            vec![chart_row("b", 1, dec!(50)), chart_row("b", 3, dec!(60))],
+        ]);
+        assert_eq!(
+            values
+                .iter()
+                .map(|v| v.total_value_base)
+                .collect::<Vec<_>>(),
+            vec![dec!(150), dec!(60)]
+        );
+    }
+
+    #[test]
+    fn chart_totals_do_not_treat_unpriced_zero_as_account_closure() {
+        let mut unpriced = chart_row("a", 2, Decimal::ZERO);
+        unpriced.value_status = ValuationStatus::PartialUnpriced;
+        let values = chart_totals(vec![
+            vec![chart_row("a", 1, dec!(100)), unpriced],
+            vec![
+                chart_row("b", 1, dec!(50)),
+                chart_row("b", 2, dec!(60)),
+                chart_row("b", 3, dec!(70)),
+            ],
+        ]);
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].total_value_base, dec!(150));
+    }
+
+    #[test]
+    fn chart_totals_missing_account_history_is_not_zero() {
+        assert!(chart_totals(vec![vec![], vec![chart_row("b", 1, dec!(50))]]).is_empty());
+    }
+
+    #[test]
+    fn chart_totals_preserve_complete_history_exactly() {
+        let histories = vec![
+            vec![chart_row("a", 1, dec!(100)), chart_row("a", 2, dec!(110))],
+            vec![chart_row("b", 1, dec!(50)), chart_row("b", 2, dec!(60))],
+        ];
+        let expected = ValuationService::aggregate_scoped_valuations(
+            "all",
+            &["a".into(), "b".into()],
+            "USD",
+            histories.clone(),
+            None,
+            None,
+        )
+        .unwrap();
+        assert_eq!(chart_totals(histories), expected);
     }
 
     #[test]

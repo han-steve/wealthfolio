@@ -239,6 +239,68 @@ describe("DashboardContent", () => {
     expect(screen.queryByText("balance:100")).not.toBeInTheDocument();
     expect(screen.getByTestId("portfolio-as-of")).toHaveTextContent("2026-06-01T12:30:00Z");
     expect(screen.getByTestId("portfolio-as-of")).not.toHaveTextContent("2026-06-01T13:00:00Z");
+    expect(screen.getByText("interval-selector")).toBeInTheDocument();
+    expect(
+      screen.getByText("No complete portfolio valuations for this period."),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps period controls available and explains a history error", () => {
+    mockCurrentValuation();
+    mockUseHoldings.mockReturnValue({ holdings: [], isLoading: false } as unknown as ReturnType<
+      typeof useHoldings
+    >);
+    mockUseSettingsContext.mockReturnValue({
+      settings: { baseCurrency: "USD" },
+    } as unknown as ReturnType<typeof useSettingsContext>);
+    mockUseQuery.mockReturnValue({ isLoading: false, data: null } as unknown as ReturnType<
+      typeof useQuery
+    >);
+    mockUseValuationHistory.mockReturnValue({
+      valuationHistory: undefined,
+      isLoading: false,
+      error: new Error("unavailable"),
+    });
+    render(<DashboardContent />);
+    expect(screen.getByText("Portfolio history could not be loaded.")).toBeInTheDocument();
+    expect(screen.getByText("interval-selector")).toBeInTheDocument();
+  });
+
+  it("labels incomplete history and its gaps without changing the headline balance", () => {
+    mockCurrentValuation(125);
+    mockUseHoldings.mockReturnValue({ holdings: [], isLoading: false } as unknown as ReturnType<
+      typeof useHoldings
+    >);
+    mockUseSettingsContext.mockReturnValue({
+      settings: { baseCurrency: "USD" },
+    } as unknown as ReturnType<typeof useSettingsContext>);
+    mockUseQuery.mockReturnValue({ isLoading: false, data: null } as unknown as ReturnType<
+      typeof useQuery
+    >);
+    mockUseValuationHistory.mockReturnValue({
+      valuationHistory: [
+        {
+          valuationDate: "2026-05-01",
+          totalValueBase: 100,
+          netContributionBase: 90,
+          baseCurrency: "USD",
+        },
+        {
+          valuationDate: "2026-05-03",
+          totalValueBase: 120,
+          netContributionBase: 90,
+          baseCurrency: "USD",
+        },
+      ],
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useValuationHistory>);
+    render(<DashboardContent />);
+    expect(screen.getByRole("status")).toHaveTextContent("Complete history through 2026-05-03.");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Gaps indicate missing account valuations.",
+    );
+    expect(screen.getByText("balance:125")).toBeInTheDocument();
   });
 
   it("requests all-time valuation history without the 1970 sentinel range", () => {

@@ -15,6 +15,7 @@ import {
   type RechartsMarkerShapeProps,
 } from "./history-chart-marker";
 import { getAutomaticHistoryChartScale, type HistoryChartScaleMode } from "./history-chart-scale";
+import { withDailyHistoryGaps } from "./history-chart-gaps";
 
 const CHART_SCRUB_HAPTIC_INTERVAL_MS = 80;
 
@@ -28,6 +29,8 @@ export interface HistoryChartData {
 interface HistoryChartProps {
   data: HistoryChartData[];
   isLoading?: boolean;
+  /** Leave missing daily valuations visibly unknown instead of joining across them. */
+  showDailyGaps?: boolean;
   /** Dates with manual snapshots (YYYY-MM-DD format) */
   snapshotDates?: string[];
   /** Toggle visibility of snapshot markers */
@@ -80,7 +83,7 @@ const CustomTooltip = ({
   const tvPayload = totalValueData?.payload;
   const ncPayload = netContributionData?.payload;
 
-  if (!tvPayload) {
+  if (tvPayload?.totalValue == null) {
     return null;
   }
 
@@ -131,6 +134,7 @@ const CustomTooltip = ({
 export function HistoryChart({
   data,
   isLoading,
+  showDailyGaps = false,
   snapshotDates,
   showMarkers,
   onMarkerClick,
@@ -150,6 +154,10 @@ export function HistoryChart({
   const id = useId();
   const fillGradientId = `historyFill-${id}`;
   const strokeGradientId = `historyStroke-${id}`;
+  const plotData = useMemo(
+    () => (showDailyGaps ? withDailyHistoryGaps(data) : data),
+    [data, showDailyGaps],
+  );
   const scaleConfig = useMemo(
     () =>
       getAutomaticHistoryChartScale(data, {
@@ -270,7 +278,7 @@ export function HistoryChart({
   return (
     <ChartContainer config={chartConfig} className="h-full w-full" data-no-swipe-drag>
       <AreaChart
-        data={data}
+        data={plotData}
         stackOffset="sign"
         style={{
           cursor: showMarkers && isChartHovered && hoveredMarker ? "pointer" : undefined,
@@ -366,7 +374,7 @@ export function HistoryChart({
           isAnimationActive={true}
           animationDuration={300}
           animationEasing="ease-out"
-          connectNulls={true}
+          connectNulls={!showDailyGaps}
           type="monotone"
           dataKey="totalValue"
           stroke={`url(#${strokeGradientId})`}
@@ -384,7 +392,7 @@ export function HistoryChart({
             isAnimationActive={true}
             animationDuration={300}
             animationEasing="ease-out"
-            connectNulls={true}
+            connectNulls={!showDailyGaps}
             type="monotone"
             dataKey="netContribution"
             stroke="var(--muted-foreground)"

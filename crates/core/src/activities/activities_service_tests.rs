@@ -2333,6 +2333,39 @@ mod tests {
     }
 
     #[test]
+    fn chart_history_range_keeps_coverage_from_accounts_outside_the_window() {
+        let row =
+            |account, day, value| create_daily_valuation(account, day, value, value, value, value);
+        let repository = Arc::new(MockValuationRepository::new(vec![
+            row("old", "2026-05-01", dec!(100)),
+            row("fresh", "2026-05-01", dec!(50)),
+            row("fresh", "2026-05-02", dec!(60)),
+        ]));
+        let service = scoped_valuation_service(Arc::clone(&repository));
+        let accounts = vec!["old".to_string(), "fresh".to_string()];
+        let day = Some(NaiveDate::from_ymd_opt(2026, 5, 2).unwrap());
+        let values = service
+            .get_historical_valuation_totals_for_accounts("all", &accounts, "USD", day, day)
+            .unwrap();
+        assert!(
+            values.is_empty(),
+            "must not report only the fresh account as the portfolio"
+        );
+
+        // Correcting the old coverage outside this window must invalidate its cache.
+        let mut rows = repository.valuations.lock().unwrap();
+        rows[0].total_value_base = Decimal::ZERO;
+        rows[0].calculated_at += chrono::Duration::days(1);
+        drop(rows);
+        let values = service
+            .get_historical_valuation_totals_for_accounts("all", &accounts, "USD", day, day)
+            .unwrap();
+        assert_eq!(values.len(), 1);
+        assert_eq!(values[0].total_value_base, dec!(60));
+        assert_eq!(repository.scoped_history_load_calls(), 2);
+    }
+
+    #[test]
     fn failed_single_flight_is_not_cached_and_waiter_retries() {
         let valuation_repository = Arc::new(
             MockValuationRepository::new(vec![create_daily_valuation(

@@ -14,6 +14,14 @@
   "top_holdings": "Top Holdings",
   "asset_allocation": "Asset Allocation",
   "performance_chart": "Performance Chart",
+  "history": {
+    "loading": "Loading portfolio history...",
+    "error": "Portfolio history could not be loaded.",
+    "empty": "No complete portfolio valuations for this period.",
+    "refresh_error": "History refresh failed; showing previously loaded data. ",
+    "through": "Complete history through {{date}}. ",
+    "gaps": "Gaps indicate missing account valuations."
+  },
   "view_all": "View All",
   "no_data": "No data available",
   "sync_portfolio": "Sync Portfolio",

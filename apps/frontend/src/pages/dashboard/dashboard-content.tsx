@@ -1,5 +1,6 @@
 import { calculatePerformanceSummary } from "@/adapters";
 import { HistoryChart } from "@/components/history-chart";
+import { hasDailyHistoryGaps } from "@/components/history-chart-gaps";
 import { useHapticFeedback } from "@/hooks";
 import { useCurrentValuation } from "@/hooks/use-current-account-valuations";
 import { useHoldings } from "@/hooks/use-holdings";
@@ -106,8 +107,11 @@ export function DashboardContent() {
   const totalValue = portfolioCurrentValuation?.summary.totalValueBase ?? 0;
 
   const valuationHistoryRange = isAllTime ? undefined : dateRange;
-  const { valuationHistory, isLoading: isValuationHistoryLoading } =
-    useValuationHistory(valuationHistoryRange);
+  const {
+    valuationHistory,
+    isLoading: isValuationHistoryLoading,
+    error: valuationHistoryError,
+  } = useValuationHistory(valuationHistoryRange);
 
   const { settings } = useSettingsContext();
   const baseCurrency = settings?.baseCurrency ?? "USD";
@@ -154,6 +158,11 @@ export function DashboardContent() {
       })) ?? []
     );
   }, [valuationHistory, baseCurrency]);
+
+  const lastChartDate = chartData.at(-1)?.date;
+  const chartHasGaps = useMemo(() => hasDailyHistoryGaps(chartData), [chartData]);
+  const chartEndsEarly =
+    lastChartDate && lastChartDate < (endDate ?? format(new Date(), "yyyy-MM-dd"));
 
   const chartMinDomainSpanRatio = useMemo(
     () => getDashboardChartMinDomainSpanRatio(selectedInterval),
@@ -247,29 +256,66 @@ export function DashboardContent() {
             : `linear-gradient(to top, color-mix(in srgb, var(--success) 30%, transparent), color-mix(in srgb, var(--success) 15%, transparent) 50%, transparent 100%)`,
         }}
       >
-        <div className="h-70">
-          <HistoryChart
-            data={chartData}
-            isLoading={isValuationHistoryLoading}
-            scaleMode="fit-visible"
-            minDomainSpanRatio={chartMinDomainSpanRatio}
-            netContributionMaxDomainSpanRatio={chartNetContributionMaxDomainSpanRatio}
-          />
-          {valuationHistory && chartData.length > 0 && (
-            <div className="flex w-full justify-center">
-              <IntervalSelector
-                className="pointer-events-auto relative z-20 w-full max-w-screen-sm sm:max-w-screen-md md:max-w-2xl lg:max-w-3xl"
-                onIntervalSelect={handleIntervalSelect}
-                onHaptic={triggerHaptic}
+        <div>
+          <div className="h-64">
+            {chartData.length > 0 ? (
+              <HistoryChart
+                data={chartData}
                 isLoading={isValuationHistoryLoading}
-                storageKey={INTERVAL_STORAGE_KEY}
-                defaultValue={DEFAULT_INTERVAL}
+                showDailyGaps
+                scaleMode="fit-visible"
+                minDomainSpanRatio={chartMinDomainSpanRatio}
+                netContributionMaxDomainSpanRatio={chartNetContributionMaxDomainSpanRatio}
               />
-            </div>
-          )}
+            ) : (
+              <div
+                role="status"
+                className="text-muted-foreground flex h-full items-center justify-center px-4 text-center text-sm"
+              >
+                {isValuationHistoryLoading
+                  ? t("dashboard:history.loading", "Loading portfolio history...")
+                  : valuationHistoryError
+                    ? t("dashboard:history.error", "Portfolio history could not be loaded.")
+                    : t(
+                        "dashboard:history.empty",
+                        "No complete portfolio valuations for this period.",
+                      )}
+              </div>
+            )}
+          </div>
+          {!isValuationHistoryLoading &&
+            chartData.length > 0 &&
+            (chartEndsEarly || chartHasGaps || valuationHistoryError) && (
+              <p role="status" className="text-muted-foreground px-4 py-2 text-center text-xs">
+                {valuationHistoryError
+                  ? t(
+                      "dashboard:history.refresh_error",
+                      "History refresh failed; showing previously loaded data. ",
+                    )
+                  : null}
+                {chartEndsEarly
+                  ? t("dashboard:history.through", "Complete history through {{date}}. ", {
+                      date: lastChartDate,
+                    })
+                  : null}
+                {chartHasGaps
+                  ? t("dashboard:history.gaps", "Gaps indicate missing account valuations.")
+                  : null}
+              </p>
+            )}
+          <div className="flex w-full justify-center">
+            <IntervalSelector
+              className="pointer-events-auto relative z-20 w-full max-w-screen-sm sm:max-w-screen-md md:max-w-2xl lg:max-w-3xl"
+              onIntervalSelect={handleIntervalSelect}
+              onHaptic={triggerHaptic}
+              isLoading={isValuationHistoryLoading}
+              storageKey={INTERVAL_STORAGE_KEY}
+              defaultValue={DEFAULT_INTERVAL}
+            />
+          </div>
         </div>
 
-        <div className="grow px-4 pb-[var(--mobile-nav-total-offset)] pt-14 md:px-6 md:pb-6 md:pt-12 lg:px-10 lg:pb-8 lg:pt-14">
+        <div className="grow px-4 pb-[var(--mobile-nav-total-offset)] pt-6 md:px-6 md:pb-6 lg:px-10 lg:pb-8">
           <div className="grid grid-cols-1 gap-8 lg:grid-cols-3 lg:gap-20">
             <div className="lg:col-span-2">
               <AccountsSummary
