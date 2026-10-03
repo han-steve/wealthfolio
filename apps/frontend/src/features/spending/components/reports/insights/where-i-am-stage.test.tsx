@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
+import type { TaxonomyCategory } from "@/lib/types";
 import type { BudgetSnapshot } from "../../../types/budget";
 import { FormattingProvider } from "@wealthfolio/ui";
 import { MemoryRouter } from "react-router-dom";
@@ -65,6 +66,31 @@ function setup(custom: boolean, overrides: Partial<ComponentProps<typeof WhereIA
 }
 
 describe("Where I am comparison labels", () => {
+  it("counts visible prior-only and budget-only categories as well as current spending", () => {
+    setup(false, {
+      currentReport: {
+        ...report(150),
+        spendingBreakdown: [{ categoryId: "a", taxonomyId: "spending", amount: 150, count: 1 }],
+      },
+      priorReport: {
+        ...report(80),
+        spendingBreakdown: [{ categoryId: "b", taxonomyId: "spending", amount: 80, count: 1 }],
+      },
+      taxonomyCategories: [{ id: "c", name: "Budget only", parentId: null }] as TaxonomyCategory[],
+      budget: {
+        computed: {
+          totals: { spendingPlanned: 200 },
+          groupRows: [
+            {
+              group: { id: "group", key: "needs" },
+              categories: [{ categoryId: "c", target: 200 }],
+            },
+          ],
+        },
+      } as BudgetSnapshot,
+    });
+    expect(screen.getAllByText("3 of 3 categories shown").length).toBeGreaterThan(0);
+  });
   it("labels a custom span as a period and shows the actual prior dates across DST", () => {
     setup(true);
     expect(screen.getByText("SPENT THIS PERIOD")).toBeInTheDocument();

@@ -509,18 +509,6 @@ export default function SpendingTabContent() {
   }, [budgetMonthKey, appTimezone, todayParts]);
   const { data: historyReport } = useSpendingReport(historyReportReq);
 
-  const historicalDailyAvg = useMemo(() => {
-    const total = historyReport?.current.outflow ?? 0;
-    if (total <= 0) return 0;
-    const month = parseMonthKey(budgetMonthKey) ?? todayParts;
-    const monthStart = { year: month.year, month: month.month, day: 1 };
-    const start = addCalendarMonths(monthStart, -3);
-    const endMonth = addCalendarMonths(monthStart, -1);
-    const end = { ...endMonth, day: daysInCalendarMonth(endMonth.year, endMonth.month) };
-    const days = Math.max(1, calendarDaysBetweenInclusive(start, end));
-    return total / days;
-  }, [historyReport, budgetMonthKey, todayParts]);
-
   // Always render in the user's base currency. The backend FX-converts every
   // activity in `report` to base at period end, so labeling by the first
   // activity's currency (the pre-FX behavior) would mislabel multi-currency
@@ -1203,7 +1191,6 @@ export default function SpendingTabContent() {
                   target={budgetCardBudget?.computed.totals.spendingPlanned ?? 0}
                   spent={monthReport?.current.outflow ?? 0}
                   currency={budgetCardBudget?.computed.currency ?? currency}
-                  historicalDailyAvg={historicalDailyAvg}
                   allocations={
                     budgetCardBudget?.computed.groupRows.flatMap((row) => row.categories) ?? []
                   }

@@ -30,6 +30,7 @@ import type { PaceState } from "../../../types/insight";
 import type { CategoryBreakdownRow, MonthBucket, MonthlyReport } from "../../../types/report";
 import { CategoryIcon } from "../../category-chips";
 import { CategoryHierarchyTable, type CategorySort } from "../category-hierarchy-table";
+import { buildTree } from "../category-hierarchy/builders";
 import { formatMonthDay, formatMonthName, formatPercentValue } from "./format";
 
 // ─── shared chrome ────────────────────────────────────────────────────────
@@ -204,7 +205,7 @@ const PaceCard: FC<PaceCardProps> = ({
       ? t("spending:whereIAm.statusOverBudget")
       : status === "approach"
         ? t("spending:whereIAm.statusTrendingHigh")
-        : t("spending:whereIAm.statusOnTrack");
+        : t("spending:whereIAm.statusWithinBudget");
 
   if (target <= 0) {
     return (
@@ -337,7 +338,11 @@ export function computePace(
   const diffFromPace = spent - expectedSoFar;
 
   const status: PaceComputed["status"] =
-    percentSpent > 1 ? "over" : percentSpent >= 0.85 ? "approach" : "ok";
+    percentSpent > 1
+      ? "over"
+      : isLive && projection !== null && projection > target
+        ? "approach"
+        : "ok";
 
   // Right-side context line. "left in [month]" only makes sense when the
   // window IS that month; for multi-month windows say "left in the period".
@@ -1145,8 +1150,16 @@ function BreakdownCanvas({
     };
   }, [filter, filteredBreakdown, priorBreakdown, budgetRows, groupRows, taxonomyCategories]);
   const shownCats = useMemo(
-    () => countTopLevel(filteredBreakdown, taxonomyCategories),
-    [filteredBreakdown, taxonomyCategories],
+    () =>
+      buildTree({
+        breakdown: filteredBreakdown,
+        priorBreakdown: filteredContext.priorBreakdown,
+        budgetRows: filteredContext.budgetRows,
+        taxonomyCategories,
+        sort: "spent",
+        compareNames: (a, b) => a.localeCompare(b),
+      }).length,
+    [filteredBreakdown, filteredContext, taxonomyCategories],
   );
   // Count only excluded ids still present in the taxonomy (stale ids keep
   // filtering backend-side but shouldn't inflate the hint).
@@ -1328,7 +1341,14 @@ function computeFilterCounts({
   const allocMap = new Map(budgetRows.map((a) => [a.categoryId, a.target || 0]));
   const totals = rollUpToTopLevel(breakdown, meta);
   const priorTotals = rollUpToTopLevel(priorBreakdown, meta);
-  const all = totals.size;
+  const all = buildTree({
+    breakdown,
+    priorBreakdown,
+    budgetRows,
+    taxonomyCategories,
+    sort: "spent",
+    compareNames: (a, b) => a.localeCompare(b),
+  }).length;
   let over = 0;
   let movers = 0;
   let noBudget = 0;
@@ -1412,14 +1432,4 @@ function buildPeriodSubtitle(
   return sameYear
     ? `${start} → ${end}`
     : `${start} ${range.start.getFullYear()} → ${end} ${range.end.getFullYear()}`;
-}
-
-function countTopLevel(
-  rows: CategoryBreakdownRow[],
-  taxonomyCategories: TaxonomyCategory[],
-): number {
-  const meta = new Map(taxonomyCategories.map((c) => [c.id, c]));
-  const tops = new Set<string>();
-  for (const r of rows) tops.add(topCategoryId(r.categoryId, meta));
-  return tops.size;
 }

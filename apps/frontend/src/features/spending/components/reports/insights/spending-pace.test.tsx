@@ -32,6 +32,7 @@ describe("spending pace forecast coverage", () => {
     vi.setSystemTime(new Date("2030-07-03T12:00:00Z"));
     const result = pace(3, 28);
     expect(result.projection).toBeNull();
+    expect(result.status).toBe("ok");
     render(<>{result.narrative}</>);
     expect(screen.getByText(messages.whereIAm.forecastPending)).toBeInTheDocument();
     expect(screen.queryByText(/Projected/)).not.toBeInTheDocument();
@@ -41,6 +42,7 @@ describe("spending pace forecast coverage", () => {
     vi.setSystemTime(new Date("2030-07-08T12:00:00Z"));
     const result = pace(8, 23);
     expect(result.projection).toBe(3500);
+    expect(result.status).toBe("approach");
     render(<>{result.narrative}</>);
     expect(screen.getByText(/Projected/)).toBeInTheDocument();
     expect(screen.queryByText(messages.whereIAm.forecastPending)).not.toBeInTheDocument();
@@ -50,6 +52,7 @@ describe("spending pace forecast coverage", () => {
     vi.setSystemTime(new Date("2030-08-02T12:00:00Z"));
     const result = pace(31, 0);
     expect(result.projection).toBe(1200);
+    expect(result.status).toBe("ok");
     render(<>{result.narrative}</>);
     expect(screen.queryByText(/Projected/)).not.toBeInTheDocument();
   });

@@ -78,8 +78,9 @@ export function CategoryHierarchyTable({
         taxonomyCategories,
         sort,
         compareNames,
+        uncategorizedLabel: tr("spending:insightsPage.uncategorized"),
       }),
-    [breakdown, priorBreakdown, budgetRows, taxonomyCategories, sort, compareNames],
+    [breakdown, priorBreakdown, budgetRows, taxonomyCategories, sort, compareNames, tr],
   );
 
   const totals = useMemo(() => {

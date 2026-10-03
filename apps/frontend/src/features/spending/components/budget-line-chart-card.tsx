@@ -80,7 +80,6 @@ export function BudgetLineChartCard({
   target,
   spent,
   currency,
-  historicalDailyAvg,
   allocations,
   spendingBreakdown,
   categoriesMeta,
@@ -97,7 +96,6 @@ export function BudgetLineChartCard({
   target: number;
   spent: number;
   currency: string;
-  historicalDailyAvg: number;
   allocations: BudgetCategoryRow[];
   spendingBreakdown: { categoryId: string; amount: number; count: number }[];
   categoriesMeta: CategoryMetaMap;
@@ -135,7 +133,7 @@ export function BudgetLineChartCard({
         .toUpperCase(),
     };
   }, [monthKey, isCurrentMonth, dateFormatting, today]);
-  const { dayOfMonth, daysInMonth, daysRemaining, monthLabel } = monthMeta;
+  const { dayOfMonth, daysInMonth, monthLabel } = monthMeta;
 
   const cumulative = useMemo(() => {
     const byDay = new Map<number, number>();
@@ -222,11 +220,11 @@ export function BudgetLineChartCard({
     );
   }, [historicalPace, target, daysInMonth, innerW, innerH, padL, padT, yMax]);
 
-  const haveHistory = historicalDailyAvg > 0;
+  const haveHistory = historicalPace !== null;
   const forecast =
     target > 0 && isCurrentMonth
-      ? haveHistory
-        ? spent + historicalDailyAvg * daysRemaining
+      ? historicalPace
+        ? spent + historicalPace.remainingByDay[dayOfMonth]
         : dayOfMonth > 0
           ? (spent / dayOfMonth) * daysInMonth
           : 0
@@ -274,11 +272,17 @@ export function BudgetLineChartCard({
   const gapVsPace = spent - paceAtToday;
   const aheadOfPace = gapVsPace < 0;
 
-  const status: Status = isOver ? "over" : isCurrentMonth && !aheadOfPace ? "warn" : "ok";
+  const status: Status = isOver
+    ? "over"
+    : isCurrentMonth && (willOverspend || !aheadOfPace)
+      ? "warn"
+      : "ok";
   const a = STATUS_ACCENTS[status];
   const { Icon } = a;
   const statusLabel =
-    !isCurrentMonth && !isOver ? t("spending:budgetChart.underBudget") : t(a.labelKey);
+    !isOver && (!isCurrentMonth || !forecastReliable)
+      ? t("spending:budgetChart.underBudget")
+      : t(a.labelKey);
 
   const xForDay = (day: number) => padL + ((day - 1) / Math.max(1, daysInMonth - 1)) * innerW;
   const yForVal = (v: number) => padT + (1 - v / yMax) * innerH;
@@ -298,7 +302,7 @@ export function BudgetLineChartCard({
           amount: amountFormatting.formatCompactAmount(overBy, currency),
         })
       : aheadOfPace
-        ? t("spending:budgetChart.underBudgetAmount", {
+        ? t("spending:budgetChart.underPaceAmount", {
             amount: amountFormatting.formatCompactAmount(gapAbs, currency),
           })
         : t("spending:budgetChart.overPaceAmount", {
@@ -566,10 +570,10 @@ export function BudgetLineChartCard({
   );
 }
 
-function buildHistoricalPaceCurve(
+export function buildHistoricalPaceCurve(
   byDay: DayBucket[],
   currentDaysInMonth: number,
-): { points: PacePoint[]; pctByDay: number[] } | null {
+): { points: PacePoint[]; pctByDay: number[]; remainingByDay: number[] } | null {
   const months = new Map<
     string,
     { daysInMonth: number; outflowByDay: Map<number, number>; total: number }
@@ -598,7 +602,7 @@ function buildHistoricalPaceCurve(
       let running = 0;
       for (let day = 1; day <= month.daysInMonth; day++) {
         running += month.outflowByDay.get(day) ?? 0;
-        cumulativeByDay[day] = Math.max(cumulativeByDay[day - 1], clamp(running, 0, month.total));
+        cumulativeByDay[day] = running;
       }
       return { ...month, cumulativeByDay };
     });
@@ -606,21 +610,29 @@ function buildHistoricalPaceCurve(
   if (eligibleMonths.length < MIN_HISTORICAL_PACE_MONTHS) return null;
 
   const pctByDay = Array.from({ length: currentDaysInMonth + 1 }, () => 0);
+  const remainingByDay = Array.from({ length: currentDaysInMonth + 1 }, () => 0);
   const points: PacePoint[] = [];
   for (let day = 1; day <= currentDaysInMonth; day++) {
     const values = eligibleMonths.map((month) => {
-      const historyDay = Math.min(
-        month.daysInMonth,
-        Math.max(1, Math.ceil((day / currentDaysInMonth) * month.daysInMonth)),
-      );
+      const historyDay = Math.min(month.daysInMonth, day);
       return clamp(month.cumulativeByDay[historyDay] / month.total, 0, 1);
     });
-    const value = median(values);
+    // Forecast only the recorded remainder, not a daily average that spreads
+    // already-posted monthly bills (such as rent) over the remaining days again.
+    remainingByDay[day] =
+      day === currentDaysInMonth
+        ? 0
+        : median(
+            eligibleMonths.map(
+              (month) => month.total - month.cumulativeByDay[Math.min(month.daysInMonth, day)],
+            ),
+          );
+    const value = day === currentDaysInMonth ? 1 : median(values);
     pctByDay[day] = value;
     points.push({ day, value });
   }
 
-  return { points, pctByDay };
+  return { points, pctByDay, remainingByDay };
 }
 
 function parseDayBucketDate(date: string): { year: number; month: number; day: number } | null {

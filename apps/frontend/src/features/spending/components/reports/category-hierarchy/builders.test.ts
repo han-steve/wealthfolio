@@ -3,6 +3,26 @@ import type { TaxonomyCategory } from "@/lib/types";
 import { buildTree } from "./builders";
 
 describe("spending category totals", () => {
+  it("labels prior-only uncategorized activity without exposing the internal id", () => {
+    const tree = buildTree({
+      breakdown: [],
+      priorBreakdown: [
+        {
+          categoryId: "__uncategorized__",
+          taxonomyId: "spending_categories",
+          amount: 20,
+          count: 1,
+        },
+      ],
+      budgetRows: [],
+      taxonomyCategories: [],
+      sort: "spent",
+      compareNames: (a, b) => a.localeCompare(b),
+      uncategorizedLabel: "Uncategorized",
+    });
+    expect(tree[0].name).toBe("Uncategorized");
+    expect(tree[0].priorSpent).toBe(20);
+  });
   it("keeps signed current and prior refunds in the hierarchy", () => {
     const categories = [
       { id: "home", name: "Home", parentId: null },

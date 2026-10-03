@@ -48,6 +48,7 @@ export function buildTree({
   taxonomyCategories,
   sort,
   compareNames,
+  uncategorizedLabel = "Uncategorized",
 }: {
   breakdown: CategoryBreakdownRow[];
   priorBreakdown: CategoryBreakdownRow[];
@@ -55,6 +56,7 @@ export function buildTree({
   taxonomyCategories: TaxonomyCategory[];
   sort: CategorySort;
   compareNames: (a: string, b: string) => number;
+  uncategorizedLabel?: string;
 }): NodeRow[] {
   const meta = new Map(taxonomyCategories.map((c) => [c.id, c]));
   const allocationByCat = new Map(budgetRows.map((a) => [a.categoryId, a.target || 0]));
@@ -67,7 +69,7 @@ export function buildTree({
       const m = meta.get(id);
       n = {
         id,
-        name: m?.name ?? id,
+        name: m?.name ?? (id === "__uncategorized__" ? uncategorizedLabel : id),
         color: m?.color ?? null,
         icon: m?.icon ?? null,
         parentId: m?.parentId ?? null,
