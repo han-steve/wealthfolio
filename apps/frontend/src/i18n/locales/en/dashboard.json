@@ -104,6 +104,7 @@
     "more_other": "+{{count}} more"
   },
   "summary": {
+    "returns_unavailable": "Returns unavailable",
     "return_unavailable_holdings": "Return % unavailable - missing cost basis or starting holdings value.",
     "return_unavailable_activity": "Return % unavailable - activity history may be inconsistent.",
     "unexpected_error": "An unexpected error occurred",

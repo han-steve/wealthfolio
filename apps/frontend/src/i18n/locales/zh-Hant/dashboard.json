@@ -104,6 +104,7 @@
     "more_one": "+{{count}} 項"
   },
   "summary": {
+    "returns_unavailable": "無法計算報酬",
     "return_unavailable_holdings": "無法計算報酬率：缺少成本基礎或期初持有部位價值。",
     "return_unavailable_activity": "無法計算報酬率：交易紀錄可能不一致。",
     "unexpected_error": "發生未預期的錯誤",

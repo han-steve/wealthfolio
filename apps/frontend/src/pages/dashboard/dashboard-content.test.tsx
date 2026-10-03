@@ -152,6 +152,46 @@ describe("DashboardContent", () => {
     } as unknown as ReturnType<typeof useCurrentValuation>);
   }
 
+  it.each([
+    { amount: null, percent: null, unavailable: true },
+    { amount: 0, percent: 0, unavailable: false },
+    { amount: 10, percent: null, unavailable: false },
+    { amount: null, percent: 0.1, unavailable: false },
+  ])(
+    "distinguishes unavailable returns from zero ($amount, $percent)",
+    ({ amount, percent, unavailable }) => {
+      mockCurrentValuation(125);
+      mockUseHoldings.mockReturnValue({ holdings: [], isLoading: false } as unknown as ReturnType<
+        typeof useHoldings
+      >);
+      mockUseValuationHistory.mockReturnValue({
+        valuationHistory: [],
+        isLoading: false,
+        error: null,
+      });
+      mockUseSettingsContext.mockReturnValue({
+        settings: { baseCurrency: "USD" },
+      } as ReturnType<typeof useSettingsContext>);
+      mockUseQuery.mockReturnValue({
+        isLoading: false,
+        data: {
+          summary: {
+            amount,
+            percent,
+            amountStatus: amount == null ? "unavailable" : "complete",
+            percentStatus: percent == null ? "unavailable" : "complete",
+          },
+        },
+      } as ReturnType<typeof useQuery>);
+      render(<DashboardContent />);
+      expect(Boolean(screen.queryByText("Returns unavailable"))).toBe(unavailable);
+      expect(screen.getByText("balance:125")).toBeInTheDocument();
+      if (unavailable) expect(screen.queryByText("N/A")).not.toBeInTheDocument();
+      if (amount != null) expect(screen.getByText(`gain-amount:${amount}`)).toBeInTheDocument();
+      if (percent != null) expect(screen.getByText(`gain-percent:${percent}`)).toBeInTheDocument();
+    },
+  );
+
   it("does not pass backend performance warnings to dashboard header notices", () => {
     mockCurrentValuation(125);
     mockUseHoldings.mockReturnValue({

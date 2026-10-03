@@ -188,13 +188,17 @@ export function DashboardContent() {
                 currency={baseCurrency}
                 displayCurrency={true}
               />
-              <div className="text-md flex min-h-5 items-center space-x-3">
+              <div className="text-md flex min-h-5 flex-wrap items-center gap-x-3 gap-y-1">
                 {isPortfolioPerformanceLoading ? (
                   <div className="flex items-center gap-3">
                     <Skeleton className="h-4 w-24" />
                     <div className="border-secondary my-1 border-r pr-2" />
                     <Skeleton className="h-4 w-16" />
                   </div>
+                ) : gainLossAmount == null && simpleReturn == null ? (
+                  <span className="text-muted-foreground lg:text-md text-sm font-light">
+                    {t("dashboard:summary.returns_unavailable", "Returns unavailable")}
+                  </span>
                 ) : (
                   <>
                     {gainLossAmount == null ? (
