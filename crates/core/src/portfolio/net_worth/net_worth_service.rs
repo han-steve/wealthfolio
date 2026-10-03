@@ -19,7 +19,9 @@ use crate::errors::Result;
 use crate::fx::currency::normalize_amount;
 use crate::fx::FxServiceTrait;
 use crate::portfolio::snapshot::SnapshotRepositoryTrait;
-use crate::portfolio::valuation::{DailyAccountValuation, ValuationRepositoryTrait};
+use crate::portfolio::valuation::{
+    DailyAccountValuation, ValuationRepositoryTrait, ValuationService,
+};
 use crate::quotes::QuoteServiceTrait;
 
 /// Number of days after which a valuation is considered stale.
@@ -734,31 +736,41 @@ impl NetWorthServiceTrait for NetWorthService {
 
         let mut portfolio_by_date: BTreeMap<NaiveDate, PortfolioState> = BTreeMap::new();
         let accounts = self.account_repository.list(None, Some(false), None)?;
+        let mut account_ids = Vec::new();
+        let mut histories = Vec::new();
         for account in accounts {
             // Liability accounts (e.g. credit cards) are tracked separately as
             // liabilities/cash assets below; excluding them here avoids double-counting.
             if is_liability_account_type(&account.account_type) {
                 continue;
             }
-            let valuations = self.valuation_repository.get_historical_valuations(
+            // Coverage must include established accounts with no rows in the requested range.
+            histories.push(self.valuation_repository.get_historical_valuations(
                 &account.id,
-                Some(start_date),
-                Some(end_date),
-            )?;
-            for val in valuations {
-                let entry = portfolio_by_date
-                    .entry(val.valuation_date)
-                    .or_insert_with(|| PortfolioState {
-                        value: Decimal::ZERO,
-                        net_contribution: Decimal::ZERO,
-                        cash: Decimal::ZERO,
-                        investments: Decimal::ZERO,
-                    });
-                entry.value += val.total_value_base;
-                entry.net_contribution += val.net_contribution_base;
-                entry.cash += val.cash_balance_base;
-                entry.investments += val.investment_market_value_base;
+                None,
+                None,
+            )?);
+            account_ids.push(account.id);
+        }
+        let has_portfolio_accounts = !account_ids.is_empty();
+        for val in ValuationService::aggregate_scoped_valuation_totals(
+            "NET_WORTH",
+            &account_ids,
+            &base_currency,
+            histories,
+        )? {
+            if val.valuation_date < start_date || val.valuation_date > end_date {
+                continue;
             }
+            portfolio_by_date.insert(
+                val.valuation_date,
+                PortfolioState {
+                    value: val.total_value_base,
+                    net_contribution: val.net_contribution_base,
+                    cash: val.cash_balance_base,
+                    investments: val.investment_market_value_base,
+                },
+            );
         }
         let first_portfolio_date = portfolio_by_date.keys().next().copied();
         let history_seed_date = first_portfolio_date.unwrap_or(start_date);
@@ -1008,9 +1020,11 @@ impl NetWorthServiceTrait for NetWorthService {
                 }
             }
 
-            // Skip if portfolio not yet initialized (Rule 1)
-            // Exception: if there's no portfolio data at all, include dates with alt assets
-            if !portfolio_initialized && first_portfolio_date.is_some() {
+            // Alternative assets may carry forward, but a missing portfolio valuation
+            // must not become either zero or a seemingly fresh carried-forward total.
+            if has_portfolio_accounts
+                && (!portfolio_initialized || !portfolio_by_date.contains_key(&date))
+            {
                 continue;
             }
 

@@ -1761,6 +1761,58 @@ async fn test_no_quote_falls_back_to_cost_basis() {
 // ============================================================================
 
 #[test]
+fn test_history_omits_partial_dates_and_does_not_fill_them_from_card_updates() {
+    let d1 = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let d2 = d1.succ_opt().unwrap();
+    let d3 = d2.succ_opt().unwrap();
+    let service = create_net_worth_service_with_valuations(
+        vec![
+            create_test_account("a", "SECURITIES", "USD"),
+            create_test_account("b", "CASH", "USD"),
+            create_test_account("card", "CREDIT_CARD", "USD"),
+        ],
+        vec![],
+        vec![],
+        vec![],
+        vec![
+            create_account_valuation("a", d1, dec!(100)),
+            create_account_valuation("a", d2, dec!(110)),
+            create_account_valuation("a", d3, dec!(120)),
+            create_account_valuation("b", d1, dec!(200)),
+            create_account_valuation("b", d3, dec!(210)),
+            create_account_valuation("card", d2, dec!(-20)),
+        ],
+    );
+    let history = service.get_net_worth_history(d1, d3).unwrap();
+    assert_eq!(
+        history.iter().map(|p| p.date).collect::<Vec<_>>(),
+        vec![d1, d3]
+    );
+    assert_eq!(history[0].net_worth, dec!(300));
+    assert_eq!(history[1].net_worth, dec!(310));
+    assert!(service.get_net_worth_history(d2, d2).unwrap().is_empty());
+}
+
+#[test]
+fn test_history_missing_established_account_blocks_recent_partial_total() {
+    let d1 = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();
+    let d2 = d1.succ_opt().unwrap();
+    let service = create_net_worth_service_with_valuations(
+        vec![],
+        vec![],
+        vec![],
+        vec![],
+        vec![
+            create_account_valuation("a", d1, dec!(100)),
+            create_account_valuation("a", d2, dec!(110)),
+            create_account_valuation("b", d1, dec!(200)),
+        ],
+    );
+    assert!(service.get_net_worth_history(d2, d2).unwrap().is_empty());
+    assert_eq!(service.get_net_worth_history(d1, d2).unwrap().len(), 1);
+}
+
+#[test]
 fn test_history_basic_portfolio_with_alt_assets() {
     // Setup: Portfolio + Property + Liability over 5 days
     let d1 = NaiveDate::from_ymd_opt(2024, 1, 1).unwrap();

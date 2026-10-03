@@ -6,7 +6,7 @@ export type HistoryChartPoint = Omit<HistoryChartData, "totalValue" | "netContri
   netContribution: number | null;
 };
 
-export function hasDailyHistoryGaps(data: HistoryChartData[]): boolean {
+export function hasDailyHistoryGaps(data: { date: string }[]): boolean {
   return data.some(
     (point, index) =>
       index > 0 &&

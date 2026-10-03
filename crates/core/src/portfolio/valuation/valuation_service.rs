@@ -813,7 +813,7 @@ impl ValuationService {
         Ok(values)
     }
 
-    fn aggregate_scoped_valuation_totals(
+    pub(crate) fn aggregate_scoped_valuation_totals(
         scope_id: &str,
         account_ids: &[String],
         base_currency: &str,

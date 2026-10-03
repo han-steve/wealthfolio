@@ -7,6 +7,7 @@ import { formatDateISO, parseLocalDate } from "@/lib/utils";
 import Balance from "@/pages/dashboard/balance";
 import { AllocationDetailSheet } from "@/pages/holdings/components/allocation-detail-sheet";
 import { DashboardCard } from "@/components/dashboard-card";
+import { hasDailyHistoryGaps } from "@/components/history-chart-gaps";
 import {
   GainAmount,
   GainPercent,
@@ -149,8 +150,15 @@ export function NetWorthContent() {
 
   const parsedHistory = useMemo(() => parseHistory(historyData), [historyData]);
   const longHistory = useMemo(() => parseHistory(longHistoryData), [longHistoryData]);
+  const lastHistoryDate = parsedHistory.at(-1)?.date;
+  const hasHistoryGaps = hasDailyHistoryGaps(parsedHistory);
+  const hasCurrentHistory = !!lastHistoryDate && lastHistoryDate === historyDates?.endDate;
+  const showChange = parsedHistory.length >= 2 && hasCurrentHistory;
 
-  const velocity = useMemo(() => computeVelocity(parsedHistory), [parsedHistory]);
+  const velocity = useMemo(
+    () => (showChange && !hasHistoryGaps ? computeVelocity(parsedHistory) : null),
+    [parsedHistory, showChange, hasHistoryGaps],
+  );
   const trailingYearMonthly = useMemo(() => {
     if (periodCode === "ALL" || !velocity) return undefined;
     const cutoff = formatDateISO(new Date(currentDate.getTime() - 366 * MS_PER_DAY));
@@ -163,9 +171,10 @@ export function NetWorthContent() {
     return trailing.perMonth;
   }, [longHistory, periodCode, currentDate, velocity]);
   const momentum = useMemo(() => {
-    if (!historyDates || periodCode === "ALL") return null;
+    if (!historyDates || periodCode === "ALL" || !showChange || hasDailyHistoryGaps(longHistory))
+      return null;
     return computeMomentum(longHistory, historyDates.startDate, historyDates.endDate);
-  }, [longHistory, historyDates, periodCode]);
+  }, [longHistory, historyDates, periodCode, showChange]);
 
   // Net worth change over the selected range, on the same baseline rules as the
   // breakdown rows so the header and the table agree.
@@ -269,6 +278,10 @@ export function NetWorthContent() {
                   <div className="border-secondary my-1 border-r pr-2" />
                   <Skeleton className="h-4 w-16" />
                 </div>
+              ) : !showChange ? (
+                <span className="text-muted-foreground text-sm">
+                  {t("dashboard:summary.returns_unavailable", "Returns unavailable")}
+                </span>
               ) : (
                 <>
                   <GainAmount
@@ -311,6 +324,19 @@ export function NetWorthContent() {
         </div>
       </div>
 
+      {!isHistoryLoading && (hasHistoryGaps || (lastHistoryDate && !hasCurrentHistory)) && (
+        <p className="text-muted-foreground px-4 py-2 text-xs md:px-6 lg:px-8" role="status">
+          {!hasCurrentHistory
+            ? t("dashboard:history.through", "Complete history through {{date}}. ", {
+                date: lastHistoryDate,
+              })
+            : null}
+          {hasHistoryGaps
+            ? t("dashboard:history.gaps", "Gaps indicate missing account valuations.")
+            : null}
+        </p>
+      )}
+
       {/* Wrapper: chart + content with continuous gradient */}
       <div
         className="flex grow flex-col"
@@ -334,7 +360,7 @@ export function NetWorthContent() {
               </p>
             </div>
           )}
-          {historyData && historyData.length > 0 && (
+          {
             <div className="flex w-full justify-center">
               <IntervalSelector
                 className="pointer-events-auto relative z-20 w-full max-w-screen-sm sm:max-w-screen-md md:max-w-2xl lg:max-w-3xl"
@@ -343,7 +369,7 @@ export function NetWorthContent() {
                 value={periodCode}
               />
             </div>
-          )}
+          }
         </div>
 
         {/* Content section */}
@@ -366,6 +392,7 @@ export function NetWorthContent() {
                 <BreakdownTable
                   data={parsedData}
                   history={parsedHistory}
+                  changeAvailable={showChange}
                   currency={currency}
                   periodLabel={periodLabel}
                   onSelect={setSelected}

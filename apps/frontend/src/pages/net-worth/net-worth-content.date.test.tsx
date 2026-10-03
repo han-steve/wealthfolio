@@ -203,7 +203,7 @@ describe("NetWorthContent current-date queries", () => {
     ({ series, amount, percent }) => {
       queryMocks.useNetWorthHistory.mockReturnValue({
         data: series.map((netWorth, index) => ({
-          date: `2026-09-${10 + index}`,
+          date: `2026-09-${16 - series.length + index}`,
           netWorth: String(netWorth),
         })),
         isLoading: false,
@@ -220,7 +220,7 @@ describe("NetWorthContent current-date queries", () => {
     ({ series }) => {
       queryMocks.useNetWorthHistory.mockReturnValue({
         data: series.map((netWorth, index) => ({
-          date: `2026-09-${10 + index}`,
+          date: `2026-09-${16 - series.length + index}`,
           netWorth: String(netWorth),
         })),
         isLoading: false,
@@ -238,16 +238,43 @@ describe("NetWorthContent current-date queries", () => {
     "only offers a 12-month comparison with a full year of history ($start)",
     ({ start, available }) => {
       intervalMocks.period = "1M";
-      queryMocks.useNetWorthHistory.mockImplementation(({ startDate }) => ({
-        data: [
-          { date: startDate === "2026-08-15" ? startDate : start, netWorth: "100" },
-          { date: "2026-09-15", netWorth: "110" },
-        ],
-        isLoading: false,
-      }));
+      queryMocks.useNetWorthHistory.mockImplementation(({ startDate }) => {
+        const first = new Date(`${startDate === "2026-08-15" ? startDate : start}T00:00:00Z`);
+        const end = new Date("2026-09-15T00:00:00Z");
+        const data = [];
+        for (let day = first.getTime(); day <= end.getTime(); day += 86400000) {
+          data.push({
+            date: new Date(day).toISOString().slice(0, 10),
+            netWorth: day === end.getTime() ? "110" : "100",
+          });
+        }
+        return { data, isLoading: false };
+      });
       render(<NetWorthContent />);
       if (available) expect(screen.getByTestId("trailing-average")).not.toHaveTextContent("none");
       else expect(screen.getByTestId("trailing-average")).toHaveTextContent("none");
     },
   );
+
+  it("does not claim a current-period return when complete history stops early", () => {
+    queryMocks.useNetWorthHistory.mockReturnValue({
+      data: [
+        { date: "2026-09-01", netWorth: "100" },
+        { date: "2026-09-03", netWorth: "110" },
+      ],
+      isLoading: false,
+    });
+    render(<NetWorthContent />);
+    expect(screen.queryByTestId("change-amount")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("trailing-average")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("dashboard:history.through");
+    expect(screen.getByRole("status")).toHaveTextContent("dashboard:history.gaps");
+    expect(screen.getByRole("button", { name: "1M" })).toBeInTheDocument();
+  });
+
+  it("keeps period selection available when that period has no complete dates", () => {
+    render(<NetWorthContent />);
+    expect(screen.getByRole("button", { name: "1M" })).toBeInTheDocument();
+    expect(screen.queryByTestId("change-amount")).not.toBeInTheDocument();
+  });
 });

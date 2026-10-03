@@ -32,9 +32,16 @@ const NAME_CELL = "col-span-full min-w-0 @min-[28rem]/breakdown:col-span-1";
 const AMOUNT_CELL =
   "min-w-0 text-right text-xs tabular-nums [overflow-wrap:anywhere] @min-[40rem]/breakdown:text-sm";
 
-function ChangeCell({ change, currency }: { change: Change; currency: string }) {
+function ChangeCell({ change, currency }: { change: Change | null; currency: string }) {
   const formatting = useNumberFormatting();
   const { t } = useTranslation();
+  if (!change) {
+    return (
+      <span className={`${AMOUNT_CELL} text-muted-foreground`}>
+        {t("common:labels.not_available", "N/A")}
+      </span>
+    );
+  }
   const isZero = Math.abs(change.amount) < 0.005;
   const color = isZero
     ? "text-muted-foreground/60"
@@ -60,7 +67,7 @@ interface RowProps {
   dotColor: string;
   value: number;
   percentOfSection: number;
-  change: Change;
+  change: Change | null;
   currency: string;
   negative?: boolean;
   onClick?: () => void;
@@ -117,6 +124,7 @@ function BreakdownRow({
 interface BreakdownTableProps {
   data: ParsedNetWorth;
   history: ParsedHistoryPoint[];
+  changeAvailable?: boolean;
   currency: string;
   periodLabel: string;
   onSelect: (selected: SelectedCategory) => void;
@@ -125,6 +133,7 @@ interface BreakdownTableProps {
 export function BreakdownTable({
   data,
   history,
+  changeAvailable = history.length >= 2,
   currency,
   periodLabel,
   onSelect,
@@ -190,7 +199,11 @@ export function BreakdownTable({
                     percentOfSection={
                       data.assets.total > 0 ? (item.value / data.assets.total) * 100 : 0
                     }
-                    change={deriveChange(seriesFor(history, item.category), false)}
+                    change={
+                      changeAvailable
+                        ? deriveChange(seriesFor(history, item.category), false)
+                        : null
+                    }
                     currency={currency}
                     onClick={() =>
                       onSelect({
@@ -258,7 +271,7 @@ export function BreakdownTable({
                             ? (item.value / data.liabilities.total) * 100
                             : 0
                         }
-                        change={deriveChange(series, true)}
+                        change={changeAvailable ? deriveChange(series, true) : null}
                         currency={currency}
                         onClick={
                           item.assetId
@@ -296,7 +309,7 @@ export function BreakdownTable({
             <span className={`${AMOUNT_CELL} font-bold`}>
               <CompactAmount value={data.netWorth} currency={currency} />
             </span>
-            <ChangeCell change={netWorthChange} currency={currency} />
+            <ChangeCell change={changeAvailable ? netWorthChange : null} currency={currency} />
           </div>
         </div>
       </DashboardCard>

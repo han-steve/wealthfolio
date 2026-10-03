@@ -6,6 +6,7 @@ import { formatDate } from "@/lib/utils";
 import { AmountDisplay, useAmountFormatting, useDateFormatting } from "@wealthfolio/ui";
 import { ChartConfig, ChartContainer } from "@wealthfolio/ui/components/ui/chart";
 import type { TFunction } from "i18next";
+import { addDays, format, parseISO } from "date-fns";
 import { useId, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Area, AreaChart, ReferenceLine, Tooltip, YAxis } from "recharts";
@@ -16,9 +17,9 @@ const CHART_SCRUB_HAPTIC_INTERVAL_MS = 80;
 
 interface ChartDataPoint {
   date: string;
-  netWorth: number;
-  totalAssets: number;
-  totalLiabilities: number;
+  netWorth: number | null;
+  totalAssets: number | null;
+  totalLiabilities: number | null;
   currency: string;
 }
 
@@ -45,7 +46,12 @@ const CustomTooltip = ({ active, payload, isBalanceHidden, t }: CustomTooltipPro
   }
 
   const entry = payload[0]?.payload;
-  if (!entry) {
+  if (
+    !entry ||
+    entry.netWorth === null ||
+    entry.totalAssets === null ||
+    entry.totalLiabilities === null
+  ) {
     return null;
   }
 
@@ -108,14 +114,38 @@ const CustomTooltip = ({ active, payload, isBalanceHidden, t }: CustomTooltipPro
 /**
  * Transform NetWorthHistoryPoint data to chart-compatible format
  */
-function transformData(data: NetWorthHistoryPoint[]): ChartDataPoint[] {
-  return data.map((point) => ({
-    date: point.date,
-    netWorth: parseFloat(point.netWorth) || 0,
-    totalAssets: parseFloat(point.totalAssets) || 0,
-    totalLiabilities: parseFloat(point.totalLiabilities) || 0,
-    currency: point.currency,
-  }));
+export function transformData(data: NetWorthHistoryPoint[]): ChartDataPoint[] {
+  const points: ChartDataPoint[] = [];
+  const numberOrNull = (value: string) => {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  };
+  for (const point of data) {
+    const previous = points.at(-1);
+    if (previous) {
+      for (
+        let day = addDays(parseISO(previous.date), 1);
+        day < parseISO(point.date);
+        day = addDays(day, 1)
+      ) {
+        points.push({
+          date: format(day, "yyyy-MM-dd"),
+          netWorth: null,
+          totalAssets: null,
+          totalLiabilities: null,
+          currency: point.currency,
+        });
+      }
+    }
+    points.push({
+      date: point.date,
+      netWorth: numberOrNull(point.netWorth),
+      totalAssets: numberOrNull(point.totalAssets),
+      totalLiabilities: numberOrNull(point.totalLiabilities),
+      currency: point.currency,
+    });
+  }
+  return points;
 }
 
 interface NetWorthChartProps {
@@ -144,13 +174,14 @@ export function NetWorthChart({ data, isLoading }: NetWorthChartProps) {
   } satisfies ChartConfig;
 
   const crossesZero =
-    chartData.some((point) => point.netWorth < 0) && chartData.some((point) => point.netWorth > 0);
+    chartData.some((point) => point.netWorth !== null && point.netWorth < 0) &&
+    chartData.some((point) => point.netWorth !== null && point.netWorth > 0);
 
   if (isLoading || chartData.length === 0) {
     return null;
   }
 
-  const firstValue = chartData[0].netWorth;
+  const firstValue = chartData.find((point) => point.netWorth !== null)?.netWorth ?? 0;
   const isFlat = chartData.every((point) => point.netWorth === firstValue);
   const flatPadding = Math.max(Math.abs(firstValue) * 0.02, 1);
 
@@ -229,7 +260,7 @@ export function NetWorthChart({ data, isLoading }: NetWorthChartProps) {
           isAnimationActive={true}
           animationDuration={300}
           animationEasing="ease-out"
-          connectNulls={true}
+          connectNulls={false}
           type="monotone"
           dataKey="netWorth"
           baseValue="dataMin"
