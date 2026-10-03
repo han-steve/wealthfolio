@@ -65,6 +65,7 @@ const accounts = [
   { id: "a", name: "Brokerage", accountType: "SECURITIES", isActive: true },
   { id: "b", name: "Hidden TFSA", accountType: "SECURITIES", isActive: false },
   { id: "card", name: "Credit Card", accountType: "CREDIT_CARD", isActive: true },
+  { id: "imported-history", name: "Statement History", accountType: "SECURITIES", isActive: true },
 ].map((account) => ({ ...account, isArchived: false, currency: "USD" })) as Account[];
 const TWR_WARNING = "Some holdings are missing valuations for part of the period.";
 
@@ -89,6 +90,17 @@ const resultWithWarning = {
   },
   risk: { volatility: 0.05, maxDrawdown: -0.02 },
   dataQuality: { status: "partial", warnings: [TWR_WARNING], notApplicableReasons: [] },
+  summary: {
+    amount: -100,
+    percent: null,
+    method: "twr",
+    basis: "externalFlows",
+    quality: "partial",
+    amountStatus: "complete",
+    percentStatus: "unavailable",
+    basisStatus: "complete",
+    reasons: [],
+  },
   series: [{ date: "2026-01-01", value: 0 }],
 };
 
@@ -379,6 +391,84 @@ describe("PerformancePage shared scope", () => {
     await userEvent.click(warningSummary);
     await userEvent.click(trigger);
     expect(screen.getAllByText(TWR_WARNING)).toHaveLength(2);
+  });
+
+  it("shows data limitations beside gain/loss and in its breakdown", async () => {
+    mocks.performance.mockReturnValue({
+      data: [resultWithWarning],
+      isLoading: false,
+      hasErrors: false,
+      errorMessages: [],
+      displayDateRange: "",
+    });
+    renderPage();
+    expect(await screen.findByText("Data limitations")).toBeVisible();
+    const caution = /Some performance calculations are incomplete or unavailable/;
+    expect(screen.getByText(caution)).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: /Gain\s*\/\s*loss.*Data limitations/i }),
+    );
+    expect(screen.getAllByText(caution)).toHaveLength(2);
+  });
+
+  it("does not imply data gaps solely because a return metric is not applicable", async () => {
+    mocks.performance.mockReturnValue({
+      data: [{ ...resultWithWarning, dataQuality: { status: "notApplicable", warnings: [] } }],
+      isLoading: false,
+      hasErrors: false,
+      errorMessages: [],
+      displayDateRange: "",
+    });
+    renderPage();
+    await screen.findByRole("button", { name: /Gain\s*\/\s*loss/i });
+    expect(screen.queryByText("Data limitations")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Some performance calculations/)).not.toBeInTheDocument();
+  });
+
+  it("resolves imported account IDs without changing longer unknown IDs", async () => {
+    mocks.performance.mockReturnValue({
+      data: [
+        {
+          ...resultWithWarning,
+          dataQuality: {
+            status: "partial",
+            warnings: [
+              "Missing history for account IMPORTED-HISTORY; account imported-history-old is unknown.",
+            ],
+          },
+        },
+      ],
+      isLoading: false,
+      hasErrors: false,
+      errorMessages: [],
+      displayDateRange: "",
+    });
+    renderPage();
+    await userEvent.click(await screen.findByText("1 warning"));
+    expect(
+      screen.getByText(
+        "Missing history for account Statement History; account imported-history-old is unknown.",
+      ),
+    ).toBeVisible();
+  });
+
+  it("explains an unavailable selected series rather than asking to select accounts again", async () => {
+    mocks.performance.mockReturnValue({
+      data: [{ ...resultWithWarning, series: [] }],
+      isLoading: false,
+      hasErrors: false,
+      errorMessages: [],
+      displayDateRange: "",
+    });
+    renderPage();
+    expect(
+      await screen.findByText(
+        "No supported return series is available for this selection and date range.",
+      ),
+    ).toBeVisible();
+    expect(
+      screen.queryByText("Select accounts to compare their performance over time."),
+    ).not.toBeInTheDocument();
   });
 
   it("does not request unvalidated persisted scopes during a cold load", async () => {

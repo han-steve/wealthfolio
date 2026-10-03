@@ -2,6 +2,10 @@
   "performance": "績效",
   "portfolio_performance": "投資組合績效",
   "performance_summary": "績效摘要",
+  "data_quality": {
+    "limited": "資料限制",
+    "caution": "部分績效計算不完整或無法提供。缺少估值、成本基礎或現金流，可能使損益與報酬失真。"
+  },
   "all_portfolio": "全部投資組合",
   "add_account": "新增帳戶",
   "add_benchmark": "新增基準指標",
@@ -107,7 +111,8 @@
   },
   "empty": {
     "title": "尚無績效資料",
-    "description": "選取帳戶，比較一段期間內的績效。"
+    "description": "選取帳戶，比較一段期間內的績效。",
+    "selected_description": "所選帳戶與期間沒有可用的報酬率時間序列。"
   },
   "attribution": {
     "title": "歸因",

@@ -302,12 +302,25 @@ function firstMoneyWeightedReason(result: PerformanceResult): string | undefined
   return messages.find(isMoneyWeightedMessage);
 }
 
-const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const DECIMAL_RE = /\d+\.\d+/g;
 
-/** Replace raw account UUIDs embedded in data-quality warnings with human-readable account names. */
+/** Imported accounts can use readable IDs instead of UUIDs. Match complete IDs only. */
 function humanizeAccountIds(text: string, namesById: Map<string, string>): string {
-  return text.replace(UUID_RE, (id) => namesById.get(id.toLowerCase()) ?? id);
+  const ids = Array.from(namesById.keys())
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length)
+    .map((id) => id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  if (!ids.length) return text;
+  const pattern = new RegExp(`(?<![\\w-])(?:${ids.join("|")})(?![\\w-])`, "gi");
+  return text.replace(pattern, (id) => namesById.get(id.toLowerCase()) ?? id);
+}
+
+function hasQualityLimitations(result: PerformanceResult): boolean {
+  return (
+    result.dataQuality.status === "partial" ||
+    result.dataQuality.status === "noData" ||
+    Boolean(result.dataQuality.warnings?.length)
+  );
 }
 
 /** Trim long raw decimals (e.g. "95.50000000") in warnings to readable amounts. */
@@ -691,6 +704,7 @@ function AttributionDetailMetric({
   if (!result || result.mode === "symbolPriceBased") return null;
   const periodPnl = performancePeriodPnl(result);
   if (periodPnl == null) return null;
+  const qualityLimited = hasQualityLimitations(result);
 
   const currency = result.scope.currency;
   const driverRows: AttributionRow[] = [
@@ -796,12 +810,22 @@ function AttributionDetailMetric({
             <div className="flex min-w-0 flex-col items-start gap-2">
               {labelNode}
               {amountNode}
+              {qualityLimited && (
+                <span className="text-warning text-xs font-medium">
+                  {t("performance:data_quality.limited")}
+                </span>
+              )}
             </div>
           </div>
         ) : (
           <div className="w-full min-w-0 space-y-1">
             {labelNode}
             {amountNode}
+            {qualityLimited && (
+              <div className="text-warning text-xs font-medium">
+                {t("performance:data_quality.limited")}
+              </div>
+            )}
           </div>
         )}
       </Button>
@@ -845,6 +869,11 @@ function AttributionDetailMetric({
           </div>
         </SheetHeader>
         <div className="min-h-0 flex-1 overflow-y-auto px-6 py-2">
+          {qualityLimited && (
+            <p className="text-warning border-warning/40 my-3 border-l-2 pl-3 text-sm">
+              {t("performance:data_quality.caution")}
+            </p>
+          )}
           <div className="py-3.5">
             <div className="text-muted-foreground mb-3 text-xs font-medium uppercase tracking-wide">
               {t("performance:attribution.performance_drivers")}
@@ -880,12 +909,14 @@ function PerformanceContent({
   hasErrors,
   errorMessages,
   isMobile,
+  hasSelection,
 }: {
   chartData: ChartDataItem[] | undefined;
   isLoading: boolean;
   hasErrors: boolean;
   errorMessages: string[];
   isMobile: boolean;
+  hasSelection: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -905,7 +936,11 @@ function PerformanceContent({
           className="mx-auto flex max-w-[420px] items-center justify-center"
           icon={<Icons.BarChart className="h-10 w-10" />}
           title={t("performance:empty.title")}
-          description={t("performance:empty.description")}
+          description={t(
+            hasSelection
+              ? "performance:empty.selected_description"
+              : "performance:empty.description",
+          )}
         />
       )}
 
@@ -1344,6 +1379,7 @@ export default function PerformancePage() {
       volatility: metricValue(found, "volatility"),
       maxDrawdown: metricValue(found, "drawdown"),
       periodPnl,
+      qualityLimited: hasQualityLimitations(found),
       helpItems,
       ...selectedMetricPresentation,
       trackingModeBadge: trackingModeBadge(found, t),
@@ -1844,6 +1880,11 @@ export default function PerformancePage() {
             </CardHeader>
             <CardContent className={cn("min-h-0 flex-1", isMobile ? "p-2" : "p-3 sm:p-6")}>
               <div className="flex h-full min-h-0 flex-col gap-2">
+                {selectedItemData?.qualityLimited && (
+                  <p className="text-warning border-warning/40 border-l-2 px-3 py-1 text-sm">
+                    {t("performance:data_quality.caution")}
+                  </p>
+                )}
                 {Boolean(selectedItemData?.warnings.length) && (
                   <details className="border-warning/40 bg-warning/5 rounded-md border px-3 py-2 text-xs">
                     <summary className="text-warning cursor-pointer font-medium">
@@ -1876,6 +1917,7 @@ export default function PerformancePage() {
                 <div className="min-h-0 flex-1">
                   <PerformanceContent
                     chartData={chartData}
+                    hasSelection={selectedItems.length > 0}
                     isLoading={isLoadingPerformance || isAccountsLoading}
                     hasErrors={hasErrors || isAccountsError}
                     errorMessages={

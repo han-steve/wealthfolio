@@ -2,6 +2,10 @@
   "performance": "Performance",
   "portfolio_performance": "Portfolio Performance",
   "performance_summary": "Performance Summary",
+  "data_quality": {
+    "limited": "Data limitations",
+    "caution": "Some performance calculations are incomplete or unavailable. Gains and returns may be distorted by missing valuations, cost basis or cash flows."
+  },
   "all_portfolio": "All Portfolio",
   "add_account": "Add account",
   "add_benchmark": "Add Benchmark",
@@ -107,7 +111,8 @@
   },
   "empty": {
     "title": "No performance data",
-    "description": "Select accounts to compare their performance over time."
+    "description": "Select accounts to compare their performance over time.",
+    "selected_description": "No supported return series is available for this selection and date range."
   },
   "attribution": {
     "title": "Attribution",
