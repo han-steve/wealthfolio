@@ -14,6 +14,14 @@
   "top_holdings": "主要持有部位",
   "asset_allocation": "資產配置",
   "performance_chart": "績效圖表",
+  "history": {
+    "loading": "正在載入投資組合歷史資料...",
+    "error": "無法載入投資組合歷史資料。",
+    "empty": "此期間沒有完整的投資組合估值。",
+    "refresh_error": "歷史資料更新失敗；目前顯示先前載入的資料。 ",
+    "through": "完整歷史資料截至 {{date}}。 ",
+    "gaps": "圖表空缺表示缺少帳戶估值。"
+  },
   "view_all": "查看全部",
   "no_data": "目前沒有資料",
   "sync_portfolio": "同步投資組合",

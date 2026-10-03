@@ -119,7 +119,7 @@ describe("IncomePage mobile account scope", () => {
         },
       ]),
     );
-    await waitFor(() => expect(screen.getByText("All Time Income")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("All Time Investment Income")).toBeInTheDocument());
     expect(screen.getByRole("dialog")).toBe(dialog);
     expectChecked(sheet.getByRole("option", { name: /TFSA/ }));
   });
