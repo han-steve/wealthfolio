@@ -247,7 +247,6 @@ export default function DashboardPage({
   // Effective FI age: genuine FI age, or the accumulation-only suggested age for display
   const effectiveFiAge = fiAge ?? suggestedAge;
   const progress = resolveFundedProgress(
-    retirementOverview?.progress,
     portfolioNow,
     targetTodayAtGoal,
   );

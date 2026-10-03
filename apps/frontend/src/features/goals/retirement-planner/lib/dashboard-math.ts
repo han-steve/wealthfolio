@@ -231,12 +231,11 @@ export function resolveCoverageAnnualNominalValues({
 }
 
 export function resolveFundedProgress(
-  backendProgress: number | null | undefined,
   portfolioNow: number,
   targetTodayAtGoal: number,
 ) {
-  const progress =
-    backendProgress ?? (targetTodayAtGoal > 0 ? portfolioNow / targetTodayAtGoal : 0);
+  // The overview's progress uses retiring today, not the goal-age target shown here.
+  const progress = targetTodayAtGoal > 0 ? portfolioNow / targetTodayAtGoal : 0;
   return Math.min(Math.max(progress, 0), 1);
 }
 

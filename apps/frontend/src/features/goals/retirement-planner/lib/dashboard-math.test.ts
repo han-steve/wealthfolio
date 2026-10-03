@@ -85,12 +85,12 @@ describe("retirement dashboard math", () => {
     expect(values.annualEstimatedTaxesNominal).toBe(1_000);
   });
 
-  it("keeps funded progress independent from today's-value versus nominal display mode", () => {
-    expect(resolveFundedProgress(0.25, 500_000, 1_000_000)).toBe(0.25);
-    expect(resolveFundedProgress(0.25, 500_000, 2_000_000)).toBe(0.25);
-    expect(resolveFundedProgress(undefined, 500_000, 1_000_000)).toBe(0.5);
-    expect(resolveFundedProgress(1.2, 500_000, 1_000_000)).toBe(1);
-    expect(resolveFundedProgress(-0.2, 500_000, 1_000_000)).toBe(0);
+  it("uses the displayed goal-age target in today's dollars, not the retire-today target", () => {
+    expect(resolveFundedProgress(500_000, 1_000_000)).toBe(0.5);
+    expect(resolveFundedProgress(500_000, 2_000_000)).toBe(0.25);
+    expect(resolveFundedProgress(1_200_000, 1_000_000)).toBe(1);
+    expect(resolveFundedProgress(-200_000, 1_000_000)).toBe(0);
+    expect(resolveFundedProgress(500_000, 0)).toBe(0);
   });
 
   it("derives deterministic readiness without conflating spending gaps and depletion", () => {
