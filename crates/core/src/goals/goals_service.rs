@@ -794,7 +794,9 @@ impl<T: GoalRepositoryTrait + Send + Sync> GoalServiceTrait for GoalService<T> {
             };
             Some((
                 if overview.required_capital_reachable {
-                    Some(overview.required_capital_at_goal_age)
+                    // Summary progress compares current assets with a target
+                    // in today's dollars, matching the retirement detail view.
+                    Some(overview.target_reconciliation.required_capital_today_value)
                 } else {
                     None
                 },
@@ -1884,6 +1886,40 @@ mod tests {
         assert_eq!(refreshed.projected_completion_date, None);
         assert_eq!(refreshed.projected_value_at_target_date, None);
         assert_eq!(refreshed.status_health, "not_applicable");
+    }
+
+    #[tokio::test]
+    async fn retirement_summary_uses_the_same_today_value_target_as_detail() {
+        for mode in ["fire", "traditional"] {
+            let goal = retirement_goal("goal-1", GOAL_LIFECYCLE_ACTIVE);
+            let repo = Arc::new(MockGoalRepository::new(vec![goal]));
+            repo.set_funding_rules("goal-1", vec![share_rule("goal-1", "acct-1", 100.0)]);
+            let service = GoalService::new(repo, Arc::new(MockAccountService::default()));
+            let plan = valid_retirement_plan();
+            service
+                .save_goal_plan(SaveGoalPlan {
+                    goal_id: "goal-1".into(),
+                    plan_kind: "retirement".into(),
+                    planner_mode: Some(mode.into()),
+                    settings_json: serde_json::to_string(&plan).unwrap(),
+                    summary_json: None,
+                })
+                .await
+                .unwrap();
+            let valuations = HashMap::from([("acct-1".to_string(), 100_000.0)]);
+            let overview = service
+                .compute_retirement_overview("goal-1", &valuations)
+                .await
+                .unwrap();
+            let refreshed = service
+                .refresh_goal_summary("goal-1", &valuations)
+                .await
+                .unwrap();
+            let target = overview.target_reconciliation.required_capital_today_value;
+            assert!(target < overview.required_capital_at_goal_age);
+            assert!((refreshed.summary_target_amount.unwrap() - target).abs() < 0.01);
+            assert!((refreshed.summary_progress.unwrap() - 100_000.0 / target).abs() < 1e-9);
+        }
     }
 
     #[test]
