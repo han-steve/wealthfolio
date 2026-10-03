@@ -57,11 +57,8 @@ import {
 import { spendingActivityHref } from "../lib/navigation";
 import {
   DASHBOARD_PERIOD_UPDATED_AT_STORAGE_KEY,
-  INSIGHTS_PERIOD_STORAGE_KEY,
-  INSIGHTS_PERIOD_UPDATED_AT_STORAGE_KEY,
-  normalizeReportsPeriod,
+  dashboardInsightHref as insightHrefFor,
   periodPreferenceTimestamp,
-  shouldPreferDashboardPeriod,
 } from "../lib/period-preferences";
 import type { ReportsPeriod } from "../lib/reports-period";
 import { FOREST_THEME, themeBg, type Palette } from "../lib/theme";
@@ -356,15 +353,7 @@ export default function SpendingTabContent() {
     SPENDING_MONTH_STORAGE_KEY,
     null,
   );
-  const [persistedInsightPeriod] = usePersistentState<string | null>(
-    INSIGHTS_PERIOD_STORAGE_KEY,
-    null,
-  );
-  const [insightPeriodUpdatedAt] = usePersistentState<string>(
-    INSIGHTS_PERIOD_UPDATED_AT_STORAGE_KEY,
-    "0",
-  );
-  const [dashboardPeriodUpdatedAt, setDashboardPeriodUpdatedAt] = usePersistentState<string>(
+  const [, setDashboardPeriodUpdatedAt] = usePersistentState<string>(
     DASHBOARD_PERIOD_UPDATED_AT_STORAGE_KEY,
     "0",
   );
@@ -538,26 +527,14 @@ export default function SpendingTabContent() {
   // accounts. Single-currency users see the same number either way.
   const currency = baseCurrency;
   const dashboardInsightHref = useMemo(() => {
-    const preferDashboardPeriod =
-      selection.kind === "range" ||
-      shouldPreferDashboardPeriod({
-        persistedInsightPeriod,
-        dashboardUpdatedAt: dashboardPeriodUpdatedAt,
-        insightUpdatedAt: insightPeriodUpdatedAt,
-      });
-    const linkPeriod = preferDashboardPeriod
-      ? insightPeriod
-      : (normalizeReportsPeriod(persistedInsightPeriod) ?? insightPeriod);
-    const monthParams =
-      preferDashboardPeriod && selection.kind === "month"
-        ? `&${SPENDING_MONTH_PARAM}=${selection.monthKey}`
-        : "";
-    const rangeParams =
-      selection.kind === "range"
-        ? `&${SPENDING_RANGE_FROM_PARAM}=${formatDateISO(selection.range.from)}&${SPENDING_RANGE_TO_PARAM}=${formatDateISO(selection.range.to)}`
-        : "";
+    const linkSelection =
+      selection.kind === "month"
+        ? { month: selection.monthKey }
+        : selection.kind === "range"
+          ? { from: formatDateISO(selection.range.from), to: formatDateISO(selection.range.to) }
+          : {};
     const href = (stage: (typeof INSIGHT_STAGES)[number]["stage"], hash = "") =>
-      `/spending/insights?stage=${stage}&period=${linkPeriod}${monthParams}${rangeParams}${hash}`;
+      insightHrefFor(stage, insightPeriod, linkSelection, hash);
     const cashflow = href("where", "#cashflow");
     return {
       where: href("where"),
@@ -565,13 +542,7 @@ export default function SpendingTabContent() {
       when: href("when"),
       cashflow,
     };
-  }, [
-    dashboardPeriodUpdatedAt,
-    insightPeriod,
-    insightPeriodUpdatedAt,
-    persistedInsightPeriod,
-    selection,
-  ]);
+  }, [insightPeriod, selection]);
   // "Where it went" deep-links carry the selected period (interval or month)
   // so the activities spending tab opens pre-filtered to the same range.
   const activityHrefFor = useCallback(

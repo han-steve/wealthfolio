@@ -10,6 +10,7 @@ use wealthfolio_core::accounts::{
 use wealthfolio_core::activities::{Activity, ActivityRepositoryTrait};
 use wealthfolio_core::fx::FxServiceTrait;
 use wealthfolio_core::taxonomies::TaxonomyServiceTrait;
+use wealthfolio_core::utils::time_utils::activity_date_in_user_timezone;
 
 use super::model::{
     AmountBlock, AmountSource, CategoryBreakdownRow, CategoryInsight, CompareMode, DayBucket,
@@ -103,8 +104,8 @@ impl InsightService {
         let prior_window = explicit_compare_window(&req)?
             .unwrap_or_else(|| compute_prior_window(start, end, compare));
 
-        let period = PeriodMeta::from_window(start, end);
-        let prior = PeriodMeta::from_window(prior_window.0, prior_window.1);
+        let period = PeriodMeta::from_window(start, end, timezone);
+        let prior = PeriodMeta::from_window(prior_window.0, prior_window.1, timezone);
 
         // ── 1. Settings gate ──────────────────────────────────────────────────
         let settings = self.settings.get().await?;
@@ -260,7 +261,7 @@ impl InsightService {
 
         // ── 6. Fan out budgets per month with proration ───────────────────────
         let target_index = TargetIndex::new(&targets);
-        let month_prorations = build_month_prorations(start, end, &period.months);
+        let month_prorations = build_month_prorations(start, end, &period.months, timezone);
 
         let mut category_budgets: HashMap<String, AmountBlock> = HashMap::new();
         for cat in &top_categories {
@@ -1090,9 +1091,11 @@ fn compute_by_month(
 // ──────────────────────────────────────────────────────────────────────────────
 
 impl PeriodMeta {
-    fn from_window(start: DateTime<Utc>, end: DateTime<Utc>) -> Self {
-        let day_count = (end.date_naive() - start.date_naive()).num_days() + 1;
-        let months = months_in_window(start, end);
+    fn from_window(start: DateTime<Utc>, end: DateTime<Utc>, timezone: &str) -> Self {
+        let start_date = activity_date_in_user_timezone(start, timezone);
+        let end_date = activity_date_in_user_timezone(end, timezone);
+        let day_count = (end_date - start_date).num_days() + 1;
+        let months = months_in_window(start_date, end_date);
         Self {
             start: start.to_rfc3339(),
             end: end.to_rfc3339(),
@@ -1115,9 +1118,10 @@ fn build_month_prorations(
     start: DateTime<Utc>,
     end: DateTime<Utc>,
     months: &[String],
+    timezone: &str,
 ) -> Vec<MonthProration> {
-    let start_d = start.date_naive();
-    let end_d = end.date_naive();
+    let start_d = activity_date_in_user_timezone(start, timezone);
+    let end_d = activity_date_in_user_timezone(end, timezone);
     months
         .iter()
         .map(|month| {
@@ -1217,7 +1221,7 @@ fn merge_source(a: AmountSource, b: AmountSource) -> AmountSource {
     }
 }
 
-fn months_in_window(start: DateTime<Utc>, end: DateTime<Utc>) -> Vec<String> {
+fn months_in_window(start: NaiveDate, end: NaiveDate) -> Vec<String> {
     let (mut year, mut month) = (start.year(), start.month());
     let (end_year, end_month) = (end.year(), end.month());
     let mut out = Vec::new();
@@ -1706,25 +1710,56 @@ mod tests {
 
     #[test]
     fn months_cover_inclusive_range() {
-        let p = PeriodMeta::from_window(dt(2026, 3, 1), dt(2026, 5, 19));
+        let p = PeriodMeta::from_window(dt(2026, 3, 1), dt(2026, 5, 19), "UTC");
         assert_eq!(p.months, vec!["2026-03", "2026-04", "2026-05"]);
         assert_eq!(p.day_count, 31 + 30 + 19);
     }
 
     #[test]
     fn months_wrap_across_year_boundary() {
-        let p = PeriodMeta::from_window(dt(2025, 11, 15), dt(2026, 2, 5));
+        let p = PeriodMeta::from_window(dt(2025, 11, 15), dt(2026, 2, 5), "UTC");
         assert_eq!(p.months, vec!["2025-11", "2025-12", "2026-01", "2026-02"]);
     }
 
     #[test]
     fn months_for_single_day_window() {
-        let p = PeriodMeta::from_window(dt(2026, 5, 19), dt(2026, 5, 19));
+        let p = PeriodMeta::from_window(dt(2026, 5, 19), dt(2026, 5, 19), "UTC");
         assert_eq!(p.months, vec!["2026-05"]);
         assert_eq!(p.day_count, 1);
     }
 
     // ── build_month_prorations ────────────────────────────────────────────────
+
+    #[test]
+    fn local_calendar_month_budget_never_includes_adjacent_utc_days() {
+        for (timezone, year, month, days) in [
+            ("America/Los_Angeles", 2026, 10, 31),
+            ("America/Los_Angeles", 2026, 3, 31),
+            ("America/Los_Angeles", 2026, 11, 30),
+            ("Asia/Tokyo", 2024, 2, 29),
+        ] {
+            let start_date = NaiveDate::from_ymd_opt(year, month, 1).unwrap();
+            let end_date = NaiveDate::from_ymd_opt(year, month, days).unwrap();
+            let bounds = wealthfolio_core::utils::time_utils::local_date_range_utc_bounds(
+                Some(start_date),
+                Some(end_date),
+                timezone.parse().unwrap(),
+            )
+            .unwrap();
+            let start = bounds.0.unwrap();
+            let end = bounds.1.unwrap() - Duration::milliseconds(1);
+            let period = PeriodMeta::from_window(start, end, timezone);
+            assert_eq!(period.months, vec![format!("{year:04}-{month:02}")]);
+            assert_eq!(period.day_count, i64::from(days));
+            let prorations = build_month_prorations(start, end, &period.months, timezone);
+            assert_eq!(prorations.len(), 1);
+            assert_eq!(prorations[0].factor, Decimal::ONE);
+            assert_eq!(
+                fanout_amount(&prorations, |_| (Decimal::from(1000), false)).total,
+                1000.0
+            );
+        }
+    }
 
     #[test]
     fn proration_is_one_for_fully_covered_months() {
@@ -1736,6 +1771,7 @@ mod tests {
                 "2026-04".to_string(),
                 "2026-05".to_string(),
             ],
+            "UTC",
         );
         assert_eq!(p[0].factor, Decimal::ONE);
         assert!(!p[0].prorated);
@@ -1752,6 +1788,7 @@ mod tests {
             dt(2026, 3, 15),
             dt(2026, 4, 30),
             &["2026-03".to_string(), "2026-04".to_string()],
+            "UTC",
         );
         // March: days 15..=31 = 17 days out of 31.
         assert_eq!(p[0].factor, Decimal::from(17) / Decimal::from(31));
@@ -1772,6 +1809,7 @@ mod tests {
                 "2026-04".to_string(),
                 "2026-05".to_string(),
             ],
+            "UTC",
         );
         // Education: default 50/mo, May override 150.
         let block = fanout_amount(&prorations, |month| match month {
@@ -1805,6 +1843,7 @@ mod tests {
             dt(2026, 3, 1),
             dt(2026, 4, 30),
             &["2026-03".to_string(), "2026-04".to_string()],
+            "UTC",
         );
         let a = fanout_amount(&prorations, |_| (Decimal::new(100, 0), false));
         let b = fanout_amount(&prorations, |month| match month {

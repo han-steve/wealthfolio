@@ -543,6 +543,7 @@
     "multiCurrencyDetail": "totals shown in {{currency}}, FX-converted from {{foreign}} using rates from {{asOfDate}}."
   },
   "whenYouSpend": {
+    "postingTimeCaveat": "Based on recorded timestamps. Bank and statement imports may provide posting dates rather than actual purchase times.",
     "customSubtitle": "Selected period · spending intensity by weekday and hour.",
     "customSubtitleShort": "Selected period",
     "customNoActivity": "No cash activity in the selected period.",

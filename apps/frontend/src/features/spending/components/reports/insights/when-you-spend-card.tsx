@@ -158,6 +158,9 @@ export const WhenYouSpendCard: FC<WhenYouSpendCardProps> = ({
         )}
         <Legend />
       </div>
+      <p className="text-muted-foreground mt-3 text-xs">
+        {t("spending:whenYouSpend.postingTimeCaveat")}
+      </p>
     </div>
   );
 };

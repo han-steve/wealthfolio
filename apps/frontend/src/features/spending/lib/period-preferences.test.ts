@@ -1,8 +1,26 @@
 import { describe, expect, it } from "vitest";
 
-import { normalizeReportsPeriod, shouldPreferDashboardPeriod } from "./period-preferences";
+import {
+  dashboardInsightHref,
+  normalizeReportsPeriod,
+  shouldPreferDashboardPeriod,
+} from "./period-preferences";
 
 describe("spending period preferences", () => {
+  it("carries the visible dashboard period and range into each drilldown", () => {
+    expect(dashboardInsightHref("where", "MTD", {}, "#cashflow")).toBe(
+      "/spending/insights?stage=where&period=MTD#cashflow",
+    );
+    expect(dashboardInsightHref("changed", "3M")).toBe(
+      "/spending/insights?stage=changed&period=3M",
+    );
+    expect(dashboardInsightHref("when", "LAST_MONTH", { month: "2025-02" })).toBe(
+      "/spending/insights?stage=when&period=LAST_MONTH&spendingMonth=2025-02",
+    );
+    expect(dashboardInsightHref("where", "1Y", { from: "2025-02-01", to: "2025-04-30" })).toBe(
+      "/spending/insights?stage=where&period=1Y&spendingFrom=2025-02-01&spendingTo=2025-04-30",
+    );
+  });
   it("normalizes legacy dashboard month periods for insights", () => {
     expect(normalizeReportsPeriod("3M")).toBe("3M");
     expect(normalizeReportsPeriod("LAST_MONTH")).toBe("LAST_MONTH");
