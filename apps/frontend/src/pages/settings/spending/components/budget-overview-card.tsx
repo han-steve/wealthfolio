@@ -13,7 +13,7 @@ import { formatAmountWhole } from "./format";
 export function BudgetOverviewCard() {
   const formatting = useAmountFormatting();
   const { t } = useTranslation();
-  const { data: budget, isLoading } = useBudget();
+  const { data: budget, isLoading } = useBudget("default");
   const { isBalanceHidden } = useBalancePrivacy();
   const fmt = (amount: number, currency: string) =>
     isBalanceHidden ? "••••" : formatAmountWhole(amount, currency, formatting);

@@ -30,7 +30,7 @@ export function ModuleCard() {
     isBalanceHidden ? "••••" : formatAmountWhole(amount, currency, formatting);
   const mutation = useSpendingSettingsMutation();
   const { accounts } = useAccounts({ filterActive: true });
-  const { data: budget } = useBudget();
+  const { data: budget } = useBudget("default");
   const { data: rules, isError: rulesErrored } = useCategorizationRules();
   const { data: presets, isError: presetsErrored } = useRulePresets();
 
