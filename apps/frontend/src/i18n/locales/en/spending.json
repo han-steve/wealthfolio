@@ -693,6 +693,7 @@
     "overPace": "over pace",
     "underPace": "under pace",
     "projectedPrefix": "Projected",
+    "forecastPending": "Forecast unavailable until 7 days of this period have elapsed.",
     "byClose": "by {{close}}",
     "ofBudget": "{{pct}} of budget",
     "amountSpent": "{{amount}} spent",

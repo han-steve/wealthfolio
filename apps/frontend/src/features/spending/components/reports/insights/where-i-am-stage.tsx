@@ -277,12 +277,12 @@ interface PaceComputed {
   percentPace: number;
   dailyAvg: number;
   expectedDailyPace: number;
-  projection: number;
+  projection: number | null;
   /** Spent − expectedSoFar. Positive = over pace, negative = under. */
   diffFromPace: number;
 }
 
-function computePace(
+export function computePace(
   range: ReportsRange,
   spent: number,
   target: number,
@@ -331,7 +331,7 @@ function computePace(
   const projection = !isLive
     ? spent
     : !projectionReliable
-      ? spent
+      ? null
       : (reconciledPace?.projectedSpend ?? dailyAvg * totalDays);
   const expectedSoFar = reconciledPace?.expectedSpendToDate ?? expectedDailyPace * daysElapsed;
   const diffFromPace = spent - expectedSoFar;
@@ -402,7 +402,7 @@ function buildLiveNarrative({
   formatting,
 }: {
   diffFromPace: number;
-  projection: number;
+  projection: number | null;
   target: number;
   currency: string;
   closeLabel: string;
@@ -413,8 +413,9 @@ function buildLiveNarrative({
   const direction =
     diffFromPace > 0 ? t("spending:whereIAm.overPace") : t("spending:whereIAm.underPace");
   const colorClass = diffFromPace > 0 ? "text-destructive" : "text-success";
-  const projColorClass = projection > target ? "text-destructive" : "text-success";
-  const pctOfBudget = target > 0 ? (projection / target) * 100 : 0;
+  const projColorClass =
+    projection !== null && projection > target ? "text-destructive" : "text-success";
+  const pctOfBudget = projection !== null && target > 0 ? (projection / target) * 100 : 0;
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -428,18 +429,26 @@ function buildLiveNarrative({
         </span>{" "}
         <span className="font-serif">{direction}</span>
       </div>
-      <div className="text-foreground/90 text-sm">
-        {t("spending:whereIAm.projectedPrefix")}{" "}
-        <span className={cn("font-medium tabular-nums", projColorClass)}>
-          {isBalanceHidden ? "••••" : formatting.formatCompactAmount(projection, currency)}
-        </span>{" "}
-        {t("spending:whereIAm.byClose", { close: closeLabel })}
-      </div>
-      <div className="text-muted-foreground/80 text-xs tabular-nums">
-        {t("spending:whereIAm.ofBudget", {
-          pct: formatPercentValue(pctOfBudget, formatting, { digits: 0 }),
-        })}
-      </div>
+      {projection === null ? (
+        <div className="text-muted-foreground text-sm">
+          {t("spending:whereIAm.forecastPending")}
+        </div>
+      ) : (
+        <>
+          <div className="text-foreground/90 text-sm">
+            {t("spending:whereIAm.projectedPrefix")}{" "}
+            <span className={cn("font-medium tabular-nums", projColorClass)}>
+              {isBalanceHidden ? "••••" : formatting.formatCompactAmount(projection, currency)}
+            </span>{" "}
+            {t("spending:whereIAm.byClose", { close: closeLabel })}
+          </div>
+          <div className="text-muted-foreground/80 text-xs tabular-nums">
+            {t("spending:whereIAm.ofBudget", {
+              pct: formatPercentValue(pctOfBudget, formatting, { digits: 0 }),
+            })}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -526,13 +535,14 @@ const SpentThisPeriodCard: FC<SpentThisPeriodCardProps> = ({
   );
 
   const startsAtMonthBoundary = getZonedDateParts(range.start, timezone).day === 1;
-  const periodLabel = priorRange || !startsAtMonthBoundary
-    ? t("spending:whereIAm.spentThisPeriod")
-    : range.months <= 1
-      ? t("spending:whereIAm.spentThisMonth")
-      : range.months <= 3
-        ? t("spending:whereIAm.spentThisPeriod")
-        : t("spending:whereIAm.spentMonths", { months: range.months });
+  const periodLabel =
+    priorRange || !startsAtMonthBoundary
+      ? t("spending:whereIAm.spentThisPeriod")
+      : range.months <= 1
+        ? t("spending:whereIAm.spentThisMonth")
+        : range.months <= 3
+          ? t("spending:whereIAm.spentThisPeriod")
+          : t("spending:whereIAm.spentMonths", { months: range.months });
 
   const deltaPct =
     priorSpent != null && priorSpent > 0 ? ((spent - priorSpent) / priorSpent) * 100 : null;
