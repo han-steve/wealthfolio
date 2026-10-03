@@ -673,22 +673,30 @@ impl ValuationService {
     fn group_scoped_valuation_histories(
         account_ids: &[String],
         records: Vec<DailyAccountValuation>,
+        start_date: Option<NaiveDate>,
+        end_date: Option<NaiveDate>,
     ) -> CoreResult<HashMap<String, Vec<DailyAccountValuation>>> {
         let mut by_account: HashMap<String, Vec<DailyAccountValuation>> = HashMap::new();
-        for record in records {
+        for record in records
+            .into_iter()
+            .filter(|record| end_date.is_none_or(|end| record.valuation_date <= end))
+        {
             by_account
                 .entry(record.account_id.clone())
                 .or_default()
                 .push(record);
         }
-        let histories: Vec<_> = account_ids
+        let mut histories: Vec<_> = account_ids
             .iter()
             .map(|account_id| by_account.remove(account_id).unwrap_or_default())
             .collect();
 
         // Mixed tracking modes and scoped FX attribution need the same coverage
         // gate as aggregated performance; gaps are not zero-valued positions.
-        Self::validate_scoped_history_completeness(account_ids, &histories)?;
+        Self::validate_scoped_history_completeness_since(account_ids, &histories, start_date)?;
+        for history in &mut histories {
+            history.retain(|record| start_date.is_none_or(|start| record.valuation_date >= start));
+        }
         Ok(account_ids.iter().cloned().zip(histories).collect())
     }
 
@@ -864,6 +872,14 @@ impl ValuationService {
         account_ids: &[String],
         histories: &[Vec<DailyAccountValuation>],
     ) -> CoreResult<()> {
+        Self::validate_scoped_history_completeness_since(account_ids, histories, None)
+    }
+
+    fn validate_scoped_history_completeness_since(
+        account_ids: &[String],
+        histories: &[Vec<DailyAccountValuation>],
+        start_date: Option<NaiveDate>,
+    ) -> CoreResult<()> {
         if histories.len() != account_ids.len() {
             return Err(CoreError::Calculation(CalculatorError::Calculation(
                 format!(
@@ -877,6 +893,7 @@ impl ValuationService {
         let union_dates: BTreeSet<NaiveDate> = histories
             .iter()
             .flat_map(|history| history.iter().map(|valuation| valuation.valuation_date))
+            .filter(|date| start_date.is_none_or(|start| *date >= start))
             .collect();
         let scope_last_date = union_dates.iter().next_back().copied();
 
@@ -2934,7 +2951,7 @@ impl ValuationServiceTrait for ValuationService {
     ) -> CoreResult<Vec<DailyAccountValuation>> {
         let max_calculated_at = self
             .valuation_repository
-            .get_max_calculated_at_for_accounts(account_ids, start_date_opt, end_date_opt)?
+            .get_max_calculated_at_for_accounts(account_ids, None, end_date_opt)?
             .unwrap_or_default();
         let cache_key = ScopedValuationCacheKey {
             service_instance_id: self.service_instance_id,
@@ -2951,11 +2968,7 @@ impl ValuationServiceTrait for ValuationService {
             let mut cache_key = cache_key;
             let records = self
                 .valuation_repository
-                .get_historical_valuations_for_accounts(
-                    account_ids,
-                    start_date_opt,
-                    end_date_opt,
-                )?;
+                .get_historical_valuations_for_accounts(account_ids, None, end_date_opt)?;
 
             let loaded_max_calculated_at = records
                 .iter()
@@ -2969,14 +2982,14 @@ impl ValuationServiceTrait for ValuationService {
                 }
             }
 
-            let mut histories_by_account: HashMap<String, Vec<DailyAccountValuation>> =
-                HashMap::with_capacity(account_ids.len());
-            for record in records {
-                histories_by_account
-                    .entry(record.account_id.clone())
-                    .or_default()
-                    .push(record);
-            }
+            // Keep pre-window evidence for coverage checks so a stale nonzero
+            // account cannot silently disappear from a short-period scope.
+            let mut histories_by_account = Self::group_scoped_valuation_histories(
+                account_ids,
+                records,
+                start_date_opt,
+                end_date_opt,
+            )?;
             let histories = account_ids
                 .iter()
                 .map(|account_id| histories_by_account.remove(account_id).unwrap_or_default())
@@ -3088,9 +3101,9 @@ impl ValuationServiceTrait for ValuationService {
     ) -> CoreResult<HashMap<String, Vec<DailyAccountValuation>>> {
         let records = self
             .valuation_repository
-            .get_historical_valuations_for_accounts(account_ids, start_date_opt, end_date_opt)?;
+            .get_historical_valuations_for_accounts(account_ids, None, end_date_opt)?;
 
-        Self::group_scoped_valuation_histories(account_ids, records)
+        Self::group_scoped_valuation_histories(account_ids, records, start_date_opt, end_date_opt)
     }
 
     fn get_latest_valuations(
@@ -6734,6 +6747,8 @@ mod tests {
                 chart_row("transactions", 3, dec!(110)),
                 chart_row("holdings", 3, dec!(60)),
             ],
+            None,
+            None,
         )
         .unwrap_err();
         assert!(error.to_string().contains("account 'transactions'"));
@@ -6749,6 +6764,8 @@ mod tests {
                 chart_row("transactions", 1, dec!(100)),
                 chart_row("transactions", 2, dec!(110)),
             ],
+            None,
+            None,
         )
         .unwrap_err();
         assert!(error.to_string().contains("account 'holdings'"));
@@ -6767,6 +6784,8 @@ mod tests {
                 posted,
                 chart_row("holdings", 2, dec!(60)),
             ],
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(histories["transactions"].len(), 2);
@@ -6789,6 +6808,8 @@ mod tests {
                 chart_row("new", 2, dec!(50)),
                 chart_row("new", 3, dec!(60)),
             ],
+            None,
+            None,
         )
         .unwrap();
         assert_eq!(histories["closed"].len(), 2);
@@ -6800,15 +6821,114 @@ mod tests {
         let histories = ValuationService::group_scoped_valuation_histories(
             &["empty".into(), "valued".into()],
             vec![chart_row("valued", 1, dec!(100))],
+            None,
+            None,
         )
         .unwrap();
         assert!(histories["empty"].is_empty());
         assert_eq!(histories["valued"].len(), 1);
         assert!(
-            ValuationService::group_scoped_valuation_histories(&[], vec![])
+            ValuationService::group_scoped_valuation_histories(&[], vec![], None, None)
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn short_scope_rejects_nonzero_account_that_ended_before_window() {
+        let error = ValuationService::group_scoped_valuation_histories(
+            &["stale".into(), "current".into()],
+            vec![
+                chart_row("stale", 1, dec!(50)),
+                chart_row("current", 3, dec!(100)),
+                chart_row("current", 4, dec!(110)),
+            ],
+            NaiveDate::from_ymd_opt(2026, 5, 3),
+            NaiveDate::from_ymd_opt(2026, 5, 4),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("account 'stale'"));
+        assert!(error.to_string().contains("latest valuation is 2026-05-01"));
+    }
+
+    #[test]
+    fn short_scope_rejects_established_account_missing_window_opening() {
+        let error = ValuationService::group_scoped_valuation_histories(
+            &["gap".into(), "current".into()],
+            vec![
+                chart_row("gap", 1, dec!(50)),
+                chart_row("gap", 4, dec!(60)),
+                chart_row("current", 3, dec!(100)),
+                chart_row("current", 4, dec!(110)),
+            ],
+            NaiveDate::from_ymd_opt(2026, 5, 3),
+            NaiveDate::from_ymd_opt(2026, 5, 4),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("account 'gap'"));
+        assert!(error.to_string().contains("2026-05-03"));
+    }
+
+    #[test]
+    fn short_scope_ignores_gaps_outside_window_and_preserves_values() {
+        let histories = ValuationService::group_scoped_valuation_histories(
+            &["a".into(), "b".into()],
+            vec![
+                chart_row("a", 1, dec!(50)),
+                chart_row("b", 2, dec!(100)),
+                chart_row("a", 3, dec!(60)),
+                chart_row("b", 3, dec!(110)),
+                chart_row("a", 4, dec!(70)),
+                chart_row("b", 4, dec!(120)),
+                chart_row("b", 5, dec!(130)),
+            ],
+            NaiveDate::from_ymd_opt(2026, 5, 3),
+            NaiveDate::from_ymd_opt(2026, 5, 4),
+        )
+        .unwrap();
+        assert_eq!(histories["a"].len(), 2);
+        assert_eq!(histories["b"].len(), 2);
+        assert_eq!(histories["a"][0].total_value_base, dec!(60));
+        assert_eq!(histories["b"][1].total_value_base, dec!(120));
+    }
+
+    #[test]
+    fn short_scope_allows_zero_closed_and_not_yet_open_accounts() {
+        let histories = ValuationService::group_scoped_valuation_histories(
+            &[
+                "closed".into(),
+                "new".into(),
+                "current".into(),
+                "future".into(),
+            ],
+            vec![
+                chart_row("closed", 1, dec!(50)),
+                chart_row("closed", 2, Decimal::ZERO),
+                chart_row("new", 4, dec!(60)),
+                chart_row("current", 3, dec!(100)),
+                chart_row("current", 4, dec!(110)),
+                chart_row("future", 5, dec!(80)),
+            ],
+            NaiveDate::from_ymd_opt(2026, 5, 3),
+            NaiveDate::from_ymd_opt(2026, 5, 4),
+        )
+        .unwrap();
+        assert!(histories["closed"].is_empty());
+        assert!(histories["future"].is_empty());
+        assert_eq!(histories["new"].len(), 1);
+        assert_eq!(histories["current"].len(), 2);
+    }
+
+    #[test]
+    fn short_scope_with_no_points_does_not_fabricate_history() {
+        let histories = ValuationService::group_scoped_valuation_histories(
+            &["stale".into()],
+            vec![chart_row("stale", 1, dec!(50))],
+            NaiveDate::from_ymd_opt(2026, 5, 3),
+            NaiveDate::from_ymd_opt(2026, 5, 4),
+        )
+        .unwrap();
+        assert!(histories["stale"].is_empty());
     }
 
     fn chart_totals(histories: Vec<Vec<DailyAccountValuation>>) -> Vec<DailyAccountValuation> {
