@@ -31,8 +31,9 @@ use crate::activity_assignments::{
     ActivityTaxonomyAssignment, ActivityTaxonomyAssignmentService, BulkCategoryAssignment,
 };
 use crate::activity_classification::{
-    activity_abs_amount, classify_activity, classify_activity_for_aggregation, decimal_to_f64,
-    net_amount, within_spending_transfer_groups, SpendingClassification,
+    activity_abs_amount, classify_activity, classify_categorized_activity,
+    classify_categorized_activity_for_aggregation, decimal_to_f64, net_amount,
+    within_spending_transfer_groups, SpendingClassification,
 };
 use crate::activity_splits::{ActivitySplit, ActivitySplitRepositoryTrait, NewActivitySplit};
 use crate::category_exclusions::{excluded_spending_native, ExclusionIndex};
@@ -174,8 +175,6 @@ impl CashActivityService {
             .activity_types
             .unwrap_or_else(|| CASH_ACTIVITY_TYPES.iter().map(|s| s.to_string()).collect());
         activities.retain(|a| allowed_types.iter().any(|t| t == a.effective_type()));
-        retain_classified_cash_activities(&mut activities, &account_types);
-
         retain_by_date_range(
             &mut activities,
             filter.start_date.as_deref(),
@@ -185,13 +184,18 @@ impl CashActivityService {
         activities.sort_by_key(|a| std::cmp::Reverse(a.activity_date));
 
         // Batch-enrich with assignments + event tags. Mirrors the tail of
-        // `search()`. The ids list is the *retained* rows, so we never fetch
-        // joins for activities we've already filtered out.
+        // `search()`. Categories must precede classification of untyped credits.
         let ids: Vec<String> = activities.iter().map(|a| a.id.clone()).collect();
         let asgs = self.assignments.list_for_activities(&ids).await?;
         let mut by_activity = group_assignments_owned(asgs);
         let splits = self.splits.list_for_activities(&ids).await?;
         let mut splits_by_activity = group_splits_owned(splits);
+        retain_classified_cash_activities(
+            &mut activities,
+            &account_types,
+            &by_activity,
+            &splits_by_activity,
+        );
         let mut tag_map = self.activity_events.list_for_activities(&ids).await?;
         let exclusions = self.spending_exclusions(&s.excluded_category_ids)?;
         let items: Vec<CashActivity> = activities
@@ -205,10 +209,16 @@ impl CashActivityService {
                     &splits_by_activity,
                     &exclusions,
                 );
+                let cash_flow_bucket = cash_flow_bucket_for(
+                    &a,
+                    &account_types,
+                    &transfer_groups,
+                    &by_activity,
+                    &splits_by_activity,
+                );
                 let assignments = by_activity.remove(&a.id).unwrap_or_default();
                 let splits = splits_by_activity.remove(&a.id).unwrap_or_default();
                 let event_id = tag_map.remove(&a.id);
-                let cash_flow_bucket = cash_flow_bucket_for(&a, &account_types, &transfer_groups);
                 let transfer_link_status = transfer_link_status_for(&a, &transfer_link_resolution);
                 let net_amount = decimal_to_f64(net_amount(&a, &account_types));
                 CashActivity {
@@ -425,8 +435,6 @@ impl CashActivityService {
             .activity_types
             .unwrap_or_else(|| CASH_ACTIVITY_TYPES.iter().map(|s| s.to_string()).collect());
         activities.retain(|a| allowed_types.iter().any(|t| t == a.effective_type()));
-        retain_classified_cash_activities(&mut activities, &account_types);
-
         retain_by_date_range(
             &mut activities,
             req.start_date.as_deref(),
@@ -476,7 +484,19 @@ impl CashActivityService {
             }
         }
 
-        // Status / category filters need assignments; fetch in batch first.
+        // Classify before pagination, using the same categories returned on rows.
+        let ids: Vec<String> = activities.iter().map(|a| a.id.clone()).collect();
+        let mut by_activity =
+            group_assignments_owned(self.assignments.list_for_activities(&ids).await?);
+        let mut splits_by_activity =
+            group_splits_owned(self.splits.list_for_activities(&ids).await?);
+        retain_classified_cash_activities(
+            &mut activities,
+            &account_types,
+            &by_activity,
+            &splits_by_activity,
+        );
+
         let needs_assignments_for_filter = req.status != CashActivityStatusFilter::All
             || req
                 .category_ids
@@ -490,16 +510,16 @@ impl CashActivityService {
                 .unwrap_or(false);
 
         if needs_assignments_for_filter {
-            let ids: Vec<String> = activities.iter().map(|a| a.id.clone()).collect();
-            let assignments = self.assignments.list_for_activities(&ids).await?;
-            let by_activity = group_assignments(&assignments);
-            let splits = self.splits.list_for_activities(&ids).await?;
-            let splits_by_activity = group_splits(&splits);
-
             activities.retain(|a| {
                 let asgs = by_activity.get(a.id.as_str());
                 let activity_splits = splits_by_activity.get(a.id.as_str());
-                let bucket = cash_flow_bucket_for(a, &account_types, &transfer_groups);
+                let bucket = cash_flow_bucket_for(
+                    a,
+                    &account_types,
+                    &transfer_groups,
+                    &by_activity,
+                    &splits_by_activity,
+                );
                 let expected_taxonomy = taxonomy_for_bucket(bucket);
                 let has_category =
                     expected_taxonomy.map_or(bucket == CashFlowBucket::Neutral, |taxonomy_id| {
@@ -625,13 +645,8 @@ impl CashActivityService {
         // Drop the rest — we no longer need them.
         drop(activities);
 
-        // Batch-fetch assignments + event tags for the paginated slice.
-        // (Always — clients use both for display.)
+        // Reuse categories loaded before classification; fetch page event tags.
         let page_ids: Vec<String> = page.iter().map(|a| a.id.clone()).collect();
-        let asgs = self.assignments.list_for_activities(&page_ids).await?;
-        let mut by_activity = group_assignments_owned(asgs);
-        let splits = self.splits.list_for_activities(&page_ids).await?;
-        let mut splits_by_activity = group_splits_owned(splits);
         let mut tag_map = self.activity_events.list_for_activities(&page_ids).await?;
         let exclusions = self.spending_exclusions(&s.excluded_category_ids)?;
 
@@ -646,10 +661,16 @@ impl CashActivityService {
                     &splits_by_activity,
                     &exclusions,
                 );
+                let cash_flow_bucket = cash_flow_bucket_for(
+                    &a,
+                    &account_types,
+                    &transfer_groups,
+                    &by_activity,
+                    &splits_by_activity,
+                );
                 let assignments = by_activity.remove(&a.id).unwrap_or_default();
                 let splits = splits_by_activity.remove(&a.id).unwrap_or_default();
                 let event_id = tag_map.remove(&a.id);
-                let cash_flow_bucket = cash_flow_bucket_for(&a, &account_types, &transfer_groups);
                 let transfer_link_status = transfer_link_status_for(&a, &transfer_link_resolution);
                 let net = net_amount(&a, &account_types);
                 let net_amount_base = base_currency
@@ -715,13 +736,17 @@ impl CashActivityService {
             .filter(|activity| requested_ids.contains(activity.id.as_str()))
             .filter(|activity| allowed_accounts.contains(activity.account_id.as_str()))
             .collect::<Vec<_>>();
-        retain_classified_cash_activities(&mut activities, &account_types);
-
         let ids: Vec<String> = activities.iter().map(|a| a.id.clone()).collect();
         let asgs = self.assignments.list_for_activities(&ids).await?;
         let mut by_activity = group_assignments_owned(asgs);
         let splits = self.splits.list_for_activities(&ids).await?;
         let mut splits_by_activity = group_splits_owned(splits);
+        retain_classified_cash_activities(
+            &mut activities,
+            &account_types,
+            &by_activity,
+            &splits_by_activity,
+        );
         let mut tag_map = self.activity_events.list_for_activities(&ids).await?;
         let exclusions = self.spending_exclusions(&s.excluded_category_ids)?;
         Ok(activities
@@ -735,11 +760,16 @@ impl CashActivityService {
                     &splits_by_activity,
                     &exclusions,
                 );
+                let cash_flow_bucket = cash_flow_bucket_for(
+                    &activity,
+                    &account_types,
+                    &transfer_groups,
+                    &by_activity,
+                    &splits_by_activity,
+                );
                 let assignments = by_activity.remove(&activity.id).unwrap_or_default();
                 let splits = splits_by_activity.remove(&activity.id).unwrap_or_default();
                 let event_id = tag_map.remove(&activity.id);
-                let cash_flow_bucket =
-                    cash_flow_bucket_for(&activity, &account_types, &transfer_groups);
                 let transfer_link_status =
                     transfer_link_status_for(&activity, &transfer_link_resolution);
                 let net_amount = decimal_to_f64(net_amount(&activity, &account_types));
@@ -992,11 +1022,17 @@ impl CashActivityService {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let transfer_context_acts: Vec<&Activity> = context_activities.iter().collect();
         let transfer_groups = within_spending_transfer_groups(&transfer_context_acts);
-        let bucket = cash_flow_bucket_from_classification(classify_activity_for_aggregation(
-            &activity,
-            account_type,
-            &transfer_groups,
-        ));
+        let assignments =
+            group_assignments_owned(self.assignments.list_for_activity(activity_id).await?);
+        let splits = group_splits_owned(self.splits.list_for_activity(activity_id).await?);
+        let bucket =
+            cash_flow_bucket_from_classification(classify_categorized_activity_for_aggregation(
+                &activity,
+                account_type,
+                &transfer_groups,
+                &assignments,
+                &splits,
+            ));
         let Some(expected_taxonomy) = taxonomy_for_bucket(bucket) else {
             return Err(SpendingError::InvalidInput {
                 message: "Neutral transfers cannot be categorized. Change or unlink the transfer if it should count as spending.".to_string(),
@@ -1040,11 +1076,17 @@ impl CashActivityService {
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let transfer_context_acts: Vec<&Activity> = context_activities.iter().collect();
         let transfer_groups = within_spending_transfer_groups(&transfer_context_acts);
-        let bucket = cash_flow_bucket_from_classification(classify_activity_for_aggregation(
-            &activity,
-            account_type,
-            &transfer_groups,
-        ));
+        let assignments =
+            group_assignments_owned(self.assignments.list_for_activity(activity_id).await?);
+        let splits = group_splits_owned(self.splits.list_for_activity(activity_id).await?);
+        let bucket =
+            cash_flow_bucket_from_classification(classify_categorized_activity_for_aggregation(
+                &activity,
+                account_type,
+                &transfer_groups,
+                &assignments,
+                &splits,
+            ));
         let Some(expected_taxonomy) = taxonomy_for_bucket(bucket) else {
             return Err(SpendingError::InvalidInput {
                 message: "Neutral transfers cannot be split. Change or unlink the transfer if it should count as spending.".to_string(),
@@ -1100,11 +1142,17 @@ impl CashActivityService {
 fn retain_classified_cash_activities(
     activities: &mut Vec<Activity>,
     account_types: &HashMap<String, String>,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
 ) {
     activities.retain(|activity| {
         account_types
             .get(&activity.account_id)
-            .is_some_and(|account_type| is_visible_cash_activity(activity, account_type))
+            .is_some_and(|account_type| {
+                is_visible_cash_activity(activity, account_type)
+                    || classify_categorized_activity(activity, account_type, assignments, splits)
+                        == SpendingClassification::ExpenseRefund
+            })
     });
 }
 
@@ -1112,14 +1160,18 @@ fn cash_flow_bucket_for(
     activity: &Activity,
     account_types: &HashMap<String, String>,
     transfer_groups: &HashSet<String>,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
 ) -> CashFlowBucket {
     account_types
         .get(&activity.account_id)
         .map(|account_type| {
-            cash_flow_bucket_from_classification(classify_activity_for_aggregation(
+            cash_flow_bucket_from_classification(classify_categorized_activity_for_aggregation(
                 activity,
                 account_type,
                 transfer_groups,
+                assignments,
+                splits,
             ))
         })
         .unwrap_or(CashFlowBucket::Neutral)
@@ -1139,8 +1191,14 @@ fn visible_spending_amount(
     let Some(account_type) = account_types.get(&activity.account_id) else {
         return 0.0;
     };
-    let bucket = classify_activity_for_aggregation(activity, account_type, transfer_groups)
-        .spending_amount(activity_abs_amount(activity));
+    let bucket = classify_categorized_activity_for_aggregation(
+        activity,
+        account_type,
+        transfer_groups,
+        assignments_by_activity,
+        splits_by_activity,
+    )
+    .spending_amount(activity_abs_amount(activity));
     let excluded = excluded_spending_native(
         &activity.id,
         SPENDING_TAXONOMY,
@@ -1240,26 +1298,6 @@ fn is_neutral_visible_cash_activity(activity: &Activity, account_type: &str) -> 
     account_type == account_types::CASH
         && matches!(activity_type, "TRANSFER_IN" | "TRANSFER_OUT")
         && activity.source_group_id.is_some()
-}
-
-fn group_assignments(
-    assignments: &[ActivityTaxonomyAssignment],
-) -> HashMap<&str, Vec<&ActivityTaxonomyAssignment>> {
-    let mut map: HashMap<&str, Vec<&ActivityTaxonomyAssignment>> = HashMap::new();
-    for a in assignments {
-        map.entry(a.activity_id.as_str()).or_default().push(a);
-    }
-    map
-}
-
-fn group_splits(splits: &[ActivitySplit]) -> HashMap<&str, Vec<&ActivitySplit>> {
-    let mut map: HashMap<&str, Vec<&ActivitySplit>> = HashMap::new();
-    for split in splits {
-        map.entry(split.activity_id.as_str())
-            .or_default()
-            .push(split);
-    }
-    map
 }
 
 fn retain_by_date_range(
@@ -1709,8 +1747,8 @@ mod tests {
 
     #[async_trait]
     impl crate::activity_assignments::ActivityTaxonomyAssignmentRepositoryTrait for MockAssignmentRepo {
-        async fn list_for_activity(&self, _: &str) -> Result<Vec<ActivityTaxonomyAssignment>> {
-            Ok(Vec::new())
+        async fn list_for_activity(&self, id: &str) -> Result<Vec<ActivityTaxonomyAssignment>> {
+            self.list_for_activities(&[id.to_string()]).await
         }
 
         async fn list_for_activities(
@@ -1780,8 +1818,8 @@ mod tests {
 
     #[async_trait]
     impl ActivitySplitRepositoryTrait for MockSplitRepo {
-        async fn list_for_activity(&self, _: &str) -> Result<Vec<ActivitySplit>> {
-            Ok(Vec::new())
+        async fn list_for_activity(&self, id: &str) -> Result<Vec<ActivitySplit>> {
+            self.list_for_activities(&[id.to_string()]).await
         }
 
         async fn list_for_activities(&self, ids: &[String]) -> Result<Vec<ActivitySplit>> {
@@ -2447,6 +2485,100 @@ mod tests {
 
         let items = service.list(CashActivityFilter::default()).await.unwrap();
         assert_eq!(items[0].visible_spending_amount, 100.0);
+    }
+
+    #[tokio::test]
+    async fn untyped_expense_credits_remain_visible_in_lists_search_and_drilldowns() {
+        let (service, assignment_repo, split_repo) = make_service_with(vec![
+            cash_row("refund", "CREDIT", 25, "USD"),
+            cash_row("split-refund", "CREDIT", 30, "USD"),
+            cash_row("unknown", "CREDIT", 80, "USD"),
+        ]);
+        *assignment_repo.assignments.lock().unwrap() =
+            vec![spending_assignment("refund", "groceries")];
+        *split_repo.splits.lock().unwrap() = vec![spending_split("split-refund", "groceries", 30)];
+        let all = service.list(CashActivityFilter::default()).await.unwrap();
+        assert_eq!(all.len(), 2);
+        for row in &all {
+            assert_eq!(row.cash_flow_bucket, CashFlowBucket::Spending);
+            assert_eq!(row.visible_spending_amount, -row.net_amount);
+            assert!(row.visible_spending_amount < 0.0);
+            assert_eq!(row.activity.subtype, None);
+        }
+        let by_ids = service
+            .get_by_activity_ids(&["refund".to_string(), "split-refund".to_string()])
+            .await
+            .unwrap();
+        assert_eq!(by_ids.len(), 2);
+        assert_eq!(
+            by_ids
+                .iter()
+                .map(|r| r.visible_spending_amount)
+                .sum::<f64>(),
+            -55.0
+        );
+        for offset in [0, 1] {
+            let page = service
+                .search(
+                    CashActivitySearchRequest {
+                        status: CashActivityStatusFilter::Categorized,
+                        category_ids: Some(vec!["groceries".to_string()]),
+                        limit: 1,
+                        offset,
+                        ..Default::default()
+                    },
+                    Some("USD"),
+                    "UTC",
+                )
+                .await
+                .unwrap();
+            assert_eq!(page.total_count, 2);
+            assert_eq!(page.items.len(), 1);
+            assert_eq!(page.items[0].cash_flow_bucket, CashFlowBucket::Spending);
+            assert!(page.items[0].visible_spending_amount < 0.0);
+        }
+        service
+            .ensure_activity_assignment_allowed("refund", SPENDING_TAXONOMY, true)
+            .await
+            .unwrap();
+        assert_eq!(
+            service
+                .ensure_activity_split_allowed("split-refund")
+                .await
+                .unwrap()
+                .1,
+            SPENDING_TAXONOMY
+        );
+        assert!(assignment_repo.cleared.lock().unwrap().is_empty());
+        assert!(split_repo.replaced.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn expense_credit_splits_respect_exclusions_without_reclassifying_income() {
+        let mut bonus = cash_row("bonus", "CREDIT", 10, "USD");
+        bonus.subtype = Some("BONUS".to_string());
+        let (service, assignment_repo, split_repo) = make_service_full(
+            vec![cash_row("refund", "CREDIT", 50, "USD"), bonus],
+            MockFx::none(),
+            vec!["excluded".to_string()],
+            vec![
+                spending_category("included", None),
+                spending_category("excluded", None),
+            ],
+        );
+        *split_repo.splits.lock().unwrap() = vec![
+            spending_split("refund", "included", 20),
+            spending_split("refund", "excluded", 30),
+        ];
+        *assignment_repo.assignments.lock().unwrap() =
+            vec![spending_assignment("bonus", "included")];
+        let rows = service.list(CashActivityFilter::default()).await.unwrap();
+        let refund = rows.iter().find(|r| r.activity.id == "refund").unwrap();
+        assert_eq!(refund.visible_spending_amount, -20.0);
+        assert_eq!(refund.net_amount, 50.0);
+        let bonus = rows.iter().find(|r| r.activity.id == "bonus").unwrap();
+        assert_eq!(bonus.cash_flow_bucket, CashFlowBucket::Income);
+        assert_eq!(bonus.visible_spending_amount, 0.0);
     }
 
     async fn search_net(service: &CashActivityService, base: Option<&str>) -> NetSummary {

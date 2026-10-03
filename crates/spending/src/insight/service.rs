@@ -23,8 +23,8 @@ use crate::activity_allocations::{
 };
 use crate::activity_assignments::ActivityTaxonomyAssignmentRepositoryTrait;
 use crate::activity_classification::{
-    activity_abs_amount, classify_activity, classify_activity_for_aggregation, decimal_to_f64,
-    within_spending_transfer_groups,
+    activity_abs_amount, classify_categorized_activity,
+    classify_categorized_activity_for_aggregation, decimal_to_f64, within_spending_transfer_groups,
 };
 use crate::activity_splits::ActivitySplitRepositoryTrait;
 use crate::budget::service::{
@@ -615,7 +615,13 @@ fn aggregate_spend_with_splits(
         // Income-pattern buckets: classification alone decides spend vs income
         // vs saving (a cross-boundary transfer-out → Saving). The three amounts
         // never overlap, so "spent" excludes saving automatically.
-        let classification = classify_activity_for_aggregation(a, account_type, transfer_groups);
+        let classification = classify_categorized_activity_for_aggregation(
+            a,
+            account_type,
+            transfer_groups,
+            assignments_by_activity,
+            splits_by_activity,
+        );
         let amount = activity_abs_amount(a);
         let spending_native = classification.spending_amount(amount);
         let income_native = classification.income_amount(amount);
@@ -822,7 +828,12 @@ fn compute_by_day(
         };
         // Transfers classify as Saving/InternalTransfer → spending_amount is 0,
         // so they're naturally excluded from the spend series (matches headline).
-        let classification = classify_activity(a, account_type);
+        let classification = classify_categorized_activity(
+            a,
+            account_type,
+            assignments_by_activity,
+            splits_by_activity,
+        );
         let amount = activity_abs_amount(a);
         let spending_native = classification.spending_amount(amount);
         let income_native = classification.income_amount(amount);
@@ -922,7 +933,12 @@ fn compute_by_day_by_category_with_splits(
         let Some(account_type) = account_types.get(&a.account_id) else {
             continue;
         };
-        let classification = classify_activity(a, account_type);
+        let classification = classify_categorized_activity(
+            a,
+            account_type,
+            assignments_by_activity,
+            splits_by_activity,
+        );
         let spending_native = classification.spending_amount(activity_abs_amount(a));
         if spending_native == Decimal::ZERO {
             continue;
@@ -1034,7 +1050,13 @@ fn compute_by_month(
         let Some(account_type) = account_types.get(&a.account_id) else {
             continue;
         };
-        let classification = classify_activity_for_aggregation(a, account_type, transfer_groups);
+        let classification = classify_categorized_activity_for_aggregation(
+            a,
+            account_type,
+            transfer_groups,
+            assignments_by_activity,
+            splits_by_activity,
+        );
         let amount = activity_abs_amount(a);
         let spending_native = classification.spending_amount(amount);
         let income_native = classification.income_amount(amount);
@@ -1397,7 +1419,12 @@ fn compute_pace(
             if d < trail_start || d > elapsed_d {
                 continue;
             }
-            let classification = classify_activity(a, account_type);
+            let classification = classify_categorized_activity(
+                a,
+                account_type,
+                assignments_by_activity,
+                splits_by_activity,
+            );
             let native = classification.spending_amount(activity_abs_amount(a));
             // Pace projects visible spend only — excluded categories don't
             // count toward the run-rate, matching the headline they project.
@@ -2319,10 +2346,8 @@ mod tests {
         let on_parent = activity("a2", "WITHDRAWAL", 40, "USD");
         let split_within_one_parent = activity("a3", "WITHDRAWAL", 90, "USD");
         let split_across_parents = activity("a4", "WITHDRAWAL", 50, "USD");
-        let refund = Activity {
-            subtype: Some("REFUND".to_string()),
-            ..activity("a5", "CREDIT", 25, "USD")
-        };
+        // The expense category, not an importer-specific subtype, resolves this credit.
+        let refund = activity("a5", "CREDIT", 25, "USD");
         let foreign = activity("a6", "WITHDRAWAL", 70, "EUR");
         let linked_transfer = Activity {
             source_group_id: Some("grp-1".to_string()),

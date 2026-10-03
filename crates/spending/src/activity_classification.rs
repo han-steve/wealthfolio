@@ -6,6 +6,8 @@ use wealthfolio_core::accounts::account_types;
 use wealthfolio_core::activities::Activity;
 use wealthfolio_core::portfolio::economic_events::ActivityEconomicsResolver;
 
+use crate::activity_allocations::{AssignmentsByActivity, SplitsByActivity};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpendingClassification {
     Income,
@@ -127,6 +129,62 @@ pub(crate) fn classify_activity(activity: &Activity, account_type: &str) -> Spen
             _ => SpendingClassification::Ignored,
         },
         _ => SpendingClassification::Ignored,
+    }
+}
+
+/// Categories can resolve a missing cash-credit subtype, but never override an
+/// explicit activity meaning. Conflicting flow taxonomies remain unresolved.
+pub(crate) fn classify_categorized_activity(
+    activity: &Activity,
+    account_type: &str,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
+) -> SpendingClassification {
+    let classification = classify_activity(activity, account_type);
+    if account_type != account_types::CASH
+        || activity.effective_type() != "CREDIT"
+        || activity.subtype.is_some()
+    {
+        return classification;
+    }
+    let taxonomies = assignments
+        .get(&activity.id)
+        .into_iter()
+        .flatten()
+        .map(|a| a.taxonomy_id.as_str())
+        .chain(
+            splits
+                .get(&activity.id)
+                .into_iter()
+                .flatten()
+                .map(|s| s.taxonomy_id.as_str()),
+        );
+    let mut expense = false;
+    for taxonomy in taxonomies {
+        match taxonomy {
+            "spending_categories" => expense = true,
+            "income_sources" | "savings_categories" => return classification,
+            _ => {}
+        }
+    }
+    if expense {
+        SpendingClassification::ExpenseRefund
+    } else {
+        classification
+    }
+}
+
+pub(crate) fn classify_categorized_activity_for_aggregation(
+    activity: &Activity,
+    account_type: &str,
+    within_spending_groups: &HashSet<String>,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
+) -> SpendingClassification {
+    if matches!(activity.effective_type(), "TRANSFER_IN" | "TRANSFER_OUT") {
+        classify_activity_for_aggregation(activity, account_type, within_spending_groups)
+    } else {
+        classify_categorized_activity(activity, account_type, assignments, splits)
     }
 }
 
@@ -453,6 +511,222 @@ mod tests {
             classify_activity(&activity("TAX", None), account_types::CASH),
             SpendingClassification::Expense
         );
+    }
+
+    fn category_context(
+        taxonomies: &[&str],
+        split: bool,
+    ) -> (AssignmentsByActivity, SplitsByActivity) {
+        use crate::activity_assignments::ActivityTaxonomyAssignment;
+        use crate::activity_splits::ActivitySplit;
+
+        let mut assignments = AssignmentsByActivity::new();
+        let mut splits = SplitsByActivity::new();
+        for taxonomy in taxonomies {
+            if split {
+                splits
+                    .entry("activity-1".to_string())
+                    .or_default()
+                    .push(ActivitySplit {
+                        id: format!("split-{taxonomy}"),
+                        activity_id: "activity-1".to_string(),
+                        taxonomy_id: taxonomy.to_string(),
+                        category_id: "example-category".to_string(),
+                        amount: Decimal::new(100, 0),
+                        note: None,
+                        sort_order: 0,
+                        created_at: Utc::now().naive_utc(),
+                        updated_at: Utc::now().naive_utc(),
+                    });
+            } else {
+                assignments
+                    .entry("activity-1".to_string())
+                    .or_default()
+                    .push(ActivityTaxonomyAssignment {
+                        id: format!("assignment-{taxonomy}"),
+                        activity_id: "activity-1".to_string(),
+                        taxonomy_id: taxonomy.to_string(),
+                        category_id: "example-category".to_string(),
+                        weight: 10_000,
+                        source: "manual".to_string(),
+                        created_at: Utc::now().naive_utc(),
+                        updated_at: Utc::now().naive_utc(),
+                    });
+            }
+        }
+        (assignments, splits)
+    }
+
+    #[test]
+    fn untyped_expense_category_cash_credit_offsets_spending_for_any_source() {
+        for split in [false, true] {
+            let (assignments, splits) = category_context(&["spending_categories"], split);
+            for source in [None, Some("fixture-import"), Some("fixture-manual")] {
+                let mut credit = activity("CREDIT", None);
+                credit.source_system = source.map(str::to_string);
+                let result = classify_categorized_activity_for_aggregation(
+                    &credit,
+                    account_types::CASH,
+                    &HashSet::new(),
+                    &assignments,
+                    &splits,
+                );
+                assert_eq!(result, SpendingClassification::ExpenseRefund);
+                assert_eq!(
+                    result.spending_amount(activity_abs_amount(&credit)),
+                    Decimal::new(-100, 0)
+                );
+                assert_eq!(
+                    result.income_amount(activity_abs_amount(&credit)),
+                    Decimal::ZERO
+                );
+                assert_eq!(
+                    result.saving_amount(activity_abs_amount(&credit)),
+                    Decimal::ZERO
+                );
+                assert_eq!(credit.subtype, None);
+            }
+        }
+    }
+
+    #[test]
+    fn cash_credit_classification_does_not_infer_from_or_mutate_private_metadata() {
+        for hint in ["REFUND", "REIMBURSEMENT", "BONUS", "SALARY"] {
+            let mut credit = activity("CREDIT", None);
+            credit.notes = Some(format!("Synthetic private note: {hint}"));
+            credit.source_type = Some(hint.to_string());
+            credit.source_system = Some(format!("fixture-{hint}"));
+            credit.source_record_id = Some(format!("synthetic-record-{hint}"));
+            credit.metadata = Some(serde_json::json!({
+                "description": format!("Synthetic private description: {hint}"),
+                "subtype": hint,
+            }));
+            let original = serde_json::to_value(&credit).unwrap();
+
+            for split in [false, true] {
+                for expense in [false, true] {
+                    let (assignments, splits) = category_context(
+                        if expense {
+                            &["spending_categories"]
+                        } else {
+                            &[]
+                        },
+                        split,
+                    );
+                    let expected = if expense {
+                        SpendingClassification::ExpenseRefund
+                    } else {
+                        SpendingClassification::Ignored
+                    };
+                    assert_eq!(
+                        classify_categorized_activity_for_aggregation(
+                            &credit,
+                            account_types::CASH,
+                            &HashSet::new(),
+                            &assignments,
+                            &splits,
+                        ),
+                        expected
+                    );
+                    assert_eq!(serde_json::to_value(&credit).unwrap(), original);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn untyped_cash_credit_needs_unambiguous_expense_category_evidence() {
+        for split in [false, true] {
+            for taxonomies in [
+                vec![],
+                vec!["income_sources"],
+                vec!["savings_categories"],
+                vec!["custom_tags"],
+                vec!["spending_categories", "income_sources"],
+                vec!["spending_categories", "savings_categories"],
+            ] {
+                let (assignments, splits) = category_context(&taxonomies, split);
+                assert_eq!(
+                    classify_categorized_activity(
+                        &activity("CREDIT", None),
+                        account_types::CASH,
+                        &assignments,
+                        &splits,
+                    ),
+                    SpendingClassification::Ignored
+                );
+            }
+        }
+        let (assignments, _) = category_context(&["income_sources"], false);
+        let (_, splits) = category_context(&["spending_categories"], true);
+        assert_eq!(
+            classify_categorized_activity(
+                &activity("CREDIT", None),
+                account_types::CASH,
+                &assignments,
+                &splits,
+            ),
+            SpendingClassification::Ignored
+        );
+    }
+
+    #[test]
+    fn expense_category_fallback_preserves_explicit_types_subtypes_and_account_semantics() {
+        let (assignments, splits) = category_context(&["spending_categories"], false);
+        for account in [
+            account_types::CASH,
+            account_types::CREDIT_CARD,
+            "SECURITIES",
+        ] {
+            for (kind, subtype) in [
+                ("CREDIT", Some("BONUS")),
+                ("CREDIT", Some("REFUND")),
+                ("CREDIT", Some("REBATE")),
+                ("CREDIT", Some("REIMBURSEMENT")),
+                ("CREDIT", Some("OTHER")),
+                ("CREDIT", Some("")),
+                ("DEPOSIT", None),
+                ("TRANSFER_IN", None),
+                ("TRANSFER_OUT", None),
+                ("WITHDRAWAL", None),
+                ("UNKNOWN", None),
+            ] {
+                let row = activity_with_subtype(kind, subtype, None);
+                assert_eq!(
+                    classify_categorized_activity(&row, account, &assignments, &splits),
+                    classify_activity(&row, account)
+                );
+            }
+        }
+        let mut row = activity("CREDIT", None);
+        assert_eq!(
+            classify_categorized_activity(&row, "SECURITIES", &assignments, &splits),
+            SpendingClassification::Ignored
+        );
+        row.activity_type_override = Some("DEPOSIT".to_string());
+        assert_eq!(
+            classify_categorized_activity(&row, account_types::CASH, &assignments, &splits),
+            SpendingClassification::Income
+        );
+        row.activity_type = "UNKNOWN".to_string();
+        row.activity_type_override = Some("CREDIT".to_string());
+        assert_eq!(
+            classify_categorized_activity(&row, account_types::CASH, &assignments, &splits),
+            SpendingClassification::ExpenseRefund
+        );
+        let transfer = activity("TRANSFER_OUT", Some("linked-pair"));
+        for groups in [HashSet::new(), HashSet::from(["linked-pair".to_string()])] {
+            assert_eq!(
+                classify_categorized_activity_for_aggregation(
+                    &transfer,
+                    account_types::CASH,
+                    &groups,
+                    &assignments,
+                    &splits
+                ),
+                classify_activity_for_aggregation(&transfer, account_types::CASH, &groups)
+            );
+        }
     }
 
     #[test]

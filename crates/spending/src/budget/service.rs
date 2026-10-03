@@ -21,7 +21,9 @@ use super::model::{
 use super::traits::BudgetRepositoryTrait;
 use crate::activity_allocations::{group_assignments, group_splits, SplitsByActivity};
 use crate::activity_assignments::ActivityTaxonomyAssignmentRepositoryTrait;
-use crate::activity_classification::{activity_abs_amount, classify_activity, decimal_to_f64};
+use crate::activity_classification::{
+    activity_abs_amount, classify_categorized_activity, decimal_to_f64,
+};
 use crate::activity_splits::ActivitySplitRepositoryTrait;
 use crate::category_exclusions::{split_spending_allocations, ExclusionIndex};
 use crate::error::SpendingError;
@@ -934,7 +936,12 @@ impl BudgetService {
             let Some(account_type) = account_types.get(&activity.account_id) else {
                 continue;
             };
-            let classification = classify_activity(&activity, account_type);
+            let classification = classify_categorized_activity(
+                &activity,
+                account_type,
+                &assignments_by_activity,
+                &splits_by_activity,
+            );
             let amount = activity_abs_amount(&activity);
             let spending_native = classification.spending_amount(amount);
             let income_native = classification.income_amount(amount);

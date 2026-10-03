@@ -21,8 +21,9 @@ use crate::activity_allocations::{
 };
 use crate::activity_assignments::ActivityTaxonomyAssignmentRepositoryTrait;
 use crate::activity_classification::{
-    activity_abs_amount, classify_activity, classify_activity_for_aggregation, decimal_to_f64,
-    within_spending_transfer_groups, SpendingClassification,
+    activity_abs_amount, classify_categorized_activity,
+    classify_categorized_activity_for_aggregation, decimal_to_f64, within_spending_transfer_groups,
+    SpendingClassification,
 };
 use crate::activity_splits::ActivitySplitRepositoryTrait;
 use crate::budget::service::category_meta;
@@ -221,8 +222,8 @@ impl AnalyticsService {
             })
             .collect();
 
-        // Assignments for current + prior windows. Totals are bucketed by
-        // activity flow; assignments only label spending/income breakdowns.
+        // Load categories before classification: an expense assignment can
+        // resolve a cash credit whose subtype is missing.
         let assignment_ids: Vec<String> = current_acts
             .iter()
             .chain(prior_acts.iter())
@@ -277,7 +278,12 @@ impl AnalyticsService {
         // headline outflow within rounding tolerance.
         let mut by_day_map: HashMap<NaiveDate, (Decimal, Decimal)> = HashMap::new();
         for a in &current_acts {
-            let Some(classification) = classification_for(a, &account_types) else {
+            let Some(classification) = classification_for(
+                a,
+                &account_types,
+                &assignments_by_activity,
+                &splits_by_activity,
+            ) else {
                 continue;
             };
             let amt = activity_abs_amount(a);
@@ -349,8 +355,13 @@ impl AnalyticsService {
             let Some(account_type) = account_types.get(&a.account_id) else {
                 continue;
             };
-            let classification =
-                classify_activity_for_aggregation(a, account_type, &transfer_groups);
+            let classification = classify_categorized_activity_for_aggregation(
+                a,
+                account_type,
+                &transfer_groups,
+                &assignments_by_activity,
+                &splits_by_activity,
+            );
             let amt = activity_abs_amount(a);
             let income_native = classification.income_amount(amt);
             let spending_native = classification.spending_amount(amt);
@@ -518,7 +529,13 @@ fn summarize(
         };
         // Income-pattern buckets: classification decides spend/income/saving;
         // a cross-boundary transfer-out → Saving. Amounts never overlap.
-        let classification = classify_activity_for_aggregation(a, account_type, within_groups);
+        let classification = classify_categorized_activity_for_aggregation(
+            a,
+            account_type,
+            within_groups,
+            assignments_by_activity,
+            splits_by_activity,
+        );
         let amt = activity_abs_amount(a);
         let income_native = classification.income_amount(amt);
         let spending_native = classification.spending_amount(amt);
@@ -672,10 +689,12 @@ fn add_report_breakdown_allocations(
 fn classification_for(
     activity: &Activity,
     account_types: &HashMap<String, String>,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
 ) -> Option<SpendingClassification> {
-    account_types
-        .get(&activity.account_id)
-        .map(|account_type| classify_activity(activity, account_type))
+    account_types.get(&activity.account_id).map(|account_type| {
+        classify_categorized_activity(activity, account_type, assignments, splits)
+    })
 }
 
 // ====================== SpendingSummary (PR-style multi-period rollup) ======================
@@ -736,18 +755,8 @@ impl AnalyticsService {
             .get_activities_by_account_ids(&target_accounts)
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
 
-        // Pre-load assignments per activity in scope (only for outflow + spending taxonomy).
-        // Single batched lookup, then group by activity_id — avoids the N+1
-        // round-trip that the previous per-activity loop performed.
-        let spending_ids: Vec<String> = activities
-            .iter()
-            .filter(|a| {
-                classification_for(a, &account_types)
-                    .map(|c| c.spending_amount(activity_abs_amount(a)) != Decimal::ZERO)
-                    .unwrap_or(false)
-            })
-            .map(|a| a.id.clone())
-            .collect();
+        // Category evidence is needed before filtering untyped cash credits.
+        let spending_ids: Vec<String> = activities.iter().map(|a| a.id.clone()).collect();
         let all_assignments = self
             .assignment_repo
             .list_for_activities(&spending_ids)
@@ -815,7 +824,12 @@ impl AnalyticsService {
             let in_window: Vec<&Activity> = activities
                 .iter()
                 .filter(|a| {
-                    let Some(classification) = classification_for(a, &account_types) else {
+                    let Some(classification) = classification_for(
+                        a,
+                        &account_types,
+                        &assignments_by_activity,
+                        &splits_by_activity,
+                    ) else {
                         return false;
                     };
                     if classification.spending_amount(activity_abs_amount(a)) == Decimal::ZERO {
@@ -895,6 +909,8 @@ fn group_activities_by_visible_event(
     tag_map: HashMap<String, String>,
     visible_event_ids: &HashSet<String>,
     account_types: &HashMap<String, String>,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
 ) -> HashMap<String, Vec<Activity>> {
     let mut by_event: HashMap<String, Vec<Activity>> = HashMap::new();
     for activity in activities {
@@ -904,7 +920,9 @@ fn group_activities_by_visible_event(
         if !visible_event_ids.contains(&event_id) {
             continue;
         }
-        let Some(classification) = classification_for(&activity, account_types) else {
+        let Some(classification) =
+            classification_for(&activity, account_types, assignments, splits)
+        else {
             continue;
         };
         if classification.spending_amount(activity_abs_amount(&activity)) == Decimal::ZERO {
@@ -983,7 +1001,12 @@ fn build_summary(
     let mut by_month_by_subcategory: HashMap<String, HashMap<String, Decimal>> = HashMap::new();
     let mut transaction_count = 0;
     for a in activities {
-        let Some(classification) = classification_for(a, account_types) else {
+        let Some(classification) = classification_for(
+            a,
+            account_types,
+            assignments_by_activity,
+            splits_by_activity,
+        ) else {
             continue;
         };
         let amt_native = classification.spending_amount(activity_abs_amount(a));
@@ -1395,13 +1418,6 @@ impl AnalyticsService {
             .into_iter()
             .filter(|activity| target_account_ids.contains(activity.account_id.as_str()))
             .collect();
-        let mut by_event = group_activities_by_visible_event(
-            activities,
-            tag_map,
-            &visible_event_id_set,
-            &account_types,
-        );
-
         let currency = req.currency.unwrap_or_else(|| "USD".to_string());
         // FX as-of: end of the requested window if provided; otherwise today.
         // Matches the snapshot-date convention used by insight + monthly_report.
@@ -1413,8 +1429,7 @@ impl AnalyticsService {
         // Batch assignment lookup for every in-scope activity at once,
         // grouped by activity_id. Replaces a per-activity `list_for_activity`
         // call inside the inner loop (N+1 against the assignments table).
-        let all_activity_ids: Vec<String> =
-            by_event.values().flatten().map(|a| a.id.clone()).collect();
+        let all_activity_ids: Vec<String> = tagged_activity_ids;
         let all_assignments = self
             .assignment_repo
             .list_for_activities(&all_activity_ids)
@@ -1424,6 +1439,14 @@ impl AnalyticsService {
             self.split_repo
                 .list_for_activities(&all_activity_ids)
                 .await?,
+        );
+        let mut by_event = group_activities_by_visible_event(
+            activities,
+            tag_map,
+            &visible_event_id_set,
+            &account_types,
+            &assignments_by_activity,
+            &splits_by_activity,
         );
 
         let mut out = Vec::with_capacity(visible_events.len());
@@ -1436,7 +1459,12 @@ impl AnalyticsService {
             let mut transaction_count = 0;
 
             for a in &acts {
-                let Some(classification) = classification_for(a, &account_types) else {
+                let Some(classification) = classification_for(
+                    a,
+                    &account_types,
+                    &assignments_by_activity,
+                    &splits_by_activity,
+                ) else {
                     continue;
                 };
                 let amt_native = classification.spending_amount(activity_abs_amount(a));
@@ -1974,6 +2002,87 @@ mod tests {
         assert_eq!(summary.count, 2);
     }
 
+    #[test]
+    fn untyped_cash_refund_reconciles_period_annual_and_event_spending() {
+        let (mut charge, charge_assignment) =
+            spending_activity("charge", "WITHDRAWAL", 100, "groceries", 1);
+        let (mut refund, refund_assignment) =
+            spending_activity("refund", "CREDIT", 25, "groceries", 1);
+        charge.account_id = "cash-account".to_string();
+        refund.account_id = "cash-account".to_string();
+        let accounts =
+            HashMap::from([("cash-account".to_string(), account_types::CASH.to_string())]);
+        let assignments = group_assignments(vec![charge_assignment, refund_assignment]);
+        let splits = SplitsByActivity::new();
+        let acts = vec![&charge, &refund];
+        let end = NaiveDate::from_ymd_opt(2024, 1, 31).unwrap();
+        let summary = summarize(
+            &acts,
+            &accounts,
+            &HashSet::new(),
+            &assignments,
+            &splits,
+            &ExclusionIndex::empty(),
+            &PassthroughFx,
+            "USD",
+            end,
+        );
+        assert_eq!(summary.outflow, 75.0);
+        assert_eq!(summary.income, 0.0);
+        assert_eq!(summary.net, -75.0);
+        assert_eq!(summary.count, 2);
+        let categories = HashMap::from([(
+            "groceries".to_string(),
+            ("Groceries".to_string(), None, None),
+        )]);
+        let annual = build_summary(
+            "TOTAL",
+            &acts,
+            &assignments,
+            &splits,
+            &categories,
+            &accounts,
+            "USD",
+            &PassthroughFx,
+            end,
+            "UTC",
+        );
+        assert_eq!(annual.total_spending, 75.0);
+        assert_eq!(annual.by_category["groceries"].amount, 75.0);
+        assert_eq!(annual.by_month["2024-01"], 75.0);
+        let events = group_activities_by_visible_event(
+            vec![charge, refund],
+            HashMap::from([
+                ("charge".to_string(), "example-event".to_string()),
+                ("refund".to_string(), "example-event".to_string()),
+            ]),
+            &HashSet::from(["example-event".to_string()]),
+            &accounts,
+            &assignments,
+            &splits,
+        );
+        assert_eq!(events["example-event"].len(), 2);
+        let excluded = ExclusionIndex::from_parent_pairs(
+            &["groceries".to_string()],
+            [("groceries", None)].into_iter(),
+        );
+        let event_acts = events["example-event"].iter().collect::<Vec<_>>();
+        let excluded_summary = summarize(
+            &event_acts,
+            &accounts,
+            &HashSet::new(),
+            &assignments,
+            &splits,
+            &excluded,
+            &PassthroughFx,
+            "USD",
+            end,
+        );
+        assert_eq!(excluded_summary.outflow, 0.0);
+        assert_eq!(excluded_summary.income, 0.0);
+        assert_eq!(excluded_summary.count, 0);
+    }
+
     fn build_credit_card_summary(activities: &[Activity]) -> SpendingSummary {
         build_credit_card_summary_in_timezone(activities, "")
     }
@@ -2106,6 +2215,8 @@ mod tests {
                 "card-account".to_string(),
                 account_types::CREDIT_CARD.to_string(),
             )]),
+            &AssignmentsByActivity::new(),
+            &SplitsByActivity::new(),
         );
 
         let mut ids = grouped
@@ -2134,6 +2245,8 @@ mod tests {
                 "card-account".to_string(),
                 account_types::CREDIT_CARD.to_string(),
             )]),
+            &AssignmentsByActivity::new(),
+            &SplitsByActivity::new(),
         );
 
         let ids = grouped
