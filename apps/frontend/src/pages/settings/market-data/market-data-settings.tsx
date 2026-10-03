@@ -6,9 +6,11 @@ import { Popover, PopoverContent, PopoverTrigger } from "@wealthfolio/ui/compone
 import { Separator } from "@wealthfolio/ui/components/ui/separator";
 import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@wealthfolio/ui/components/ui/tabs";
-import { useMemo, useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useSearchParams } from "react-router-dom";
+
+import { ResetProviderHistoryDialog } from "@/pages/asset/reset-provider-history-dialog";
 
 import { SettingsHeader } from "../settings-header";
 
@@ -25,7 +27,7 @@ import {
 import { QueryKeys } from "@/lib/query-keys";
 import type { CustomProviderWithSources } from "@/lib/types/custom-provider";
 import { cn } from "@/lib/utils";
-import { ActionConfirm } from "@wealthfolio/ui";
+import { ActionConfirm, useDateFormatting } from "@wealthfolio/ui";
 import {
   Collapsible,
   CollapsibleContent,
@@ -34,13 +36,13 @@ import {
 import { Input } from "@wealthfolio/ui/components/ui/input";
 import { Label } from "@wealthfolio/ui/components/ui/label";
 import { Switch } from "@wealthfolio/ui/components/ui/switch";
+import { CustomProviderForm } from "./custom-provider-form";
 import {
   useDeleteApiKey,
   useMarketDataProviderSettings,
   useSetApiKey,
   useUpdateMarketDataProviderSettings,
 } from "./use-market-data-settings";
-import { CustomProviderForm } from "./custom-provider-form";
 
 interface ProviderSettingsProps {
   provider: MarketDataProviderSetting;
@@ -59,6 +61,7 @@ function ProviderSettings({
   onPrioritySave,
   isLast = false,
 }: ProviderSettingsProps) {
+  const formatting = useDateFormatting();
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [isOpen, setIsOpen] = useState(false);
@@ -474,7 +477,7 @@ function ProviderSettings({
                         {provider.lastSyncedAt && (
                           <p className="text-muted-foreground text-xs">
                             {t("settings:market_data_page.last_sync", {
-                              date: new Date(provider.lastSyncedAt).toLocaleString(),
+                              date: formatting.formatDateTime(provider.lastSyncedAt),
                             })}
                           </p>
                         )}
@@ -492,7 +495,7 @@ function ProviderSettings({
                         <span className="text-muted-foreground text-xs">
                           {provider.lastSyncedAt
                             ? t("settings:market_data_page.last_sync", {
-                                date: new Date(provider.lastSyncedAt).toLocaleString(),
+                                date: formatting.formatDateTime(provider.lastSyncedAt),
                               })
                             : t("settings:market_data_page.pending_sync")}
                         </span>
@@ -620,6 +623,7 @@ export default function MarketDataSettingsPage() {
   const { mutate: updateCustomProvider } = useUpdateCustomProvider();
 
   const [priorityInputs, setPriorityInputs] = useState<Record<string, number>>({});
+  const [resetHistoryOpen, setResetHistoryOpen] = useState(false);
   const [customFormOpen, setCustomFormOpen] = useState(false);
   const [editingProvider, setEditingProvider] = useState<CustomProviderWithSources | undefined>();
   const [deletingId, setDeletingId] = useState<string | null>(null);
@@ -756,7 +760,10 @@ export default function MarketDataSettingsPage() {
         text={t("settings:market_data_page.subtitle")}
         actionsInline
       >
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setResetHistoryOpen(true)}>
+            {t("asset:resetDialog.title")}
+          </Button>
           <Button
             asChild
             variant="outline"
@@ -789,7 +796,7 @@ export default function MarketDataSettingsPage() {
             confirmButtonText={t("settings:market_data_page.rebuild_confirm_button")}
             pendingText={t("settings:market_data_page.rebuild_pending")}
             cancelButtonText={t("settings:common_cancel")}
-            confirmButtonVariant="destructive"
+            confirmButtonVariant="default"
             button={
               <Button
                 variant="outline"
@@ -829,7 +836,7 @@ export default function MarketDataSettingsPage() {
             confirmButtonText={t("settings:market_data_page.rebuild_confirm_button")}
             pendingText={t("settings:market_data_page.rebuild_pending")}
             cancelButtonText={t("settings:common_cancel")}
-            confirmButtonVariant="destructive"
+            confirmButtonVariant="default"
             button={
               <Button
                 variant="outline"
@@ -861,6 +868,11 @@ export default function MarketDataSettingsPage() {
           </Button>
         </div>
       </SettingsHeader>
+      <ResetProviderHistoryDialog
+        allAssets
+        open={resetHistoryOpen}
+        onOpenChange={setResetHistoryOpen}
+      />
       <Separator />
       {showHealthBanner && (
         <div className="border-border bg-muted/30 flex items-center justify-between gap-3 rounded-md border px-3 py-2">

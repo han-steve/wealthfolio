@@ -1,33 +1,27 @@
-use std::sync::Arc;
+use crate::profiles::ProfileAccess;
 
-use crate::secret_store::KeyringSecretStore;
-use tauri::{AppHandle, Manager, State};
+use tauri::AppHandle;
 use wealthfolio_core::addons::network::{
     resolve_addon_network_auth_header, AddonNetworkRequest, AddonNetworkResponse,
 };
-use wealthfolio_core::addons::{AddonService, AddonServiceTrait};
-
-use crate::context::ServiceContext;
+use wealthfolio_core::addons::AddonServiceTrait;
 
 #[tauri::command]
 pub async fn addon_network_request(
-    app_handle: AppHandle,
-    state: State<'_, Arc<ServiceContext>>,
+    _app_handle: AppHandle,
+    state: ProfileAccess,
     addon_id: String,
     mut request: AddonNetworkRequest,
 ) -> Result<AddonNetworkResponse, String> {
-    let app_data_dir = app_handle
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("Failed to get app data dir: {}", e))?;
-    let injected_authorization =
-        resolve_addon_network_auth_header(&addon_id, request.auth.as_ref(), &KeyringSecretStore)?;
+    let context = state.context()?;
+    let injected_authorization = resolve_addon_network_auth_header(
+        &addon_id,
+        request.auth.as_ref(),
+        context.secret_store.as_ref(),
+    )?;
     request.injected_authorization = injected_authorization;
-    AddonService::new(
-        app_data_dir,
-        state.rating_instance_id.as_str(),
-        state.addon_storage_repository.clone(),
-    )
-    .addon_network_request(&addon_id, request)
-    .await
+    context
+        .addon_service
+        .addon_network_request(&addon_id, request)
+        .await
 }

@@ -77,6 +77,8 @@ pub fn run_monte_carlo_with_mode_and_seed(
             )
         })
         .collect();
+    let accumulation_return = plan_accumulation_return(plan);
+    let default_post_payout_return = plan_retirement_return(plan);
 
     // paths[sim] = (year_values, survived, fi_age)
     let sim_results: Vec<(Vec<f64>, bool, Option<u32>)> = (0..n_sims)
@@ -91,6 +93,7 @@ pub fn run_monte_carlo_with_mode_and_seed(
             let mut path = Vec::with_capacity(horizon_years as usize + 1);
             let mut cumulative_inflation = 1.0_f64;
             let mut sim_resolved_payouts: Option<&HashMap<String, f64>> = None;
+            let mut sim_drawdown = DrawdownLedger::default();
             let mut sim_retirement_age = target_fire_age;
 
             for i in 0..=horizon_years {
@@ -112,6 +115,21 @@ pub fn run_monte_carlo_with_mode_and_seed(
                     }
                 }
 
+                // A fund can start paying before this path reaches retirement, so the
+                // depletion it carries starts at the fund's own start age. Until the
+                // retirement decision picks a set of payouts, this year's set is the
+                // right one: contributions stop at the earlier of the start age and
+                // retirement either way.
+                let payouts = sim_resolved_payouts.unwrap_or(&per_age_payouts[i as usize]);
+                open_due_drawdown_funds(
+                    &mut sim_drawdown,
+                    &streams_clone,
+                    age,
+                    current_age,
+                    if in_fire { sim_retirement_age } else { age },
+                    accumulation_return,
+                );
+
                 // Glide-path-blended return distribution for this year
                 let (eff_mean, eff_std) = blended_return_params_mc(
                     accumulation_mean,
@@ -129,7 +147,6 @@ pub fn run_monte_carlo_with_mode_and_seed(
                     sample_return_and_inflation(&mut rng, eff_mean, eff_std, inflation_rate);
 
                 if in_fire {
-                    let payouts = sim_resolved_payouts.unwrap();
                     let grown_buckets = apply_growth(buckets, annual_return);
                     let (total_expenses, essential_expenses) = annual_expenses_at_year_stochastic(
                         &expenses_clone,
@@ -138,13 +155,15 @@ pub fn run_monte_carlo_with_mode_and_seed(
                         inflation_rate,
                         cumulative_inflation,
                     );
-                    let income = plan_income_at_age_stochastic(
+                    let income = plan_income_at_age_with_drawdown(
                         &streams_clone,
                         payouts,
+                        &mut sim_drawdown,
                         age,
                         i,
                         inflation_rate,
                         Some(cumulative_inflation),
+                        default_post_payout_return,
                     );
                     let outcome = apply_planned_spending_withdrawal(
                         &grown_buckets,
@@ -162,6 +181,19 @@ pub fn run_monte_carlo_with_mode_and_seed(
 
                     buckets = outcome.remaining_buckets;
                 } else {
+                    // The withdrawal has to leave the fund even in a year the plan
+                    // models no spending for it to fund, or a fund paying since 65
+                    // would be whole again when retirement begins at 70.
+                    drawdown_income_at_age(
+                        &streams_clone,
+                        payouts,
+                        &mut sim_drawdown,
+                        age,
+                        i,
+                        inflation_rate,
+                        Some(cumulative_inflation),
+                        default_post_payout_return,
+                    );
                     let year_monthly_contribution =
                         monthly_contribution * (1.0 + contrib_growth).powi(i as i32);
                     let annual_contribution = end_of_year_value_of_monthly_contributions(
@@ -272,14 +304,19 @@ fn retirement_plan_seed(
 
 // ─── Scenario Analysis ───────────────────────────────────────────────────────
 
-pub fn run_scenario_analysis(plan: &RetirementPlan, current_portfolio: f64) -> Vec<ScenarioResult> {
-    run_scenario_analysis_with_mode(plan, current_portfolio, RetirementTimingMode::Fire)
+pub fn run_scenario_analysis(
+    plan: &RetirementPlan,
+    current_portfolio: f64,
+    as_of: chrono::NaiveDate,
+) -> Vec<ScenarioResult> {
+    run_scenario_analysis_with_mode(plan, current_portfolio, RetirementTimingMode::Fire, as_of)
 }
 
 pub fn run_scenario_analysis_with_mode(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> Vec<ScenarioResult> {
     let scenarios = [
         ("Pessimistic", -0.02_f64),
@@ -293,9 +330,9 @@ pub fn run_scenario_analysis_with_mode(
             let mut adjusted = plan.clone();
             adjusted.investment.pre_retirement_annual_return += delta;
             adjusted.investment.retirement_annual_return += delta;
-            let proj = project_retirement_with_mode(&adjusted, current_portfolio, mode);
+            let proj = project_retirement_with_mode(&adjusted, current_portfolio, mode, as_of);
             let overview =
-                compute_retirement_overview_with_mode(&adjusted, current_portfolio, mode);
+                compute_retirement_overview_with_mode(&adjusted, current_portfolio, mode, as_of);
             let portfolio_at_horizon = proj
                 .year_by_year
                 .last()
@@ -335,6 +372,7 @@ fn risk_lab_plan_outcome(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> RiskLabPlanOutcome {
     let mut required_capital_cache = RequiredCapitalCache::new();
     let required_capital = required_capital_for(
@@ -348,6 +386,7 @@ fn risk_lab_plan_outcome(
         current_portfolio,
         mode,
         &mut required_capital_cache,
+        as_of,
     );
     let portfolio_at_goal = projection
         .year_by_year
@@ -395,16 +434,21 @@ fn risk_lab_plan_outcome(
     }
 }
 
-pub fn run_stress_tests(plan: &RetirementPlan, current_portfolio: f64) -> Vec<StressTestResult> {
-    run_stress_tests_with_mode(plan, current_portfolio, RetirementTimingMode::Fire)
+pub fn run_stress_tests(
+    plan: &RetirementPlan,
+    current_portfolio: f64,
+    as_of: chrono::NaiveDate,
+) -> Vec<StressTestResult> {
+    run_stress_tests_with_mode(plan, current_portfolio, RetirementTimingMode::Fire, as_of)
 }
 
 pub fn run_stress_tests_with_mode(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> Vec<StressTestResult> {
-    let baseline_outcome = risk_lab_plan_outcome(plan, current_portfolio, mode);
+    let baseline_outcome = risk_lab_plan_outcome(plan, current_portfolio, mode, as_of);
     let baseline = stress_outcome_from_plan_outcome(&baseline_outcome);
     let severity_base = baseline_outcome.required_capital_at_goal_age.max(1.0);
 
@@ -466,6 +510,7 @@ pub fn run_stress_tests_with_mode(
                         &baseline,
                         severity_base,
                         *mutate,
+                        as_of,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -499,13 +544,14 @@ fn build_plan_stress<F>(
     baseline: &StressOutcome,
     severity_base: f64,
     mutate: F,
+    as_of: chrono::NaiveDate,
 ) -> StressTestResult
 where
     F: FnOnce(&mut RetirementPlan),
 {
     let mut stressed_plan = plan.clone();
     mutate(&mut stressed_plan);
-    let outcome = risk_lab_plan_outcome(&stressed_plan, current_portfolio, mode);
+    let outcome = risk_lab_plan_outcome(&stressed_plan, current_portfolio, mode, as_of);
     let stressed = stress_outcome_from_plan_outcome(&outcome);
     build_stress_result(
         id,
@@ -745,20 +791,43 @@ pub fn run_sorr(
             let mut path = Vec::with_capacity(years + 1);
             let mut essential_funded_every_year = true;
             let mut failure_age = None;
+            // Each scenario depletes its own funds; a shock year does not change
+            // the draw, but the fund still has to have the money. A fund that started
+            // paying before retirement arrives already part-drawn.
+            let mut drawdown = drawdown_ledger_entering_retirement(
+                &plan.income_streams,
+                &resolved_payouts,
+                plan.personal.current_age,
+                retirement_start_age,
+                plan_accumulation_return(plan),
+                inflation,
+                r,
+            );
 
             #[allow(clippy::needless_range_loop)]
             for i in 0..years {
                 path.push(buckets.total().max(0.0));
                 let age = retirement_start_age + i as u32;
                 let years_from_now = years_to_fire + i as u32;
+                open_due_drawdown_funds(
+                    &mut drawdown,
+                    &plan.income_streams,
+                    age,
+                    plan.personal.current_age,
+                    retirement_start_age,
+                    plan_accumulation_return(plan),
+                );
                 let (total_expenses, essential_expenses) =
                     annual_expenses_at_year(&plan.expenses, age, years_from_now, inflation);
-                let income = plan_income_at_age(
+                let income = plan_income_at_age_with_drawdown(
                     &plan.income_streams,
                     &resolved_payouts,
+                    &mut drawdown,
                     age,
                     years_from_now,
                     inflation,
+                    None,
+                    r,
                 );
                 // Use scenario returns[i] but blend with glide path for the base-return component.
                 // For non-base scenarios the shock return overrides the actual return for that year.
@@ -821,14 +890,16 @@ pub fn run_sorr(
 pub fn run_sensitivity_analysis(
     plan: &RetirementPlan,
     current_portfolio: f64,
+    as_of: chrono::NaiveDate,
 ) -> SensitivityResult {
-    run_sensitivity_analysis_with_mode(plan, current_portfolio, RetirementTimingMode::Fire)
+    run_sensitivity_analysis_with_mode(plan, current_portfolio, RetirementTimingMode::Fire, as_of)
 }
 
 pub fn run_sensitivity_analysis_with_mode(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> SensitivityResult {
     let contribution_multipliers = [0.5_f64, 0.75, 1.0, 1.25, 1.5];
     let return_values = [0.04_f64, 0.05, 0.06, 0.07, 0.08, 0.09];
@@ -851,7 +922,7 @@ pub fn run_sensitivity_analysis_with_mode(
                         ret + adjusted.investment.annual_investment_fee_rate;
                     adjusted.investment.retirement_annual_return =
                         ret + adjusted.investment.annual_investment_fee_rate;
-                    project_retirement_with_mode(&adjusted, current_portfolio, mode).fire_age
+                    project_retirement_with_mode(&adjusted, current_portfolio, mode, as_of).fire_age
                 })
                 .collect()
         })
@@ -871,13 +942,14 @@ pub fn run_decision_sensitivity_matrix_with_mode(
     current_portfolio: f64,
     mode: RetirementTimingMode,
     map: DecisionSensitivityMap,
+    as_of: chrono::NaiveDate,
 ) -> DecisionSensitivityMatrix {
     match map {
         DecisionSensitivityMap::ContributionReturn => {
-            build_contribution_return_sensitivity(plan, current_portfolio, mode)
+            build_contribution_return_sensitivity(plan, current_portfolio, mode, as_of)
         }
         DecisionSensitivityMap::RetirementAgeSpending => {
-            build_retirement_age_spending_sensitivity(plan, current_portfolio, mode)
+            build_retirement_age_spending_sensitivity(plan, current_portfolio, mode, as_of)
         }
     }
 }
@@ -886,6 +958,7 @@ fn build_contribution_return_sensitivity(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> DecisionSensitivityMatrix {
     let base_contribution = plan.investment.monthly_contribution;
     let base_net_return = plan_accumulation_return(plan);
@@ -907,7 +980,7 @@ fn build_contribution_return_sensitivity(
                     let mut adjusted = plan.clone();
                     adjusted.investment.monthly_contribution = contribution;
                     apply_return_delta(&mut adjusted, net_return - base_net_return);
-                    decision_cell_from_plan(&adjusted, current_portfolio, mode)
+                    decision_cell_from_plan(&adjusted, current_portfolio, mode, as_of)
                 })
                 .collect()
         })
@@ -936,6 +1009,7 @@ fn build_retirement_age_spending_sensitivity(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> DecisionSensitivityMatrix {
     let base_retirement_age = plan.personal.target_retirement_age;
     let base_monthly_spending = active_monthly_expense_today(plan, base_retirement_age);
@@ -961,7 +1035,7 @@ fn build_retirement_age_spending_sensitivity(
                         base_monthly_spending,
                         monthly_spending,
                     );
-                    decision_cell_from_plan(&adjusted, current_portfolio, mode)
+                    decision_cell_from_plan(&adjusted, current_portfolio, mode, as_of)
                 })
                 .collect()
         })
@@ -990,8 +1064,9 @@ fn decision_cell_from_plan(
     plan: &RetirementPlan,
     current_portfolio: f64,
     mode: RetirementTimingMode,
+    as_of: chrono::NaiveDate,
 ) -> DecisionSensitivityCell {
-    let outcome = risk_lab_plan_outcome(plan, current_portfolio, mode);
+    let outcome = risk_lab_plan_outcome(plan, current_portfolio, mode, as_of);
     let target_factor = inflation_factor_to_age(plan, plan.personal.target_retirement_age);
     let horizon_factor = inflation_factor_to_age(plan, plan.personal.planning_horizon_age);
     DecisionSensitivityCell {
@@ -1151,6 +1226,7 @@ fn approx_eq(left: f64, right: f64, epsilon: f64) -> bool {
 
 #[cfg(test)]
 mod tests {
+    const AS_OF: chrono::NaiveDate = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
     use super::*;
     fn base_plan() -> RetirementPlan {
         RetirementPlan {
@@ -1280,7 +1356,7 @@ mod tests {
     #[test]
     fn sensitivity_dimensions() {
         let p = base_plan();
-        let result = run_sensitivity_analysis(&p, 100_000.0);
+        let result = run_sensitivity_analysis(&p, 100_000.0, AS_OF);
         assert_eq!(result.contribution.contribution_rows.len(), 5);
         assert_eq!(result.contribution.return_columns.len(), 6);
         assert_eq!(result.contribution.fire_ages.len(), 5);
@@ -1294,12 +1370,14 @@ mod tests {
             100_000.0,
             RetirementTimingMode::Fire,
             DecisionSensitivityMap::ContributionReturn,
+            AS_OF,
         );
         let retirement_age_spending = run_decision_sensitivity_matrix_with_mode(
             &p,
             100_000.0,
             RetirementTimingMode::Fire,
             DecisionSensitivityMap::RetirementAgeSpending,
+            AS_OF,
         );
 
         assert_eq!(contribution_return.row_values.len(), 5);
@@ -1323,12 +1401,14 @@ mod tests {
             100_000.0,
             RetirementTimingMode::Fire,
             DecisionSensitivityMap::ContributionReturn,
+            AS_OF,
         );
         let retirement_age_spending = run_decision_sensitivity_matrix_with_mode(
             &p,
             100_000.0,
             RetirementTimingMode::Fire,
             DecisionSensitivityMap::RetirementAgeSpending,
+            AS_OF,
         );
 
         assert_eq!(contribution_return.baseline_row, Some(2));
@@ -1345,9 +1425,10 @@ mod tests {
             100_000.0,
             RetirementTimingMode::Fire,
             DecisionSensitivityMap::ContributionReturn,
+            AS_OF,
         );
         let overview =
-            compute_retirement_overview_with_mode(&p, 100_000.0, RetirementTimingMode::Fire);
+            compute_retirement_overview_with_mode(&p, 100_000.0, RetirementTimingMode::Fire, AS_OF);
         let expected_horizon = overview
             .trajectory
             .last()
@@ -1364,7 +1445,7 @@ mod tests {
     #[test]
     fn stress_tests_return_expected_presets() {
         let p = base_plan();
-        let stresses = run_stress_tests(&p, 100_000.0);
+        let stresses = run_stress_tests(&p, 100_000.0, AS_OF);
         let mut ids: Vec<_> = stresses.iter().map(|s| s.id.clone()).collect();
         ids.sort_by_key(|id| format!("{:?}", id));
 
@@ -1380,7 +1461,7 @@ mod tests {
     #[test]
     fn stress_deltas_use_same_baseline() {
         let p = base_plan();
-        let stresses = run_stress_tests(&p, 100_000.0);
+        let stresses = run_stress_tests(&p, 100_000.0, AS_OF);
         let baseline_shortfall = stresses[0].baseline.shortfall_at_goal_age;
         let baseline_horizon = stresses[0].baseline.portfolio_at_horizon;
 
@@ -1408,7 +1489,7 @@ mod tests {
     fn early_crash_is_neutral_when_fire_plan_does_not_retire() {
         let mut p = base_plan();
         p.investment.monthly_contribution = 0.0;
-        let stresses = run_stress_tests_with_mode(&p, 0.0, RetirementTimingMode::Fire);
+        let stresses = run_stress_tests_with_mode(&p, 0.0, RetirementTimingMode::Fire, AS_OF);
         let early_crash = stresses
             .iter()
             .find(|stress| stress.id == StressTestId::EarlyCrash)

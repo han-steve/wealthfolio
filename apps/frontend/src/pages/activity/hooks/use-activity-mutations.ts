@@ -195,6 +195,7 @@ export function useActivityMutations(
       const {
         assetId,
         currentAssetId,
+        clearAsset,
         exchangeMic,
         metadata,
         assetMetadata,
@@ -216,6 +217,7 @@ export function useActivityMutations(
         id: string;
         assetId?: string;
         currentAssetId?: string;
+        clearAsset?: boolean;
         exchangeMic?: string;
         metadata?: Record<string, unknown>;
         assetMetadata?: {
@@ -256,18 +258,20 @@ export function useActivityMutations(
         fee: toDecimalPayload(fee),
         tax: toDecimalPayload(tax),
         fxRate: toDecimalPayload(fxRate),
-        asset: buildActivityAssetInput({
-          assetId,
-          existingAssetId,
-          currentAssetId,
-          exchangeMic,
-          quoteMode,
-          assetKind,
-          assetMetadata,
-          symbolQuoteCcy,
-          symbolInstrumentType,
-          includeId: true,
-        }),
+        asset: clearAsset
+          ? {}
+          : buildActivityAssetInput({
+              assetId,
+              existingAssetId,
+              currentAssetId,
+              exchangeMic,
+              quoteMode,
+              assetKind,
+              assetMetadata,
+              symbolQuoteCcy,
+              symbolInstrumentType,
+              includeId: true,
+            }),
         // Serialize metadata object to JSON string for backend
         metadata: metadata ? JSON.stringify(metadata) : undefined,
       };
@@ -349,6 +353,15 @@ export function useActivityMutations(
       isBondTrade ||
       (!isBuyOrSell &&
         !isSecuritiesTransfer(restOfActivityData.activityType, assetSymbol, _assetId));
+    const supportsBoundary =
+      restOfActivityData.activityType === ActivityType.CREDIT ||
+      restOfActivityData.activityType === ActivityType.TRANSFER_IN ||
+      restOfActivityData.activityType === ActivityType.TRANSFER_OUT;
+    const flow = activityToDuplicate.metadata?.flow as Record<string, unknown> | undefined;
+    const boundaryMetadata =
+      supportsBoundary && typeof flow?.is_external === "boolean"
+        ? { flow: { is_external: flow.is_external } }
+        : undefined;
 
     // For duplicating, use nested asset object
     const createPayload: ActivityCreate = {
@@ -365,6 +378,7 @@ export function useActivityMutations(
       fxRate: restOfActivityData.fxRate ?? undefined,
       activityDate: date,
       comment: "Duplicated",
+      metadata: boundaryMetadata,
       asset: buildAssetResolutionInput({
         id: _assetId,
         symbol: assetSymbol,

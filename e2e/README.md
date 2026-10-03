@@ -45,9 +45,12 @@ restarting the server on every run.
 node scripts/prep-e2e.mjs
 ```
 
-This creates a new timestamped SQLite database (e.g.
-`db/app-testing-20260411T120000Z.db`) and writes its path to `.env.web`. **Run
-this every time** before starting the server — it ensures test isolation.
+This creates a unique timestamped data directory (e.g.
+`db/app-testing-20260411T120000Z-XXXXXX/`) and writes its database, vault, and
+addon paths to `.env.web`. The profile registry and profile databases stay in
+that directory too. **Run this every time** before starting the server —
+changing only the database filename would reuse the previous installation's
+profiles.
 
 #### Step 2 — Start the web app
 
@@ -111,19 +114,34 @@ npx playwright test && npx playwright show-report
 
 ## Test files
 
-| File                                   | What it tests                                                                                                    |
-| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `01-happy-path.spec.ts`                | Onboarding, accounts, deposits, trades                                                                           |
-| `02-activities.spec.ts`                | All activity types                                                                                               |
-| `03-fx-cash-balance.spec.ts`           | FX cash balances                                                                                                 |
-| `04-csv-import.spec.ts`                | CSV activity import                                                                                              |
-| `05-form-validation.spec.ts`           | Form field validation errors                                                                                     |
-| `06-activity-data-grid.spec.ts`        | Activity data grid interactions                                                                                  |
-| `07-asset-creation.spec.ts`            | Manual asset creation and editing                                                                                |
-| `08-holdings-and-performance.spec.ts`  | Holdings and performance views                                                                                   |
-| `09-bulk-holdings.spec.ts`             | Bulk holdings CSV import                                                                                         |
-| `10-symbol-mapping-validation.spec.ts` | Symbol mapping real-time validation (Yahoo Finance, Börse Frankfurt)                                             |
-| `13-multi-exchange-import.spec.ts`     | Multi-exchange CSV import: XETRA/LSE/TSX/NASDAQ resolution, region & instrument-type classification (issue #855) |
+| File                                   | What it tests                                                                                                               |
+| -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `01-happy-path.spec.ts`                | Onboarding, accounts, deposits, trades                                                                                      |
+| `02-activities.spec.ts`                | All activity types                                                                                                          |
+| `03-fx-cash-balance.spec.ts`           | FX cash balances                                                                                                            |
+| `04-csv-import.spec.ts`                | CSV activity import                                                                                                         |
+| `05-form-validation.spec.ts`           | Form field validation errors                                                                                                |
+| `06-activity-data-grid.spec.ts`        | Activity data grid interactions                                                                                             |
+| `07-asset-creation.spec.ts`            | Manual asset creation and editing                                                                                           |
+| `08-holdings-and-performance.spec.ts`  | Holdings and performance views                                                                                              |
+| `09-bulk-holdings.spec.ts`             | Bulk holdings CSV import                                                                                                    |
+| `10-symbol-mapping-validation.spec.ts` | Symbol mapping real-time validation (Yahoo Finance, Börse Frankfurt)                                                        |
+| `13-multi-exchange-import.spec.ts`     | Multi-exchange CSV import: XETRA/LSE/TSX/NASDAQ resolution, region & instrument-type classification (issue #855)            |
+| `16-final-cash-policy.spec.ts`         | Final-cash writer policy through CSV import: persisted amounts + review flags per policy row, fixture-computed ledger total |
+
+---
+
+## Not in CI (tracked follow-up)
+
+None of the specs in this directory run in CI. `pr-check.yml` installs
+Playwright only for `pnpm test:e2e:addon-sandbox`, a standalone frontend-only
+harness; the app suite needs a built Rust backend on :8088, a seeded database,
+and serial execution against shared state.
+
+Standing that up is its own change — it should add the whole suite as one job,
+not smuggle individual specs in. Until then these specs are a local gate only:
+run `pnpm test:e2e` before merging anything that touches activities, import, or
+holdings.
 
 ---
 
@@ -139,3 +157,26 @@ npx playwright show-report
 # Record a trace for a failing test (trace is saved on retry)
 # Already configured in playwright.config.ts: trace: "on-first-retry"
 ```
+
+## Profile startup and switching
+
+The isolated profile suite uses a disposable installation directory, a generated
+server secret, and the production web build. It starts its own server and does
+not run `prep-e2e.mjs` or rewrite `.env.web`.
+
+Run from the repository root:
+
+```bash
+cargo build -p wealthfolio-server
+pnpm build
+pnpm exec playwright test --config playwright.profiles.config.ts
+```
+
+Rebuild for web if the last frontend build targeted Tauri. Chrome must be
+installed and port 18388 available. The suite exercises profile switching,
+appearance, shared-browser tab routing, and mobile navigation. Native privacy
+covers, OS lifecycle events, and native OAuth require device testing.
+
+See the
+[profile architecture](../docs/architecture/multi-profile-and-app-lock.md) for
+access boundaries and additional release verification requirements.

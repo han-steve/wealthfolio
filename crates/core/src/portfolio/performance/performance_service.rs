@@ -296,8 +296,8 @@ pub struct PerformanceService {
 }
 
 const DAYS_PER_YEAR_DECIMAL: Decimal = dec!(365.25);
-const SQRT_DAYS_PER_YEAR_APPROX: Decimal = dec!(19.111514854); // sqrt(365.25)
 const MIN_ANNUALIZATION_DAYS: i64 = 30;
+const MIN_RETURN_BASE: Decimal = Decimal::ONE;
 const ATTRIBUTION_RESIDUAL_TOLERANCE_RATE: Decimal = dec!(0.002);
 const ATTRIBUTION_RESIDUAL_LEGACY_WARNING_PREFIX: &str = "Attribution residual ";
 const ATTRIBUTION_INCOMPLETE_WARNING_PREFIX: &str = "Performance attribution is incomplete";
@@ -317,6 +317,13 @@ struct DailyReturnSample {
 struct RiskSample {
     date: NaiveDate,
     simple_return: Decimal,
+    /// Calendar days this return covers — the gap from the observation before
+    /// it up to `date`. Carried per sample rather than inferred from the span
+    /// of the series, because the series is not evenly spaced: a day the
+    /// account path excludes leaves a gap without making the next day's return
+    /// any longer, and every sample is dated at the end of its own period, so
+    /// the first one's period starts before the series does.
+    period_days: i64,
 }
 
 #[derive(Clone, Debug)]
@@ -615,7 +622,14 @@ impl PerformanceService {
                 warned_partial_value_coverage = true;
             }
 
-            if prev_value.is_sign_negative() || curr_value.is_sign_negative() {
+            // Skip a contiguous negative prefix before the return chain has a
+            // valid base. Once compounding starts, or if history falls from a
+            // zero/positive opening into a negative close, any negative value
+            // remains fatal.
+            let prev_value_is_negative = prev_value.is_sign_negative();
+            let curr_value_is_negative = curr_value.is_sign_negative();
+            let is_leading_negative_prefix = !chain_started && prev_value_is_negative;
+            if (prev_value_is_negative || curr_value_is_negative) && !is_leading_negative_prefix {
                 not_applicable_reasons.push(format!(
                     "TWR unavailable for {} because portfolio value is negative. Review the underlying transactions, prices, and cash balances.",
                     curr_point.valuation_date
@@ -639,7 +653,7 @@ impl PerformanceService {
             // and must stay fatal — it nulls the headline exactly like a
             // negative portfolio value, rather than being silently paused.
             let denom_is_benign_low_base =
-                twr_denominator >= Decimal::ZERO && twr_denominator < Decimal::ONE;
+                twr_denominator >= Decimal::ZERO && twr_denominator < MIN_RETURN_BASE;
 
             // A negative denominator is fatal only where it was before: once the
             // chain has started, or on a pre-chain day whose opening value is
@@ -743,6 +757,18 @@ impl PerformanceService {
         flow_basis: ExternalFlowBasis,
     ) -> DailyExternalFlow {
         let date = curr_point.valuation_date;
+        if curr_point.external_flow_source == ValuationExternalFlowSource::NoFlow
+            && curr_point.external_inflow_base.is_zero()
+            && curr_point.external_outflow_base.is_zero()
+        {
+            return DailyExternalFlow {
+                date,
+                inflow: Decimal::ZERO,
+                outflow: Decimal::ZERO,
+                source: ValuationExternalFlowSource::NoFlow,
+            };
+        }
+
         let cash_flow = match flow_basis {
             ExternalFlowBasis::AccountCurrency => {
                 curr_point.net_contribution - prev_point.net_contribution
@@ -1007,13 +1033,32 @@ impl PerformanceService {
         daily_flows: &[DailyExternalFlow],
         flow_basis: ExternalFlowBasis,
     ) -> Option<Decimal> {
-        let start_point = full_history.first()?;
+        let first_point = full_history.first()?;
+        let first_value = Self::return_total_value(first_point, flow_basis);
+        // A leading negative row can be pre-funding history (for example, a
+        // trade before its covering deposit). Rebase on the first observation
+        // with at least one base-currency unit, excluding the flows that
+        // established that base. This avoids amplifying rounding dust into an
+        // extreme simple return.
+        let start_index = if first_value.is_sign_negative() {
+            full_history
+                .iter()
+                .position(|point| Self::return_total_value(point, flow_basis) >= MIN_RETURN_BASE)?
+        } else {
+            0
+        };
+        let scoped_history = &full_history[start_index..];
+        let scoped_flows = &daily_flows[start_index..];
+        if scoped_history.len() < 2 {
+            return None;
+        }
+        let start_point = scoped_history.first()?;
         let start_value = Self::return_total_value(start_point, flow_basis);
         if start_value <= Decimal::ZERO {
             return None;
         }
 
-        Self::compute_simple_value_return_amount(full_history, daily_flows, flow_basis)
+        Self::compute_simple_value_return_amount(scoped_history, scoped_flows, flow_basis)
             .map(|amount| amount / start_value)
     }
 
@@ -1406,10 +1451,9 @@ impl PerformanceService {
         samples: &[RiskSample],
         opening_date: Option<NaiveDate>,
     ) -> PerformanceRisk {
-        let returns: Vec<Decimal> = samples.iter().map(|sample| sample.simple_return).collect();
         let drawdown = Self::calculate_max_drawdown(samples, opening_date);
         PerformanceRisk {
-            volatility: Self::calculate_volatility(&returns),
+            volatility: Self::calculate_volatility(samples),
             max_drawdown: drawdown.max_drawdown,
             peak_date: drawdown.peak_date,
             trough_date: drawdown.trough_date,
@@ -2263,13 +2307,15 @@ impl PerformanceService {
         activity: &Activity,
         activity_type: &ActivityType,
     ) -> (Decimal, Decimal, Decimal) {
+        let resolved = ActivityEconomicsResolver::resolve_cash(activity, Decimal::ONE);
         match activity_type {
             ActivityType::Dividend | ActivityType::Interest => {
-                (activity.amt(), activity.fee_amt(), activity.tax_amt())
+                let gross_income = resolved.gross_amount.unwrap_or(Decimal::ZERO);
+                (gross_income, activity.fee_amt(), activity.tax_amt())
             }
             ActivityType::Fee => (
                 Decimal::ZERO,
-                activity.charge_amt_for(activity_type),
+                resolved.final_amount.unwrap_or(Decimal::ZERO),
                 Decimal::ZERO,
             ),
             ActivityType::Buy | ActivityType::Sell => {
@@ -2278,7 +2324,7 @@ impl PerformanceService {
             ActivityType::Tax => (
                 Decimal::ZERO,
                 Decimal::ZERO,
-                activity.charge_amt_for(activity_type),
+                resolved.final_amount.unwrap_or(Decimal::ZERO),
             ),
             // Note: fees on these cash flows (and cash transfers below) are booked
             // to cash but knowingly not attributed — only trade and income fees are
@@ -3492,6 +3538,7 @@ impl PerformanceService {
                         risk_samples.push(RiskSample {
                             date: curr.valuation_date,
                             simple_return: daily_return,
+                            period_days: (curr.valuation_date - prev.valuation_date).num_days(),
                         });
                     }
                     if include_returns_series {
@@ -3515,11 +3562,18 @@ impl PerformanceService {
                 holdings_chained_return = Some(cumulative_value_factor - Decimal::ONE);
             }
         } else if !is_holdings_mode {
+            // `twr.samples` carries one entry per history window, in order, so
+            // the previous entry's date opens this entry's return period. The
+            // first entry's period opens where the history does.
+            let mut period_start = full_history.first().map(|point| point.valuation_date);
             for (date, sample) in &twr.samples {
                 if include_risk && !sample.excluded_from_compounding {
                     risk_samples.push(RiskSample {
                         date: *date,
                         simple_return: sample.twr,
+                        period_days: period_start
+                            .map(|start| (*date - start).num_days())
+                            .unwrap_or_default(),
                     });
                 }
                 if include_returns_series {
@@ -3528,6 +3582,7 @@ impl PerformanceService {
                         value: sample.cumulative_twr_to_date.round_dp(DECIMAL_PRECISION),
                     });
                 }
+                period_start = Some(*date);
             }
         }
 
@@ -4481,6 +4536,8 @@ impl PerformanceService {
                     risk_samples.push(RiskSample {
                         date: curr_point.valuation_date,
                         simple_return: daily_return,
+                        period_days: (curr_point.valuation_date - prev_point.valuation_date)
+                            .num_days(),
                     });
                 }
 
@@ -4688,6 +4745,7 @@ impl PerformanceService {
         let mut risk_samples = Vec::with_capacity(quote_points.len().saturating_sub(1));
         let mut cumulative_value = Decimal::ONE;
         let mut prev_price = start_price;
+        let mut prev_date = actual_start_date;
         returns.push(ReturnData {
             date: actual_start_date,
             value: Decimal::ZERO,
@@ -4696,12 +4754,14 @@ impl PerformanceService {
         for (date, price) in quote_points.iter().copied().skip(1) {
             if price <= Decimal::ZERO || prev_price <= Decimal::ZERO {
                 prev_price = price;
+                prev_date = date;
                 continue;
             }
             let daily_return = (price / prev_price) - Decimal::ONE;
             risk_samples.push(RiskSample {
                 date,
                 simple_return: daily_return,
+                period_days: (date - prev_date).num_days(),
             });
             cumulative_value *= Decimal::ONE + daily_return;
             returns.push(ReturnData {
@@ -4709,6 +4769,7 @@ impl PerformanceService {
                 value: (cumulative_value - Decimal::ONE).round_dp(DECIMAL_PRECISION),
             });
             prev_price = price;
+            prev_date = date;
         }
 
         let total_return = if start_price.is_zero() {
@@ -4909,23 +4970,60 @@ impl PerformanceService {
         base.powd(years) - Decimal::ONE
     }
 
-    fn calculate_volatility(daily_returns: &[Decimal]) -> Option<Decimal> {
-        if daily_returns.len() < 2 {
+    /// Observations per year implied by the periods the returns actually cover.
+    ///
+    /// Both risk paths feed [`risk_from_samples`](Self::risk_from_samples), and
+    /// they do not sample at the same frequency. Account risk is built from
+    /// `daily_account_valuation`, which carries a row for every calendar day
+    /// including weekends, so its series really does have ~365 observations a
+    /// year. Per-symbol risk is built from `quotes`, which only has rows on
+    /// trading days, so its series has ~252. Annualising both by a single
+    /// constant overstates one of them by `sqrt(365.25 / 252)` = 1.20.
+    ///
+    /// Measuring the periods rather than naming a convention keeps this correct
+    /// for a weekly or monthly series too, and means a caller cannot get it
+    /// wrong by picking the constant that matches the path it happens to know
+    /// about. Summing each return's own period, rather than reading the span
+    /// from the first sample's date to the last, is what keeps it correct for a
+    /// series with gaps: a day the account path drops shortens the series by an
+    /// observation without lengthening any return that remains.
+    fn periods_per_year(samples: &[RiskSample]) -> Option<Decimal> {
+        let count = i64::try_from(samples.len()).ok()?;
+        if count <= 0 {
             return None;
         }
 
-        let log_returns: Vec<Decimal> = daily_returns
+        let covered_days: i64 = samples
             .iter()
-            .filter_map(|daily_return| {
-                let factor = Decimal::ONE + *daily_return;
+            .try_fold(0i64, |total, sample| total.checked_add(sample.period_days))?;
+        if covered_days <= 0 {
+            return None;
+        }
+
+        // (count / covered_days) observations a day, over a calendar year.
+        Some(Decimal::from(count) * DAYS_PER_YEAR_DECIMAL / Decimal::from(covered_days))
+    }
+
+    fn calculate_volatility(samples: &[RiskSample]) -> Option<Decimal> {
+        if samples.len() < 2 {
+            return None;
+        }
+
+        // The samples that survive are the ones the variance is taken over, so
+        // they are also the ones whose periods set the frequency.
+        let (usable, log_returns): (Vec<RiskSample>, Vec<Decimal>) = samples
+            .iter()
+            .filter_map(|sample| {
+                let factor = Decimal::ONE + sample.simple_return;
                 if factor <= Decimal::ZERO {
                     return None;
                 }
-                factor
+                let log_return = factor
                     .to_f64()
-                    .and_then(|factor| Decimal::from_f64(factor.ln()))
+                    .and_then(|factor| Decimal::from_f64(factor.ln()))?;
+                Some((*sample, log_return))
             })
-            .collect();
+            .unzip();
 
         if log_returns.len() < 2 {
             return None;
@@ -4948,13 +5046,11 @@ impl PerformanceService {
             return None;
         }
 
-        let daily_volatility = variance.sqrt().unwrap_or(Decimal::ZERO);
+        let period_volatility = variance.sqrt().unwrap_or(Decimal::ZERO);
 
-        let annualization_factor = DAYS_PER_YEAR_DECIMAL
-            .sqrt()
-            .unwrap_or(SQRT_DAYS_PER_YEAR_APPROX);
+        let annualization_factor = Self::periods_per_year(&usable)?.sqrt()?;
 
-        Some((daily_volatility * annualization_factor).round_dp(DECIMAL_PRECISION))
+        Some((period_volatility * annualization_factor).round_dp(DECIMAL_PRECISION))
     }
 
     fn calculate_max_drawdown(
@@ -5333,6 +5429,20 @@ mod tests {
             },
             calculated_at: DateTime::<Utc>::from_timestamp(0, 0).unwrap(),
         }
+    }
+
+    fn cash_valuation(
+        date: &str,
+        total_value: Decimal,
+        net_contribution: Decimal,
+    ) -> DailyAccountValuation {
+        valuation(
+            date,
+            total_value,
+            net_contribution,
+            Decimal::ZERO,
+            Decimal::ZERO,
+        )
     }
 
     fn account_valuation(
@@ -6618,6 +6728,7 @@ mod tests {
         activity.asset_id = Some("AAPL".to_string());
         activity.quantity = Some(quantity);
         activity.unit_price = Some(price);
+        activity.amount = Some(quantity * price);
         activity
     }
 
@@ -6632,6 +6743,7 @@ mod tests {
         activity.asset_id = Some("AAPL".to_string());
         activity.quantity = Some(quantity);
         activity.unit_price = Some(price);
+        activity.amount = Some(quantity * price);
         activity
     }
 
@@ -8215,6 +8327,7 @@ mod tests {
             ActivityType::Dividend,
             dec!(20),
         );
+        dividend.amount = Some(dec!(15));
         dividend.tax = Some(dec!(5));
         let activity_repo = Arc::new(TestActivityRepository::new(vec![dividend]));
         let valuation_service = Arc::new(TestValuationService::new(vec![start, end]));
@@ -8284,7 +8397,7 @@ mod tests {
         dividend.tax = Some(dec!(3));
         assert_eq!(
             PerformanceService::activity_attribution_components(&dividend, &ActivityType::Dividend),
-            (dec!(50), dec!(2), dec!(3))
+            (dec!(55), dec!(2), dec!(3))
         );
 
         let explicit_fee = activity_fixture(ActivityType::Fee, dec!(4), Decimal::ZERO);
@@ -8299,10 +8412,21 @@ mod tests {
             (Decimal::ZERO, Decimal::ZERO, dec!(7))
         );
 
-        let mut explicit_tax = activity_fixture(ActivityType::Tax, Decimal::ZERO, Decimal::ZERO);
-        explicit_tax.tax = Some(dec!(9));
+        let mut explicit_zero_tax =
+            activity_fixture(ActivityType::Tax, Decimal::ZERO, Decimal::ZERO);
+        explicit_zero_tax.tax = Some(dec!(9));
         assert_eq!(
-            PerformanceService::activity_attribution_components(&explicit_tax, &ActivityType::Tax),
+            PerformanceService::activity_attribution_components(
+                &explicit_zero_tax,
+                &ActivityType::Tax
+            ),
+            (Decimal::ZERO, Decimal::ZERO, Decimal::ZERO)
+        );
+
+        let mut final_tax = activity_fixture(ActivityType::Tax, dec!(9), Decimal::ZERO);
+        final_tax.tax = Some(dec!(7));
+        assert_eq!(
+            PerformanceService::activity_attribution_components(&final_tax, &ActivityType::Tax),
             (Decimal::ZERO, Decimal::ZERO, dec!(9))
         );
 
@@ -8982,6 +9106,45 @@ mod tests {
     }
 
     #[test]
+    fn daily_external_flows_keep_no_flow_as_neutral() {
+        let prev = valuation("2026-05-01", dec!(100), dec!(100), dec!(100), dec!(100));
+        let curr = valuation("2027-05-01", dec!(110), dec!(100), dec!(110), dec!(100));
+
+        for basis in [
+            ExternalFlowBasis::BaseCurrency,
+            ExternalFlowBasis::AccountCurrency,
+        ] {
+            let flow = PerformanceService::daily_external_flows(&prev, &curr, basis);
+
+            assert_eq!(flow.inflow, Decimal::ZERO);
+            assert_eq!(flow.outflow, Decimal::ZERO);
+            assert_eq!(flow.source, ExternalFlowSource::NoFlow);
+        }
+    }
+
+    #[test]
+    fn no_flow_rows_do_not_warn_about_inferred_cash_flows() {
+        let history = vec![
+            valuation("2026-05-01", dec!(100), dec!(100), dec!(100), dec!(100)),
+            valuation("2027-05-01", dec!(110), dec!(100), dec!(110), dec!(100)),
+        ];
+
+        let result = PerformanceService::compute_account_performance(
+            &history,
+            Some(TrackingMode::Transactions),
+            None,
+            true,
+        )
+        .expect("performance should compute");
+
+        assert!(result
+            .data_quality
+            .warnings
+            .iter()
+            .all(|warning| !warning.contains("inferred from net contribution")));
+    }
+
+    #[test]
     fn explicit_gross_same_day_flows_feed_all_account_return_paths() {
         let mut history = vec![
             valuation("2026-05-01", dec!(100), dec!(100), dec!(100), dec!(100)),
@@ -9337,6 +9500,202 @@ mod tests {
             .not_applicable_reasons
             .iter()
             .any(|reason| reason.contains("denominator") && reason.contains("negative")));
+    }
+
+    #[test]
+    fn returns_skip_negative_prefix_before_first_funded_period() {
+        let mut history = vec![
+            valuation(
+                "2026-06-24",
+                dec!(-110),
+                Decimal::ZERO,
+                Decimal::ZERO,
+                Decimal::ZERO,
+            ),
+            valuation(
+                "2026-06-25",
+                dec!(999525),
+                dec!(1000000),
+                dec!(190900),
+                dec!(190900),
+            ),
+            valuation(
+                "2026-06-26",
+                dec!(968216),
+                dec!(1000000),
+                dec!(704200),
+                dec!(704200),
+            ),
+        ];
+        history[1].external_inflow_base = dec!(1000000);
+        history[1].external_flow_source = ExternalFlowSource::CashAmount;
+
+        let result = PerformanceService::compute_account_performance(
+            &history,
+            Some(TrackingMode::Transactions),
+            None,
+            true,
+        )
+        .expect("performance should compute");
+
+        let expected = (dec!(968216) / dec!(999525) - Decimal::ONE).round_dp(DECIMAL_PRECISION);
+        assert_eq!(result.returns.twr, Some(expected));
+        assert_eq!(result.returns.value_return, Some(expected));
+        assert_eq!(result.summary.percent, Some(expected));
+        assert_eq!(result.series[1].value, Decimal::ZERO);
+        assert_eq!(result.series[2].value, expected);
+        assert!(!result
+            .data_quality
+            .not_applicable_reasons
+            .iter()
+            .any(|reason| reason.contains("portfolio value is negative")));
+        assert!(!result
+            .data_quality
+            .not_applicable_reasons
+            .iter()
+            .any(|reason| reason.contains("starting value is zero or negative")));
+    }
+
+    #[test]
+    fn returns_skip_prefunding_prefix_variants() {
+        let funded_period_return = dec!(968216) / dec!(999525) - Decimal::ONE;
+        let dust_funding_period_return =
+            (dec!(999525) - dec!(0.5) - dec!(1000000)) / (dec!(0.5) + dec!(1000000));
+        let dust_twr = ((Decimal::ONE + dust_funding_period_return)
+            * (Decimal::ONE + funded_period_return)
+            - Decimal::ONE)
+            .round_dp(DECIMAL_PRECISION);
+        let expected_value_return = funded_period_return.round_dp(DECIMAL_PRECISION);
+
+        for (label, prefix_end_value, expected_twr) in [
+            ("negative", dec!(-110), expected_value_return),
+            ("zero", Decimal::ZERO, expected_value_return),
+            ("dust", dec!(0.5), dust_twr),
+        ] {
+            let mut history = vec![
+                cash_valuation("2026-06-24", dec!(-110), Decimal::ZERO),
+                cash_valuation("2026-06-25", prefix_end_value, Decimal::ZERO),
+                cash_valuation("2026-06-26", dec!(999525), dec!(1000000)),
+                cash_valuation("2026-06-27", dec!(968216), dec!(1000000)),
+            ];
+            history[2].external_inflow_base = dec!(1000000);
+            history[2].external_flow_source = ExternalFlowSource::CashAmount;
+
+            let result = PerformanceService::compute_account_performance(
+                &history,
+                Some(TrackingMode::Transactions),
+                None,
+                true,
+            )
+            .expect("performance should compute");
+
+            assert_eq!(result.returns.twr, Some(expected_twr), "{label} prefix");
+            assert_eq!(
+                result.returns.value_return,
+                Some(expected_value_return),
+                "{label} prefix"
+            );
+            assert!(
+                !result
+                    .data_quality
+                    .not_applicable_reasons
+                    .iter()
+                    .any(|reason| reason.contains("portfolio value is negative")
+                        || reason.contains("starting value is zero or negative")),
+                "{label} prefix"
+            );
+        }
+    }
+
+    #[test]
+    fn value_return_requires_window_after_rebased_start() {
+        let mut history = vec![
+            cash_valuation("2026-06-24", dec!(-1), Decimal::ZERO),
+            cash_valuation("2026-06-25", dec!(100), dec!(101)),
+        ];
+        history[1].external_inflow_base = dec!(101);
+        history[1].external_flow_source = ExternalFlowSource::CashAmount;
+
+        let result = PerformanceService::compute_account_performance(
+            &history,
+            Some(TrackingMode::Transactions),
+            None,
+            true,
+        )
+        .expect("performance should compute");
+
+        assert_eq!(result.returns.twr, None);
+        assert_eq!(result.returns.value_return, None);
+        assert!(result
+            .data_quality
+            .not_applicable_reasons
+            .iter()
+            .any(|reason| reason.contains("starting value is zero or negative")));
+    }
+
+    #[test]
+    fn twr_rejects_negative_closing_value_before_chain_starts() {
+        let mut history = vec![
+            cash_valuation("2026-06-24", Decimal::ZERO, Decimal::ZERO),
+            cash_valuation("2026-06-25", dec!(-50), dec!(100)),
+            cash_valuation("2026-06-26", dec!(100), dec!(250)),
+            cash_valuation("2026-06-27", dec!(110), dec!(250)),
+        ];
+        history[1].external_inflow_base = dec!(100);
+        history[1].external_flow_source = ExternalFlowSource::CashAmount;
+        history[2].external_inflow_base = dec!(150);
+        history[2].external_flow_source = ExternalFlowSource::CashAmount;
+
+        let result = PerformanceService::compute_account_performance(
+            &history,
+            Some(TrackingMode::Transactions),
+            None,
+            true,
+        )
+        .expect("performance should compute");
+
+        assert_eq!(result.returns.twr, None);
+        assert_eq!(result.summary.percent, None);
+        assert!(result
+            .data_quality
+            .not_applicable_reasons
+            .iter()
+            .any(|reason| reason.contains("portfolio value is negative")));
+    }
+
+    #[test]
+    fn twr_keeps_post_chain_negative_opening_fatal() {
+        let mut history = vec![
+            cash_valuation("2026-06-24", dec!(100), dec!(100)),
+            cash_valuation("2026-06-25", dec!(110), dec!(100)),
+            cash_valuation("2026-06-26", dec!(-50), dec!(100)),
+            cash_valuation("2026-06-27", dec!(100), dec!(250)),
+        ];
+        history[3].external_inflow_base = dec!(150);
+        history[3].external_flow_source = ExternalFlowSource::CashAmount;
+        let daily_flows = PerformanceService::daily_external_flow_series(
+            &history,
+            ExternalFlowBasis::BaseCurrency,
+        );
+
+        let result = PerformanceService::compute_time_weighted_returns(
+            &history,
+            &daily_flows,
+            ExternalFlowBasis::BaseCurrency,
+        )
+        .expect("TWR computation should complete");
+
+        assert!(!result.samples[0].1.excluded_from_compounding);
+        assert!(result.samples[1].1.excluded_from_compounding);
+        assert!(result.samples[2].1.excluded_from_compounding);
+        assert_eq!(
+            result
+                .not_applicable_reasons
+                .iter()
+                .filter(|reason| reason.contains("portfolio value is negative"))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -9937,6 +10296,152 @@ mod tests {
                 .all(|reason| !reason
                     .contains("external flow amount or transfer boundary is unknown"))
         );
+    }
+
+    // Issue #1609: a scope-internal in-kind transfer nets to zero flow but keeps
+    // its quote-derived provenance. That day is exact, so it must not raise the
+    // provenance warning or downgrade data quality.
+    #[test]
+    fn netted_in_kind_transfer_day_is_clean() {
+        let mut history = vec![
+            valuation("2026-04-01", dec!(1000), dec!(1000), dec!(1000), dec!(1000)),
+            valuation("2026-04-02", dec!(1010), dec!(1000), dec!(1010), dec!(1000)),
+        ];
+        history[1].external_flow_source = ExternalFlowSource::QuoteDerivedMarketValue;
+
+        let result = PerformanceService::compute_account_performance(
+            &history,
+            Some(TrackingMode::Transactions),
+            None,
+            false,
+        )
+        .expect("netted in-kind transfer day should compute");
+
+        assert_eq!(result.returns.twr.unwrap().round_dp(4), dec!(0.0100));
+        assert_eq!(result.data_quality.status, DataQualityStatus::Ok);
+        assert!(result.data_quality.warnings.is_empty());
+        assert!(result.data_quality.not_applicable_reasons.is_empty());
+    }
+
+    // Issue #1609: the exact mixture is complete provenance. Same fixture as
+    // the degraded mixture above; its returns and data quality must match a
+    // plain cash flow exactly, with no provenance warning.
+    #[test]
+    fn mixed_exact_flow_source_is_clean_and_computable() {
+        let compute = |source: ExternalFlowSource| {
+            let mut history = vec![
+                valuation("2026-04-01", dec!(1000), dec!(1000), dec!(1000), dec!(1000)),
+                valuation("2026-04-02", dec!(1110), dec!(1100), dec!(1110), dec!(1000)),
+            ];
+            history[1].external_inflow_base = dec!(100);
+            history[1].external_flow_source = source;
+            PerformanceService::compute_account_performance(
+                &history,
+                Some(TrackingMode::Transactions),
+                None,
+                false,
+            )
+            .expect("known-source flow should compute")
+        };
+
+        let exact = compute(ExternalFlowSource::MixedExact);
+        let control = compute(ExternalFlowSource::CashAmount);
+        let degraded = compute(ExternalFlowSource::Mixed);
+
+        assert_eq!(exact.returns.twr.unwrap().round_dp(4), dec!(0.0091));
+        assert_eq!(exact.returns.twr, control.returns.twr);
+        assert_eq!(exact.returns.irr, control.returns.irr);
+        assert_eq!(exact.data_quality.status, control.data_quality.status);
+        assert_eq!(exact.data_quality.warnings, control.data_quality.warnings);
+        assert_eq!(
+            exact.data_quality.not_applicable_reasons,
+            control.data_quality.not_applicable_reasons
+        );
+        assert!(exact
+            .data_quality
+            .warnings
+            .iter()
+            .all(|warning| !warning.starts_with("External cash flow")));
+
+        // The degraded mixture differs from the exact one by exactly the
+        // provenance warning.
+        let provenance: Vec<_> = degraded
+            .data_quality
+            .warnings
+            .iter()
+            .filter(|warning| !exact.data_quality.warnings.contains(warning))
+            .collect();
+        assert_eq!(provenance.len(), 1);
+        assert!(provenance[0].contains("External cash flow provenance is incomplete"));
+        assert_eq!(degraded.data_quality.status, DataQualityStatus::Partial);
+    }
+
+    // The exact mixture is explicit gross: the stored amounts are used as-is,
+    // never re-derived from the net-contribution delta.
+    #[test]
+    fn daily_external_flows_read_stored_gross_for_mixed_exact() {
+        let prev = valuation("2026-04-01", dec!(1000), dec!(1000), dec!(1000), dec!(1000));
+        let mut curr = valuation("2026-04-02", dec!(1200), dec!(1200), dec!(1200), dec!(1200));
+        curr.external_inflow_base = dec!(150);
+        curr.external_outflow_base = dec!(30);
+        curr.external_flow_source = ExternalFlowSource::MixedExact;
+
+        let flow =
+            PerformanceService::daily_external_flows(&prev, &curr, ExternalFlowBasis::BaseCurrency);
+
+        assert_eq!(flow.inflow, dec!(150));
+        assert_eq!(flow.outflow, dec!(30));
+        assert_eq!(flow.source, ExternalFlowSource::MixedExact);
+        assert!(!flow.source.is_degraded());
+    }
+
+    #[test]
+    fn external_flow_quality_warnings_ignore_mixed_exact() {
+        let flow = |source: ExternalFlowSource| DailyExternalFlow {
+            date: NaiveDate::from_ymd_opt(2026, 4, 2).unwrap(),
+            inflow: dec!(100),
+            outflow: Decimal::ZERO,
+            source,
+        };
+
+        assert!(PerformanceService::external_flow_quality_warnings(&[flow(
+            ExternalFlowSource::MixedExact
+        )])
+        .is_empty());
+        let degraded =
+            PerformanceService::external_flow_quality_warnings(&[flow(ExternalFlowSource::Mixed)]);
+        assert_eq!(degraded.len(), 1);
+        assert!(degraded[0].contains("External cash flow provenance is incomplete"));
+    }
+
+    // HOLDINGS-mode helpers key off `is_explicit_gross`, so the exact mixture
+    // is netted like any other gross flow and the fallback row is ignored.
+    #[test]
+    fn holdings_flow_helpers_treat_mixed_exact_as_explicit_gross() {
+        let date = NaiveDate::from_ymd_opt(2026, 4, 2).unwrap();
+        let flows = [
+            DailyExternalFlow {
+                date,
+                inflow: dec!(100),
+                outflow: dec!(30),
+                source: ExternalFlowSource::MixedExact,
+            },
+            DailyExternalFlow {
+                date,
+                inflow: dec!(999),
+                outflow: Decimal::ZERO,
+                source: ExternalFlowSource::NetContributionFallback,
+            },
+        ];
+
+        assert_eq!(
+            PerformanceService::net_explicit_gross_flow(&flows),
+            dec!(70)
+        );
+        assert!(PerformanceService::has_estimated_holdings_flows(&flows));
+        assert!(!PerformanceService::has_estimated_holdings_flows(
+            &flows[1..]
+        ));
     }
 
     #[test]
@@ -11581,14 +12086,17 @@ mod tests {
             RiskSample {
                 date: date("2026-05-01"),
                 simple_return: dec!(0.1),
+                period_days: 1,
             },
             RiskSample {
                 date: date("2026-05-02"),
                 simple_return: dec!(-0.2),
+                period_days: 1,
             },
             RiskSample {
                 date: date("2026-05-03"),
                 simple_return: dec!(-0.1),
+                period_days: 1,
             },
         ];
 
@@ -11608,14 +12116,17 @@ mod tests {
             RiskSample {
                 date: date("2026-05-01"),
                 simple_return: dec!(0.1),
+                period_days: 1,
             },
             RiskSample {
                 date: date("2026-05-02"),
                 simple_return: dec!(-0.1),
+                period_days: 1,
             },
             RiskSample {
                 date: date("2026-05-03"),
                 simple_return: dec!(0.12),
+                period_days: 1,
             },
         ];
 
@@ -11635,10 +12146,12 @@ mod tests {
             RiskSample {
                 date: date("2026-05-02"),
                 simple_return: dec!(-0.1),
+                period_days: 1,
             },
             RiskSample {
                 date: date("2026-05-03"),
                 simple_return: dec!(0.05),
+                period_days: 1,
             },
         ];
 
@@ -11661,10 +12174,12 @@ mod tests {
             RiskSample {
                 date: date("2026-05-01"),
                 simple_return: Decimal::ZERO,
+                period_days: 1,
             },
             RiskSample {
                 date: date("2026-05-02"),
                 simple_return: Decimal::ZERO,
+                period_days: 1,
             },
         ];
         let flat_risk =
@@ -11675,9 +12190,164 @@ mod tests {
 
     #[test]
     fn volatility_annualizes_calendar_daily_returns() {
-        let volatility = PerformanceService::calculate_volatility(&[dec!(0), dec!(0.1)]);
+        let samples = vec![
+            RiskSample {
+                date: date("2026-05-01"),
+                simple_return: dec!(0),
+                period_days: 1,
+            },
+            RiskSample {
+                date: date("2026-05-02"),
+                simple_return: dec!(0.1),
+                period_days: 1,
+            },
+        ];
+
+        let volatility = PerformanceService::calculate_volatility(&samples);
 
         assert_eq!(volatility, Some(dec!(1.2880105)));
+    }
+
+    /// The account path samples `daily_account_valuation`, which holds a row for
+    /// every calendar day, so a year of it is ~365 observations and 365.25 is
+    /// the right annualisation.
+    #[test]
+    fn periods_per_year_reads_a_calendar_daily_series_as_calendar_daily() {
+        let samples: Vec<RiskSample> = (0..366)
+            .map(|offset| RiskSample {
+                date: date("2025-01-01") + Duration::days(offset),
+                simple_return: Decimal::ZERO,
+                period_days: 1,
+            })
+            .collect();
+
+        let periods = PerformanceService::periods_per_year(&samples).unwrap();
+
+        assert_eq!(periods.round_dp(2), dec!(365.25));
+    }
+
+    /// The per-symbol path samples `quotes`, which only has rows on trading
+    /// days. Annualising that by 365.25 is what overstated per-asset volatility
+    /// by `sqrt(365.25 / 252)` = 1.20.
+    #[test]
+    fn periods_per_year_reads_a_trading_day_series_as_trading_days() {
+        // 2025-01-06 is a Monday, so offsets with `offset % 7 < 5` are weekdays.
+        // Each return covers the gap back to the session before it: one day
+        // inside the week, three across a weekend.
+        let samples: Vec<RiskSample> = (0..364)
+            .filter(|offset| offset % 7 < 5)
+            .map(|offset| RiskSample {
+                date: date("2025-01-06") + Duration::days(offset),
+                simple_return: Decimal::ZERO,
+                period_days: if offset % 7 == 0 { 3 } else { 1 },
+            })
+            .collect();
+
+        let periods = PerformanceService::periods_per_year(&samples).unwrap();
+
+        // Five sessions a week is ~261 observations a year before holidays, so
+        // the series lands near 252 rather than near 365.
+        assert!(
+            periods > dec!(250) && periods < dec!(266),
+            "expected a trading-day frequency, got {periods}"
+        );
+    }
+
+    /// The account path drops a day it cannot compute a return for, which
+    /// leaves a gap in the series without making the next day's return cover
+    /// any more ground. Reading the span from the first sample's date to the
+    /// last would charge those gap days to the returns that remain, deflating
+    /// the frequency and understating the volatility with it.
+    #[test]
+    fn periods_per_year_ignores_gaps_left_by_excluded_days() {
+        // Every third day excluded; each surviving return still covers one day.
+        let samples: Vec<RiskSample> = (0..90)
+            .filter(|offset| offset % 3 != 0)
+            .map(|offset| RiskSample {
+                date: date("2025-01-01") + Duration::days(offset),
+                simple_return: Decimal::ZERO,
+                period_days: 1,
+            })
+            .collect();
+
+        let periods = PerformanceService::periods_per_year(&samples).unwrap();
+
+        assert_eq!(periods.round_dp(2), dec!(365.25));
+    }
+
+    /// Every sample is dated at the end of the period it covers, so the first
+    /// sample's period is part of the series too — it opens at the observation
+    /// before the series starts. Measuring between sample dates would drop it.
+    #[test]
+    fn periods_per_year_counts_the_first_returns_own_period() {
+        let samples = vec![
+            RiskSample {
+                date: date("2026-01-08"),
+                simple_return: Decimal::ZERO,
+                period_days: 7,
+            },
+            RiskSample {
+                date: date("2026-01-09"),
+                simple_return: Decimal::ZERO,
+                period_days: 1,
+            },
+        ];
+
+        let periods = PerformanceService::periods_per_year(&samples).unwrap();
+
+        // Two returns covering eight days: 2 * 365.25 / 8. Reading the one-day
+        // gap between the two sample dates would have claimed 365.25.
+        assert_eq!(periods.round_dp(2), dec!(91.31));
+    }
+
+    /// The same dispersion sampled weekly must not be annualised as if it were
+    /// daily. This is the property the old single constant could not express.
+    #[test]
+    fn volatility_scales_with_the_frequency_of_the_series() {
+        let returns = [dec!(0), dec!(0.01), dec!(-0.01), dec!(0.02), dec!(-0.02)];
+
+        let build = |step: i64| -> Vec<RiskSample> {
+            returns
+                .iter()
+                .enumerate()
+                .map(|(index, simple_return)| RiskSample {
+                    date: date("2026-01-05") + Duration::days(index as i64 * step),
+                    simple_return: *simple_return,
+                    period_days: step,
+                })
+                .collect()
+        };
+
+        let daily = PerformanceService::calculate_volatility(&build(1)).unwrap();
+        let weekly = PerformanceService::calculate_volatility(&build(7)).unwrap();
+
+        // Same numbers, one seventh the sampling rate: sqrt(1/7) = 0.378 of the
+        // annualised figure.
+        let ratio = weekly / daily;
+        assert!(
+            (ratio - dec!(0.3779)).abs() < dec!(0.001),
+            "expected sqrt(1/7) scaling, got {ratio}"
+        );
+    }
+
+    /// Returns that cover no period carry no frequency, so there is nothing to
+    /// annualise by and the metric declines rather than inventing one.
+    #[test]
+    fn volatility_declines_when_the_returns_cover_no_period() {
+        let samples = vec![
+            RiskSample {
+                date: date("2026-05-01"),
+                simple_return: dec!(0),
+                period_days: 0,
+            },
+            RiskSample {
+                date: date("2026-05-01"),
+                simple_return: dec!(0.1),
+                period_days: 0,
+            },
+        ];
+
+        assert!(PerformanceService::calculate_volatility(&samples).is_none());
     }
 
     #[test]
@@ -11698,6 +12368,54 @@ mod tests {
 
         assert_eq!(result.risk.volatility, Some(Decimal::ZERO));
         assert_eq!(result.risk.max_drawdown, Some(Decimal::ZERO));
+    }
+
+    /// The same surviving returns must annualise the same way whether or not
+    /// an excluded day sits between them. A day the account path cannot compute
+    /// a return for drops that day's return — and the next one, which opens on
+    /// it — without stretching any return that remains, so the frequency is
+    /// still daily.
+    #[test]
+    fn excluded_day_does_not_change_the_annualisation_of_the_returns_around_it() {
+        // 05-04 is unavailable, so the returns into and out of it are dropped.
+        // What survives is +10%, -10%, -10%.
+        let mut gapped = vec![
+            valuation("2026-05-01", dec!(100), dec!(100), dec!(100), dec!(100)),
+            valuation("2026-05-02", dec!(110), dec!(100), dec!(110), dec!(100)),
+            valuation("2026-05-03", dec!(99), dec!(100), dec!(99), dec!(100)),
+            valuation("2026-05-04", dec!(108.9), dec!(100), dec!(108.9), dec!(100)),
+            valuation("2026-05-05", dec!(108.9), dec!(100), dec!(108.9), dec!(100)),
+            valuation("2026-05-06", dec!(98.01), dec!(100), dec!(98.01), dec!(100)),
+        ];
+        gapped[3].value_status = ValuationStatus::Unavailable;
+
+        // The same three returns, with nothing excluded between them.
+        let contiguous = vec![
+            valuation("2026-05-01", dec!(100), dec!(100), dec!(100), dec!(100)),
+            valuation("2026-05-02", dec!(110), dec!(100), dec!(110), dec!(100)),
+            valuation("2026-05-03", dec!(99), dec!(100), dec!(99), dec!(100)),
+            valuation("2026-05-04", dec!(89.1), dec!(100), dec!(89.1), dec!(100)),
+        ];
+
+        let compute = |history: &[DailyAccountValuation]| {
+            PerformanceService::compute_account_performance(
+                history,
+                Some(TrackingMode::Transactions),
+                None,
+                true,
+            )
+            .expect("performance should compute")
+            .risk
+            .volatility
+            .expect("three returns are enough for a volatility")
+        };
+
+        let gapped_volatility = compute(&gapped);
+
+        assert!(gapped_volatility > Decimal::ZERO);
+        // Reading the span between the first and last surviving sample dates
+        // would have annualised the gapped series by sqrt(1/2) of this.
+        assert_eq!(gapped_volatility, compute(&contiguous));
     }
 
     #[test]

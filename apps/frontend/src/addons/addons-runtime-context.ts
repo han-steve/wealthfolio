@@ -16,18 +16,35 @@ import {
   updateActivity,
   createAccount,
   getAccounts,
+  getAlternativeHoldings,
   updateAccount,
   addonNetworkRequest,
+  getTransferPairForActivity,
+  findTransferMatchCandidates,
+  saveInternalTransferPair,
+  linkTransferActivities,
+  unlinkTransferActivities,
 } from "@/adapters";
 import {
   addExchangeRate,
   getExchangeRates,
+  getExchangeRatesForDates,
   updateExchangeRate,
   calculateDepositsForLimit,
   createContributionLimit,
   getContributionLimit,
   updateContributionLimit,
 } from "@/adapters";
+import {
+  deleteCategorizationRule,
+  getSpendCategories,
+  isSpendingEnabled,
+  listCategorizationRules,
+  rerunCategorizationRules,
+  upsertCategorizationRule,
+} from "@/adapters";
+import { searchCashActivities } from "@/features/spending/adapters/cash-activities";
+import { getSpendingReport } from "@/features/spending/adapters/reports";
 import { openCsvFileDialog, openFileSaveDialog } from "@/adapters";
 import { createGoal, getGoals, getGoalFunding, saveGoalFunding, updateGoal } from "@/adapters";
 import {
@@ -449,10 +466,21 @@ export function createAddonHostAPI(
       getHoldings: (accountId: string) => getHoldings({ type: "account", accountId }),
       getActivities,
       getAccounts,
+      getAlternativeHoldings,
 
       getExchangeRates,
       updateExchangeRate,
       addExchangeRate,
+      getExchangeRatesForDates,
+
+      isSpendingEnabled,
+      searchCashActivities,
+      getSpendingReport,
+      getSpendCategories,
+      listCategorizationRules,
+      upsertCategorizationRule,
+      deleteCategorizationRuleById: deleteCategorizationRule,
+      rerunCategorizationRulesForAddon: rerunCategorizationRules,
 
       getContributionLimit,
       createContributionLimit,
@@ -502,6 +530,12 @@ export function createAddonHostAPI(
       createActivity,
       updateActivity,
       saveActivities,
+
+      getTransferPairForActivity,
+      findTransferMatchCandidates,
+      saveInternalTransferPair,
+      linkTransferActivities,
+      unlinkTransferActivities,
 
       openCsvFileDialog,
       openFileSaveDialog,
@@ -575,6 +609,8 @@ export function createAddonHostAPI(
 }
 
 export function createAddonContext(addonId: string, permissions?: Permission[]): AddonContext {
+  const unavailableAsset = (path: string) =>
+    Promise.reject(new Error(`Packaged asset '${path}' is only available in the addon sandbox`));
   return {
     ui: {
       root: document.createElement("div"),
@@ -596,6 +632,12 @@ export function createAddonContext(addonId: string, permissions?: Permission[]):
           title: route.title,
         });
       },
+    },
+    assets: {
+      list: () => [],
+      has: () => false,
+      getBlob: unavailableAsset,
+      getUrl: unavailableAsset,
     },
     onDisable: (cb) => {
       const callbacks = disableCallbacks.get(addonId) ?? new Set<() => void>();

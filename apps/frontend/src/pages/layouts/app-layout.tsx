@@ -1,12 +1,11 @@
 import AppLauncher from "@/components/app-launcher";
 import { MobileLoadingIndicator } from "@/components/mobile-loading-indicator";
-import { StartupError } from "@/components/startup-error";
 import { UpdateDialog } from "@/components/update-dialog";
 import { PortfolioSyncProvider } from "@/context/portfolio-sync-context";
 import { useActiveAppSyncTrigger } from "@/features/devices-sync/hooks/use-active-app-sync-trigger";
 import { usePostLoginConnectSync } from "@/features/wealthfolio-connect/hooks";
 import { useIsMobileViewport, usePlatform } from "@/hooks/use-platform";
-import { useSettings } from "@/hooks/use-settings";
+import { useSettingsContext } from "@/lib/settings-provider";
 import { cn } from "@/lib/utils";
 import { MobileNavigationContainer } from "@/pages/layouts/mobile-navigation-container";
 import useGlobalEventListener from "@/use-global-event-listener";
@@ -19,17 +18,10 @@ import { MobileNavBar } from "./navigation/mobile-navbar";
 import { NavigationModeProvider, useNavigationMode } from "./navigation/navigation-mode-context";
 
 const AppLayoutContent = () => {
-  const {
-    data: settings,
-    error: settingsError,
-    isError: isSettingsError,
-    isFetching: isSettingsFetching,
-    isSuccess: isSettingsReady,
-    refetch: refetchSettings,
-  } = useSettings();
+  const { settings } = useSettingsContext();
   const location = useLocation();
   const navigation = useNavigation();
-  const { isMobile, isTauri } = usePlatform();
+  const { isMobile, isMacOS, isTauri } = usePlatform();
   const isMobileViewport = useIsMobileViewport();
   const isIPad =
     typeof window !== "undefined" &&
@@ -39,9 +31,18 @@ const AppLayoutContent = () => {
   const shouldUseMobileNavigation = isIPad ? false : isMobile || isMobileViewport;
   const shouldUseBottomNavigation = shouldUseMobileNavigation || (isLaunchBar && !isFocusMode);
   const isDesktopFocusMode = !shouldUseMobileNavigation && isFocusMode;
+  const hasSidebar = !shouldUseBottomNavigation && !isDesktopFocusMode;
+  // macOS only: `titleBarStyle: "Overlay"` floats the traffic lights over the
+  // WebView, and without the sidebar nothing covers the top-left corner they
+  // occupy. Observed at y 8-20 against pills starting at y 16, so 8px clears
+  // them with a small margin. Consumed by .titlebar-nudge.
+  const titleBarNudge =
+    isTauri && isMacOS && !shouldUseMobileNavigation && !hasSidebar
+      ? "translateY(0.5rem)"
+      : undefined;
   const launchBarHeight =
     !shouldUseMobileNavigation && isLaunchBar && !isFocusMode ? "56px" : undefined;
-  const isAppShellReady = isSettingsReady && !!settings?.onboardingCompleted;
+  const isAppShellReady = !!settings?.onboardingCompleted;
   const pageScrollKey =
     location.pathname.startsWith("/addon/") || location.pathname.startsWith("/addons/")
       ? "/addons"
@@ -51,27 +52,6 @@ const AppLayoutContent = () => {
   useActiveAppSyncTrigger({ enabled: isTauri, requireWindowFocusForInterval: !isMobile });
   usePostLoginConnectSync({ enabled: areGlobalEventsReady && isAppShellReady });
 
-  if (isSettingsError) {
-    return (
-      <StartupError
-        error={settingsError}
-        isRetrying={isSettingsFetching}
-        onRetry={() => void refetchSettings()}
-      />
-    );
-  }
-
-  if (!isSettingsReady) {
-    return (
-      <div
-        className="flex h-screen items-center justify-center"
-        style={{ backgroundColor: "#09090b" }}
-      >
-        <img src="/logo-gold.png" alt="Wealthfolio" className="h-[100px] w-auto" />
-      </div>
-    );
-  }
-
   if (!settings?.onboardingCompleted && location.pathname !== "/onboarding") {
     return <Navigate to="/onboarding" />;
   }
@@ -80,17 +60,17 @@ const AppLayoutContent = () => {
     <ErrorBoundary>
       <ApplicationShell
         className="app-shell h-screen overflow-x-hidden"
-        style={
-          launchBarHeight ? { ["--mobile-nav-ui-height" as string]: launchBarHeight } : undefined
-        }
+        data-mobile-navigation={shouldUseMobileNavigation ? "true" : undefined}
+        style={{
+          ...(launchBarHeight ? { ["--mobile-nav-ui-height" as string]: launchBarHeight } : {}),
+          ...(titleBarNudge ? { ["--titlebar-nudge" as string]: titleBarNudge } : {}),
+        }}
       >
         {/* Mobile sync loading indicator */}
         {shouldUseMobileNavigation && <MobileLoadingIndicator />}
 
         <div className="scan-hide-target">
-          {!shouldUseBottomNavigation && !isDesktopFocusMode && (
-            <AppSidebar navigation={navigation} />
-          )}
+          {hasSidebar && <AppSidebar navigation={navigation} />}
         </div>
 
         <div

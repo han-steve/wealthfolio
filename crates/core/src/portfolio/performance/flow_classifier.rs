@@ -16,14 +16,17 @@ fn transfer_match_tolerance() -> Decimal {
     Decimal::new(1, 6)
 }
 
-pub fn is_external_transfer(activity: &Activity) -> bool {
+fn explicit_external_boundary(activity: &Activity) -> Option<bool> {
     activity
         .metadata
         .as_ref()
         .and_then(|m| m.get("flow"))
         .and_then(|flow| flow.get("is_external"))
         .and_then(|v| v.as_bool())
-        .unwrap_or(false)
+}
+
+pub fn is_external_transfer(activity: &Activity) -> bool {
+    explicit_external_boundary(activity).unwrap_or(false)
 }
 
 /// Flow type for performance calculation
@@ -51,13 +54,14 @@ pub enum PerformanceScope {
 ///
 /// External flows:
 /// - DEPOSIT, WITHDRAWAL (money entering/leaving portfolio)
-/// - CREDIT with subtype BONUS (promotional credits = new money)
+/// - CREDIT explicitly marked external
+/// - CREDIT with subtype BONUS (external by subtype semantics)
 ///
 /// Internal flows:
 /// - BUY, SELL, DIVIDEND, INTEREST, SPLIT (asset reallocation)
 /// - TRANSFER_IN, TRANSFER_OUT (money moving between accounts)
 /// - FEE, TAX (deductions from existing money)
-/// - CREDIT with other subtypes (REBATE, REFUND = not new money)
+/// - CREDIT with other subtypes by default (REBATE, REFUND = not new money)
 pub fn classify_flow_for_scope(activity: &Activity, scope: PerformanceScope) -> FlowType {
     let effective_type = activity.effective_type();
 
@@ -68,8 +72,16 @@ pub fn classify_flow_for_scope(activity: &Activity, scope: PerformanceScope) -> 
 
     // CREDIT: depends on subtype
     if effective_type == ACTIVITY_TYPE_CREDIT {
+        if let Some(is_external) = explicit_external_boundary(activity) {
+            return if is_external {
+                FlowType::External
+            } else {
+                FlowType::Internal
+            };
+        }
+
         return match activity.subtype.as_deref() {
-            // BONUS is external (new money entering portfolio)
+            // BONUS is external (new money entering portfolio).
             Some(subtype) if subtype.eq_ignore_ascii_case(ACTIVITY_SUBTYPE_BONUS) => {
                 FlowType::External
             }
@@ -151,17 +163,21 @@ fn opposite_transfer_type(activity_type: &str) -> Option<&'static str> {
     }
 }
 
-fn transfer_amount(activity: &Activity) -> Option<Decimal> {
+fn cash_transfer_amount(activity: &Activity) -> Option<Decimal> {
+    activity.amount.map(|amount| amount.abs())
+}
+
+fn security_transfer_amount(activity: &Activity) -> Option<Decimal> {
     activity
         .amount
         .or_else(|| Some(activity.quantity? * activity.unit_price?))
         .map(|amount| amount.abs())
 }
 
-fn decimal_matches(left: Option<Decimal>, right: Option<Decimal>) -> bool {
+fn decimal_matches(left: Option<Decimal>, right: Option<Decimal>, missing_matches: bool) -> bool {
     match (left, right) {
         (Some(left), Some(right)) => (left - right).abs() <= transfer_match_tolerance(),
-        (None, None) => true,
+        (None, None) => missing_matches,
         _ => false,
     }
 }
@@ -183,11 +199,19 @@ fn transfer_match(activity: &Activity, candidate: &Activity) -> bool {
 
     if has_asset {
         activity_asset_id == candidate_asset_id
-            && decimal_matches(activity.quantity, candidate.quantity)
-            && decimal_matches(transfer_amount(activity), transfer_amount(candidate))
+            && decimal_matches(activity.quantity, candidate.quantity, true)
+            && decimal_matches(
+                security_transfer_amount(activity),
+                security_transfer_amount(candidate),
+                true,
+            )
     } else {
         activity.currency == candidate.currency
-            && decimal_matches(transfer_amount(activity), transfer_amount(candidate))
+            && decimal_matches(
+                cash_transfer_amount(activity),
+                cash_transfer_amount(candidate),
+                false,
+            )
     }
 }
 
@@ -259,7 +283,38 @@ mod tests {
     use super::*;
     use crate::activities::ActivityStatus;
     use chrono::{TimeZone, Utc};
+    use serde::Deserialize;
     use serde_json::json;
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AccountingContract {
+        cases: Vec<AccountingContractCase>,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AccountingContractCase {
+        name: String,
+        activity_type: String,
+        subtype: Option<String>,
+        is_external: Option<bool>,
+        expected: AccountingContractExpected,
+    }
+
+    #[derive(Debug, Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct AccountingContractExpected {
+        external_flow: bool,
+    }
+
+    fn accounting_contract() -> AccountingContract {
+        serde_json::from_str(include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/accounting/activity_semantics.json"
+        )))
+        .expect("accounting activity contract should be valid JSON")
+    }
 
     fn create_test_activity(activity_type: &str) -> Activity {
         Activity {
@@ -327,6 +382,42 @@ mod tests {
         let mut activity = create_test_activity("CREDIT");
         activity.subtype = Some("bonus".to_string());
         assert_eq!(classify_flow(&activity), FlowType::External);
+    }
+
+    #[test]
+    fn accounting_contract_classifies_external_flows_consistently() {
+        for case in accounting_contract().cases {
+            let mut activity = create_test_activity(&case.activity_type);
+            activity.subtype = case.subtype;
+            activity.metadata = case
+                .is_external
+                .map(|is_external| json!({ "flow": { "is_external": is_external } }));
+
+            let expected = if case.expected.external_flow {
+                FlowType::External
+            } else {
+                FlowType::Internal
+            };
+            assert_eq!(
+                classify_flow(&activity),
+                expected,
+                "accounting contract case: {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_credit_boundary_overrides_subtype_default() {
+        let mut bonus = create_test_activity("CREDIT");
+        bonus.subtype = Some("BONUS".to_string());
+        bonus.metadata = Some(json!({ "flow": { "is_external": false } }));
+        assert_eq!(classify_flow(&bonus), FlowType::Internal);
+
+        let mut refund = create_test_activity("CREDIT");
+        refund.subtype = Some("REFUND".to_string());
+        refund.metadata = Some(json!({ "flow": { "is_external": true } }));
+        assert_eq!(classify_flow(&refund), FlowType::External);
     }
 
     // Internal flow tests
@@ -495,6 +586,27 @@ mod tests {
         assert_eq!(
             infer_paired_transfer_account_id(&transfer_out, &candidates, local_date),
             Some("account-2".to_string())
+        );
+    }
+
+    #[test]
+    fn unlinked_cash_transfer_does_not_guess_amount_from_quantity_and_price() {
+        let mut transfer_out = create_test_activity("TRANSFER_OUT");
+        transfer_out.id = "out".to_string();
+        transfer_out.amount = None;
+        transfer_out.quantity = Some(Decimal::from(10));
+        transfer_out.unit_price = Some(Decimal::from(25));
+
+        let mut transfer_in = transfer_out.clone();
+        transfer_in.id = "in".to_string();
+        transfer_in.account_id = "account-2".to_string();
+        transfer_in.activity_type = "TRANSFER_IN".to_string();
+
+        let candidates = vec![transfer_out.clone(), transfer_in];
+
+        assert_eq!(
+            infer_paired_transfer_account_id(&transfer_out, &candidates, local_date),
+            None
         );
     }
 

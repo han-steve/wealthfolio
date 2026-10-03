@@ -20,6 +20,8 @@ import type {
   ContributionLimit,
   DepositsCalculation,
   ExchangeRate,
+  ExchangeRateDateQuery,
+  ExchangeRateDateResult,
   Goal,
   GoalFundingRule,
   GoalFundingRuleInput,
@@ -29,6 +31,8 @@ import type {
   ImportHoldingsCsvResult,
   ImportMappingData,
   IncomeSummary,
+  InternalTransferPairRequest,
+  InternalTransferPairResponse,
   MarketDataProviderInfo,
   NewContributionLimit,
   PerformanceResult,
@@ -37,18 +41,64 @@ import type {
   SymbolSearchResult,
   Settings,
   SimplePerformanceResult,
+  TransferMatchCandidate,
+  TransferMatchCandidateRequest,
   UpdateAssetProfile,
 } from "@/lib/types";
 import type { HoldingInput } from "@/adapters";
+import type { AlternativeAssetHolding } from "@/lib/types";
 import type {
+  CashActivitySearchRequest,
+  CashActivitySearchResponse,
+} from "@/features/spending/types/cash-activity";
+import type { MonthlyReport, ReportRequest } from "@/features/spending/types/report";
+import type {
+  CategorizationRule as InternalCategorizationRule,
+  NewCategorizationRule,
+} from "@/features/spending/types/rule";
+import {
+  SPEND_CATEGORY_KIND_TO_TAXONOMY_ID,
+  TAXONOMY_ID_TO_SPEND_CATEGORY_KIND,
+} from "../adapters/shared/spending";
+import type {
+  ActivityType,
+  CategorizationRule as SDKCategorizationRule,
+  CategorizationRuleInput,
   Goal as SDKGoal,
   GoalAllocation as SDKGoalAllocation,
   HostAPI as SDKHostAPI,
   NetworkRequest as SDKNetworkRequest,
   NetworkResponse as SDKNetworkResponse,
   Permission,
+  SpendCategory,
+  SpendCategoryKind,
 } from "@wealthfolio/addon-sdk";
 import { isBaselineCategory } from "@wealthfolio/addon-sdk";
+import { deriveRuleId } from "./spending-rule-key";
+
+/**
+ * Converts an internal rule to the addon-facing shape. Returns null when the
+ * rule's taxonomy/category isn't a resolvable spend-category kind — this
+ * should never happen for a rule created via `saveRule`, which always sets
+ * both, but guards against a caller reading back a rule it didn't create.
+ */
+function toSDKCategorizationRule(rule: InternalCategorizationRule): SDKCategorizationRule | null {
+  const kind = rule.taxonomyId ? TAXONOMY_ID_TO_SPEND_CATEGORY_KIND[rule.taxonomyId] : undefined;
+  if (!kind || !rule.categoryId) return null;
+  return {
+    id: rule.id,
+    name: rule.name,
+    pattern: rule.pattern,
+    matchType: rule.matchType,
+    kind,
+    categoryId: rule.categoryId,
+    activityType: (rule.activityType ?? undefined) as ActivityType | undefined,
+    accountId: rule.accountId ?? undefined,
+    priority: rule.priority,
+    createdAt: rule.createdAt,
+    updatedAt: rule.updatedAt,
+  };
+}
 
 /**
  * Internal HostAPI interface that matches the actual command function signatures
@@ -59,11 +109,23 @@ export interface InternalHostAPI {
   getHoldings(accountId: string): Promise<Holding[]>;
   getActivities(accountId?: string): Promise<ActivityDetails[]>;
   getAccounts(): Promise<Account[]>;
+  getAlternativeHoldings(): Promise<AlternativeAssetHolding[]>;
 
   // Exchange rates
   getExchangeRates(): Promise<ExchangeRate[]>;
   updateExchangeRate(updatedRate: ExchangeRate): Promise<ExchangeRate>;
   addExchangeRate(newRate: Omit<ExchangeRate, "id">): Promise<ExchangeRate>;
+  getExchangeRatesForDates(pairs: ExchangeRateDateQuery[]): Promise<ExchangeRateDateResult[]>;
+
+  // Spend categorization
+  isSpendingEnabled(): Promise<boolean>;
+  searchCashActivities(request: CashActivitySearchRequest): Promise<CashActivitySearchResponse>;
+  getSpendingReport(request: ReportRequest): Promise<MonthlyReport>;
+  getSpendCategories(kind?: SpendCategoryKind): Promise<SpendCategory[]>;
+  listCategorizationRules(): Promise<InternalCategorizationRule[]>;
+  upsertCategorizationRule(rule: NewCategorizationRule): Promise<InternalCategorizationRule>;
+  deleteCategorizationRuleById(id: string): Promise<void>;
+  rerunCategorizationRulesForAddon(onlyUncategorized?: boolean): Promise<number>;
 
   // Contribution limits
   getContributionLimit(): Promise<ContributionLimit[]>;
@@ -174,6 +236,17 @@ export interface InternalHostAPI {
   checkActivitiesImport(params: { activities: ActivityImport[] }): Promise<ActivityImport[]>;
   getAccountImportMapping(accountId: string, contextKind?: string): Promise<ImportMappingData>;
   saveAccountImportMapping(mapping: ImportMappingData): Promise<ImportMappingData>;
+
+  // Transfer pairing
+  getTransferPairForActivity(activityId: string): Promise<InternalTransferPairResponse | null>;
+  findTransferMatchCandidates(
+    request: TransferMatchCandidateRequest,
+  ): Promise<TransferMatchCandidate[]>;
+  saveInternalTransferPair(
+    request: InternalTransferPairRequest,
+  ): Promise<InternalTransferPairResponse>;
+  linkTransferActivities(activityAId: string, activityBId: string): Promise<[Activity, Activity]>;
+  unlinkTransferActivities(activityAId: string, activityBId: string): Promise<[Activity, Activity]>;
 
   // Snapshots
   getSnapshots(accountId: string, dateFrom?: string, dateTo?: string): Promise<SnapshotInfo[]>;
@@ -435,6 +508,11 @@ export function createSDKHostAPIBridge(
         internalAPI.checkActivitiesImport({ activities }),
       getImportMapping: internalAPI.getAccountImportMapping,
       saveImportMapping: internalAPI.saveAccountImportMapping,
+      getTransferPair: internalAPI.getTransferPairForActivity,
+      findTransferMatchCandidates: internalAPI.findTransferMatchCandidates,
+      saveTransferPair: internalAPI.saveInternalTransferPair,
+      linkTransfer: internalAPI.linkTransferActivities,
+      unlinkTransfer: internalAPI.unlinkTransferActivities,
     },
     "activities",
     guard,
@@ -459,6 +537,13 @@ export function createSDKHostAPIBridge(
     "assets",
     guard,
   );
+  const alternativeAssets = guardNamespace(
+    {
+      getAll: internalAPI.getAlternativeHoldings,
+    },
+    "alternative-assets",
+    guard,
+  );
   const quotes = guardNamespace(
     {
       update: internalAPI.updateQuote,
@@ -481,10 +566,69 @@ export function createSDKHostAPIBridge(
       getAll: internalAPI.getExchangeRates,
       update: internalAPI.updateExchangeRate,
       add: internalAPI.addExchangeRate,
+      getRatesForDates: internalAPI.getExchangeRatesForDates,
     },
     "currency",
     guard,
   );
+  const spendingCategorization = guardNamespace(
+    {
+      isEnabled: internalAPI.isSpendingEnabled,
+      getReport: internalAPI.getSpendingReport,
+      getCategories: internalAPI.getSpendCategories,
+      getRules: async (): Promise<SDKCategorizationRule[]> => {
+        const prefix = `addon:${addonId || "unknown-addon"}:`;
+        const rules = await internalAPI.listCategorizationRules();
+        const own: SDKCategorizationRule[] = [];
+        for (const rule of rules) {
+          if (!rule.id.startsWith(prefix)) continue;
+          const sdkRule = toSDKCategorizationRule(rule);
+          if (sdkRule) own.push(sdkRule);
+        }
+        return own;
+      },
+      saveRule: async (input: CategorizationRuleInput): Promise<SDKCategorizationRule> => {
+        const id = await deriveRuleId(addonId || "unknown-addon", input.ruleKey);
+        const taxonomyId = SPEND_CATEGORY_KIND_TO_TAXONOMY_ID[input.kind];
+        if (typeof taxonomyId !== "string") {
+          throw new Error(`Unsupported spend category kind '${String(input.kind)}'`);
+        }
+        const saved = await internalAPI.upsertCategorizationRule({
+          id,
+          name: input.name,
+          pattern: input.pattern,
+          matchType: input.matchType ?? "contains",
+          taxonomyId,
+          categoryId: input.categoryId,
+          activityType: input.activityType ?? null,
+          isGlobal: !input.accountId,
+          accountId: input.accountId ?? null,
+          priority: input.priority ?? 0,
+        });
+        const sdkRule = toSDKCategorizationRule(saved);
+        if (!sdkRule) {
+          throw new Error(`Saved rule '${saved.id}' is missing a resolvable category`);
+        }
+        return sdkRule;
+      },
+      deleteRule: async (ruleKey: string): Promise<void> => {
+        const id = await deriveRuleId(addonId || "unknown-addon", ruleKey);
+        await internalAPI.deleteCategorizationRuleById(id);
+      },
+      rerunRules: (onlyUncategorized?: boolean): Promise<number> =>
+        internalAPI.rerunCategorizationRulesForAddon(onlyUncategorized ?? true),
+    },
+    "spending",
+    guard,
+  );
+  const spendingActivities = guardNamespace(
+    {
+      searchCashActivities: internalAPI.searchCashActivities,
+    },
+    "activities",
+    guard,
+  );
+  const spending = { ...spendingCategorization, ...spendingActivities };
   const contributionLimits = guardNamespace(
     {
       getAll: internalAPI.getContributionLimit,
@@ -571,9 +715,11 @@ export function createSDKHostAPIBridge(
     activities: activities as unknown as SDKApiWithoutSecrets["activities"],
     market: market as unknown as SDKApiWithoutSecrets["market"],
     assets: assets as unknown as SDKApiWithoutSecrets["assets"],
+    alternativeAssets: alternativeAssets as unknown as SDKApiWithoutSecrets["alternativeAssets"],
     quotes: quotes as unknown as SDKApiWithoutSecrets["quotes"],
     performance: performance as unknown as SDKApiWithoutSecrets["performance"],
     exchangeRates: exchangeRates as unknown as SDKApiWithoutSecrets["exchangeRates"],
+    spending: spending as unknown as SDKApiWithoutSecrets["spending"],
     contributionLimits: contributionLimits as unknown as SDKApiWithoutSecrets["contributionLimits"],
     goals: goals as unknown as SDKApiWithoutSecrets["goals"],
     settings: settings as unknown as SDKApiWithoutSecrets["settings"],

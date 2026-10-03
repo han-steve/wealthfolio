@@ -1,4 +1,4 @@
-use chrono::{Datelike, Local, NaiveDate};
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::portfolio::fire::GlidepathSettings;
@@ -65,14 +65,12 @@ pub fn age_from_birth_year_month(birth_year_month: &str, as_of: NaiveDate) -> Op
     u32::try_from(age).ok()
 }
 
-pub fn normalize_retirement_plan_ages(plan: &mut RetirementPlan) {
+pub fn normalize_retirement_plan_ages(plan: &mut RetirementPlan, as_of: chrono::NaiveDate) {
     if let Some(age) = plan
         .personal
         .birth_year_month
         .as_deref()
-        .and_then(|birth_year_month| {
-            age_from_birth_year_month(birth_year_month, Local::now().date_naive())
-        })
+        .and_then(|birth_year_month| age_from_birth_year_month(birth_year_month, as_of))
     {
         plan.personal.current_age = age;
     }
@@ -80,8 +78,12 @@ pub fn normalize_retirement_plan_ages(plan: &mut RetirementPlan) {
 
 #[cfg(test)]
 mod tests {
-    use super::{age_from_birth_year_month, normalize_retirement_plan_ages, RetirementPlan};
-    use chrono::{Datelike, Local, NaiveDate};
+    const AS_OF: chrono::NaiveDate = chrono::NaiveDate::from_ymd_opt(2026, 1, 1).unwrap();
+    use super::{
+        age_from_birth_year_month, normalize_retirement_plan_ages, PayoutMode,
+        RetirementIncomeStream, RetirementPlan, StreamKind,
+    };
+    use chrono::{Datelike, NaiveDate};
 
     #[test]
     fn derives_age_from_birth_year_month() {
@@ -130,8 +132,87 @@ mod tests {
     }
 
     #[test]
+    fn a_fund_saved_without_a_payout_mode_is_an_annuity() {
+        let raw = r#"{
+            "id": "dc",
+            "label": "RRSP",
+            "streamType": "dc",
+            "startAge": 65,
+            "adjustForInflation": false,
+            "annualGrowthRate": null,
+            "monthlyAmount": null,
+            "linkedAccountId": null,
+            "currentValue": 100000.0,
+            "monthlyContribution": 500.0,
+            "accumulationReturn": 0.04
+        }"#;
+
+        let stream: RetirementIncomeStream =
+            serde_json::from_str(raw).expect("a plan saved before drawdown existed should parse");
+
+        assert_eq!(stream.payout_mode, None);
+        assert_eq!(stream.post_payout_return, None);
+        assert_eq!(stream.payout_mode.unwrap_or_default(), PayoutMode::Annuity);
+        assert!(
+            !stream.is_drawdown(),
+            "an absent payout mode must not turn a shipped plan into a drawdown"
+        );
+    }
+
+    #[test]
+    fn payout_mode_round_trips_through_json() {
+        let raw = r#"{
+            "id": "dc",
+            "label": "RRSP",
+            "streamType": "dc",
+            "startAge": 65,
+            "adjustForInflation": false,
+            "monthlyAmount": null,
+            "currentValue": 100000.0,
+            "monthlyContribution": null,
+            "accumulationReturn": 0.04,
+            "payoutMode": "drawdown",
+            "postPayoutReturn": 0.03
+        }"#;
+
+        let stream: RetirementIncomeStream = serde_json::from_str(raw).expect("should parse");
+
+        assert_eq!(stream.payout_mode, Some(PayoutMode::Drawdown));
+        assert_eq!(stream.post_payout_return, Some(0.03));
+        assert!(stream.is_drawdown());
+
+        let serialized = serde_json::to_string(&stream).expect("should serialize");
+        assert!(serialized.contains("\"payoutMode\":\"drawdown\""));
+    }
+
+    #[test]
+    fn a_defined_benefit_stream_is_never_a_drawdown() {
+        let stream = RetirementIncomeStream {
+            id: "db".into(),
+            label: "State pension".into(),
+            stream_type: StreamKind::DefinedBenefit,
+            start_age: 67,
+            adjust_for_inflation: true,
+            annual_growth_rate: None,
+            monthly_amount: Some(1_200.0),
+            linked_account_id: None,
+            current_value: None,
+            monthly_contribution: None,
+            accumulation_return: None,
+            payout_rate: None,
+            payout_mode: Some(PayoutMode::Drawdown),
+            post_payout_return: None,
+        };
+
+        assert!(
+            !stream.is_drawdown(),
+            "a defined-benefit stream has no balance to draw against"
+        );
+    }
+
+    #[test]
     fn age_normalization_only_updates_current_age() {
-        let today = Local::now().date_naive();
+        let today = AS_OF;
         let birth_year_month = format!("{}-{:02}", today.year() - 40, today.month());
         let raw = format!(
             r#"{{
@@ -161,7 +242,14 @@ mod tests {
         let mut expected = serde_json::to_value(&plan).expect("plan should serialize");
         expected["personal"]["currentAge"] = serde_json::Value::from(40);
 
-        normalize_retirement_plan_ages(&mut plan);
+        normalize_retirement_plan_ages(&mut plan, AS_OF);
+        let prior_day = AS_OF.pred_opt().unwrap();
+        let mut prior_plan = plan.clone();
+        normalize_retirement_plan_ages(&mut prior_plan, prior_day);
+        assert_eq!(
+            prior_plan.personal.current_age + 1,
+            plan.personal.current_age
+        );
 
         let actual = serde_json::to_value(&plan).expect("plan should serialize");
         assert_eq!(actual, expected);
@@ -213,6 +301,24 @@ pub struct RetirementIncomeStream {
     pub current_value: Option<f64>,
     pub monthly_contribution: Option<f64>,
     pub accumulation_return: Option<f64>,
+    /// Annual draw rate applied to the projected fund balance once payouts start.
+    /// Falls back to `DEFAULT_DC_PAYOUT_ESTIMATE_RATE` when unset.
+    pub payout_rate: Option<f64>,
+    /// What happens to the fund at `start_age`. Absent means `Annuity`, so plans
+    /// saved before this field existed keep projecting exactly as they did.
+    pub payout_mode: Option<PayoutMode>,
+    /// Annual return the balance still invested earns during a `Drawdown` payout
+    /// phase. Falls back to the plan's retirement return.
+    pub post_payout_return: Option<f64>,
+}
+
+impl RetirementIncomeStream {
+    /// A fund that keeps its balance through the payout phase, and can therefore
+    /// run out. Only a defined-contribution stream has a balance to draw against.
+    pub fn is_drawdown(&self) -> bool {
+        self.stream_type == StreamKind::DefinedContribution
+            && self.payout_mode.unwrap_or_default() == PayoutMode::Drawdown
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -221,6 +327,21 @@ pub enum StreamKind {
     DefinedBenefit,
     #[serde(rename = "dc")]
     DefinedContribution,
+}
+
+/// What a defined-contribution fund does with its balance at `start_age`.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PayoutMode {
+    /// The pot buys an income. It leaves the projection at `start_age` and the
+    /// income runs to the horizon, funded by capital consumption and mortality
+    /// credits rather than by the fund's own return.
+    #[default]
+    #[serde(rename = "annuity")]
+    Annuity,
+    /// The pot stays invested and is drawn against. The income stops when the
+    /// balance is gone.
+    #[serde(rename = "drawdown")]
+    Drawdown,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

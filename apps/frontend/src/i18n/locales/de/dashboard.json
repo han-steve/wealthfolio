@@ -49,15 +49,15 @@
     "sync_broker_accounts": "Brokerkonten synchronisieren",
     "sync_devices": "Geräte synchronisieren",
     "update_prices": "Kurse aktualisieren",
-    "rebuild_full_history": "Vollständige Historie neu aufbauen",
+    "rebuild_full_history": "Gesamten Verlauf aktualisieren",
     "verify_data": "Daten prüfen"
   },
   "update": {
     "as_of": "Stand:",
     "update_quotes": "Kurse aktualisieren",
     "updating_quotes": "Kurse werden aktualisiert...",
-    "rebuild_history": "Vollständige Historie neu aufbauen",
-    "rebuilding_history": "Historie wird neu aufgebaut..."
+    "rebuild_history": "Gesamten Verlauf aktualisieren",
+    "rebuilding_history": "Gesamten Verlauf aktualisieren…"
   },
   "goals": {
     "no_goals_set": "Keine Ziele festgelegt.",
@@ -89,7 +89,11 @@
     "shares_one": "{{formatted}} Anteil",
     "shares_other": "{{formatted}} Anteile",
     "more_holdings": "+{{count}} weitere Bestände",
-    "more": "+{{count}} weitere"
+    "more": "+{{count}} weitere",
+    "more_holdings_one": "+{{count}} weiterer Bestand",
+    "more_holdings_other": "+{{count}} weitere Bestände",
+    "more_one": "+{{count}} weitere",
+    "more_other": "+{{count}} weitere"
   },
   "summary": {
     "return_unavailable_holdings": "Rendite % nicht verfügbar - fehlende Kostenbasis oder Anfangswert der Bestände.",

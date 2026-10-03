@@ -1,11 +1,12 @@
+import { formatDistanceToNow } from "@/lib/utils";
+import { useLocalizationSettings } from "@wealthfolio/ui";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@wealthfolio/ui/components/ui/tooltip";
-import { formatDistanceToNow } from "date-fns";
 import { useTranslation } from "react-i18next";
-import { useWealthfolioConnect } from "../providers/wealthfolio-connect-provider";
-import { hasBrokerSync } from "../lib/plan-capabilities";
 import { useAggregatedSyncStatus, useSyncBrokerData } from "../hooks";
+import { hasBrokerSync } from "../lib/plan-capabilities";
+import { useWealthfolioConnect } from "../providers/wealthfolio-connect-provider";
 import type { AggregatedSyncStatus } from "../types";
 
 interface SyncButtonProps {
@@ -19,6 +20,9 @@ interface SyncButtonProps {
 
 const statusColors: Record<AggregatedSyncStatus, string> = {
   not_connected: "text-muted-foreground",
+  restoring: "text-muted-foreground",
+  unavailable: "text-warning",
+  subscription_required: "text-warning",
   idle: "text-green-500",
   running: "text-blue-500",
   needs_review: "text-yellow-500",
@@ -30,6 +34,8 @@ const statusColors: Record<AggregatedSyncStatus, string> = {
  * Only visible when Connect is enabled and user has an active subscription.
  */
 export function SyncButton({ className, showLabel = false, size = "icon" }: SyncButtonProps) {
+  const localizationSettings = useLocalizationSettings();
+
   const { t } = useTranslation();
   const { isEnabled, isConnected, userInfo } = useWealthfolioConnect();
   const { status, lastSyncTime } = useAggregatedSyncStatus();
@@ -45,7 +51,9 @@ export function SyncButton({ className, showLabel = false, size = "icon" }: Sync
 
   const tooltipContent = lastSyncTime
     ? t("connect:status.lastSynced", {
-        time: formatDistanceToNow(new Date(lastSyncTime), { addSuffix: true }),
+        time: formatDistanceToNow(new Date(lastSyncTime), localizationSettings, {
+          addSuffix: true,
+        }),
       })
     : t("connect:status.neverSynced");
 

@@ -1,3 +1,4 @@
+import { profilePreferenceKey, readProfilePreference } from "@/hooks/use-persistent-state";
 import { useHapticFeedback, useIsMobileViewport } from "@/hooks";
 import { cn } from "@/lib/utils";
 import { Page, SwipableView, type Icon } from "@wealthfolio/ui";
@@ -20,6 +21,7 @@ interface SwipablePageProps {
   onViewChange?: (view: string) => void;
   className?: string;
   contentClassName?: string;
+  desktopContentClassName?: string;
   withPadding?: boolean;
   withMobileNavOffset?: boolean;
   title?: string;
@@ -103,7 +105,7 @@ function MobileNavigation({
     <div
       className={cn(
         "bg-muted/50 flex items-center gap-0.5 rounded-full p-1 backdrop-blur-sm",
-        compact && "min-w-0 max-w-full",
+        compact && "w-fit min-w-0 max-w-full",
       )}
     >
       {views.map((item) => {
@@ -156,6 +158,7 @@ export function SwipablePage({
   onViewChange,
   className,
   contentClassName,
+  desktopContentClassName,
   withPadding = true,
   withMobileNavOffset = true,
   title,
@@ -171,7 +174,7 @@ export function SwipablePage({
   const [persistedView, setPersistedView] = React.useState<string | null>(() => {
     if (!persistKey) return null;
     try {
-      const raw = window.localStorage.getItem(persistKey);
+      const raw = readProfilePreference(persistKey);
       return raw ? (JSON.parse(raw) as string) : null;
     } catch {
       return null;
@@ -213,7 +216,7 @@ export function SwipablePage({
       if (persistKey) {
         setPersistedView(nextView);
         try {
-          window.localStorage.setItem(persistKey, JSON.stringify(nextView));
+          window.localStorage.setItem(profilePreferenceKey(persistKey), JSON.stringify(nextView));
         } catch {
           // Swallow quota/serialization errors — persistence is best-effort.
         }
@@ -237,12 +240,17 @@ export function SwipablePage({
                 className={cn(
                   "grid w-full items-center gap-2",
                   mobileActionsInHeader
-                    ? "grid-cols-[2.5rem_minmax(0,1fr)_auto] min-[390px]:grid-cols-[4.5rem_minmax(0,1fr)_auto]"
+                    ? "grid-cols-[minmax(0,1fr)_auto] min-[430px]:grid-cols-[2.5rem_minmax(0,1fr)_auto]"
                     : "grid-cols-[1fr_auto_1fr]",
                 )}
               >
-                <div className={mobileActionsInHeader ? "w-10 min-[390px]:w-[4.5rem]" : "w-10"} />
-                <div className={cn("min-w-0", mobileActionsInHeader && "justify-self-center")}>
+                <div className={mobileActionsInHeader ? "hidden w-10 min-[430px]:block" : "w-10"} />
+                <div
+                  className={cn(
+                    "min-w-0",
+                    mobileActionsInHeader && "flex justify-end min-[430px]:justify-center",
+                  )}
+                >
                   <MobileNavigation
                     views={views}
                     currentView={currentView}
@@ -251,13 +259,15 @@ export function SwipablePage({
                   />
                 </div>
                 {mobileActionsInHeader ? (
-                  <div className="flex min-w-0 shrink-0 justify-end">{currentActions}</div>
+                  <div className="flex min-w-0 shrink-0 items-center justify-end gap-2">
+                    {currentActions}
+                  </div>
                 ) : (
                   <div />
                 )}
               </div>
               {currentActions && !mobileActionsInHeader && (
-                <div className="flex min-w-0 justify-end">{currentActions}</div>
+                <div className="flex min-w-0 items-center justify-end gap-2">{currentActions}</div>
               )}
             </div>
 
@@ -293,7 +303,7 @@ export function SwipablePage({
           <div className="hidden h-full flex-col md:flex">
             {/* Header with Navigation and Actions */}
             <div className="flex shrink-0 items-center justify-between gap-4 px-2 pb-3 pt-4 lg:px-4">
-              <div className="flex items-center gap-3">
+              <div className="titlebar-nudge flex items-center gap-3">
                 {title && <h1 className="text-muted-foreground text-sm font-medium">{title}</h1>}
                 <NavigationPills
                   views={views}
@@ -310,6 +320,7 @@ export function SwipablePage({
               className={cn(
                 "relative grow overflow-y-auto pt-8 md:pt-2",
                 withPadding && "px-2 pb-2 lg:px-4 lg:pb-4",
+                desktopContentClassName,
               )}
             >
               {views.find((v) => v.value === currentView)?.content}

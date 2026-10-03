@@ -95,7 +95,6 @@ impl HoldingsCalculator {
             Ok(asset) => {
                 let is_alternative = asset.is_alternative();
                 let contract_multiplier = asset.contract_multiplier();
-                let is_bond = asset.is_bond();
                 let allows_negative_lots = ShortabilityPolicy::allows_negative_lots(&asset);
                 let requires_explicit_short_intent =
                     ShortabilityPolicy::requires_explicit_short_intent(&asset);
@@ -104,7 +103,6 @@ impl HoldingsCalculator {
                     currency: asset.quote_ccy,
                     is_alternative,
                     contract_multiplier,
-                    is_bond,
                     allows_negative_lots,
                     requires_explicit_short_intent,
                 })
@@ -375,7 +373,7 @@ impl HoldingsCalculator {
                     Err(e) => {
                         warn!(
                             "Failed to convert cash {} {} to base currency {}: {}. Using unconverted.",
-                            amount, currency, &base_ccy, e
+                            amount, currency, base_ccy, e
                         );
                         total_base += amount;
                     }

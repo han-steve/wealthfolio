@@ -1,10 +1,11 @@
-use std::sync::Arc;
+use crate::profiles::ProfileAccess;
 
-use crate::context::ServiceContext;
 use crate::events::{emit_portfolio_trigger_recalculate, PortfolioRequestPayload};
 use log::debug;
-use tauri::{AppHandle, State};
-use wealthfolio_core::fx::{ExchangeRate, NewExchangeRate};
+use tauri::AppHandle;
+use wealthfolio_core::fx::{
+    ExchangeRate, ExchangeRateDateBatchRequest, ExchangeRateDateResult, NewExchangeRate,
+};
 use wealthfolio_core::health::HealthServiceTrait;
 use wealthfolio_core::quotes::{MarketSyncMode, DATA_SOURCE_MANUAL};
 use wealthfolio_core::settings::{Settings, SettingsUpdate};
@@ -26,20 +27,20 @@ fn recalculate_mode_for_settings_change(
 }
 
 #[tauri::command]
-pub async fn get_settings(state: State<'_, Arc<ServiceContext>>) -> Result<Settings, String> {
+pub async fn get_settings(state: ProfileAccess) -> Result<Settings, String> {
+    let context = state.context()?;
     debug!("Fetching active settings...");
-    state
+    context
         .settings_service()
         .get_settings()
         .map_err(|e| format!("Failed to load settings: {}", e))
 }
 
 #[tauri::command]
-pub async fn is_auto_update_check_enabled(
-    state: State<'_, Arc<ServiceContext>>,
-) -> Result<bool, String> {
+pub async fn is_auto_update_check_enabled(state: ProfileAccess) -> Result<bool, String> {
+    let context = state.context()?;
     debug!("Checking if auto-update check is enabled...");
-    state
+    context
         .settings_service()
         .is_auto_update_check_enabled()
         .map_err(|e| format!("Failed to check auto-update setting: {}", e))
@@ -48,13 +49,19 @@ pub async fn is_auto_update_check_enabled(
 #[tauri::command]
 pub async fn update_settings(
     settings_update: SettingsUpdate,
-    state: State<'_, Arc<ServiceContext>>,
+    state: ProfileAccess,
     handle: AppHandle,
 ) -> Result<Settings, String> {
+    // Only sync settings participate in Connect account replacement.
+    let _connect = settings_update
+        .sync_enabled
+        .map(|_| state.connect_guard())
+        .transpose()?;
+    let context = state.context()?;
     debug!("Updating settings...");
-    let service = state.settings_service();
-    let previous_base_currency = state.get_base_currency();
-    let previous_timezone = state.get_timezone();
+    let service = context.settings_service();
+    let previous_base_currency = context.get_base_currency();
+    let previous_timezone = context.get_timezone();
 
     // Update settings in the database (this applies all changes in settings_update)
     service
@@ -102,18 +109,18 @@ pub async fn update_settings(
     if base_currency_changed {
         debug!(
             "Base currency changed from {} to {}, updating state.",
-            previous_base_currency, &updated_settings.base_currency
+            previous_base_currency, updated_settings.base_currency
         );
-        state.update_base_currency(updated_settings.base_currency.clone());
+        context.update_base_currency(updated_settings.base_currency.clone());
     }
 
     if timezone_changed {
         debug!(
             "Timezone changed from {} to {}, updating state.",
-            previous_timezone, &updated_settings.timezone
+            previous_timezone, updated_settings.timezone
         );
-        state.update_timezone(updated_settings.timezone.clone());
-        state.health_service().clear_cache().await;
+        context.update_timezone(updated_settings.timezone.clone());
+        context.health_service().clear_cache().await;
     }
 
     if let Some(market_sync_mode) =
@@ -123,7 +130,7 @@ pub async fn update_settings(
             .account_ids(None)
             .market_sync_mode(market_sync_mode)
             .build();
-        emit_portfolio_trigger_recalculate(&handle, payload);
+        emit_portfolio_trigger_recalculate(&handle, payload, &context);
     }
 
     Ok(updated_settings)
@@ -132,11 +139,12 @@ pub async fn update_settings(
 #[tauri::command]
 pub async fn update_exchange_rate(
     rate: ExchangeRate,
-    state: State<'_, Arc<ServiceContext>>,
+    state: ProfileAccess,
     handle: AppHandle,
 ) -> Result<ExchangeRate, String> {
+    let context = state.context()?;
     debug!("Updating exchange rate...");
-    let result = state
+    let result = context
         .fx_service()
         .update_exchange_rate(&rate.from_currency, &rate.to_currency, rate.rate)
         .await
@@ -149,30 +157,42 @@ pub async fn update_exchange_rate(
         let payload = PortfolioRequestPayload::builder()
             .market_sync_mode(MarketSyncMode::None)
             .build();
-        emit_portfolio_trigger_recalculate(&handle, payload);
+        emit_portfolio_trigger_recalculate(&handle, payload, &context);
     });
     Ok(result)
 }
 
 #[tauri::command]
-pub async fn get_latest_exchange_rates(
-    state: State<'_, Arc<ServiceContext>>,
-) -> Result<Vec<ExchangeRate>, String> {
+pub async fn get_latest_exchange_rates(state: ProfileAccess) -> Result<Vec<ExchangeRate>, String> {
+    let context = state.context()?;
     debug!("Fetching exchange rates...");
-    state
+    context
         .fx_service()
         .get_latest_exchange_rates()
         .map_err(|e| format!("Failed to load exchange rates: {}", e))
 }
 
 #[tauri::command]
+pub async fn get_exchange_rates_for_dates(
+    request: ExchangeRateDateBatchRequest,
+    state: ProfileAccess,
+) -> Result<Vec<ExchangeRateDateResult>, String> {
+    let context = state.context()?;
+    debug!("Fetching historical exchange rates for dates...");
+    Ok(context
+        .fx_service()
+        .get_exchange_rates_for_dates(request.pairs))
+}
+
+#[tauri::command]
 pub async fn add_exchange_rate(
     new_rate: NewExchangeRate,
-    state: State<'_, Arc<ServiceContext>>,
+    state: ProfileAccess,
     handle: AppHandle,
 ) -> Result<ExchangeRate, String> {
+    let context = state.context()?;
     debug!("Adding new exchange rate...");
-    let result = state
+    let result = context
         .fx_service()
         .add_exchange_rate(new_rate)
         .await
@@ -194,7 +214,7 @@ pub async fn add_exchange_rate(
         let payload = PortfolioRequestPayload::builder()
             .market_sync_mode(market_sync_mode)
             .build();
-        emit_portfolio_trigger_recalculate(&handle, payload);
+        emit_portfolio_trigger_recalculate(&handle, payload, &context);
     });
     Ok(result)
 }
@@ -202,11 +222,12 @@ pub async fn add_exchange_rate(
 #[tauri::command]
 pub async fn delete_exchange_rate(
     rate_id: String,
-    state: State<'_, Arc<ServiceContext>>,
+    state: ProfileAccess,
     handle: AppHandle,
 ) -> Result<(), String> {
+    let context = state.context()?;
     debug!("Deleting exchange rate...");
-    state
+    context
         .fx_service()
         .delete_exchange_rate(&rate_id)
         .await
@@ -219,7 +240,7 @@ pub async fn delete_exchange_rate(
         let payload = PortfolioRequestPayload::builder()
             .market_sync_mode(MarketSyncMode::None)
             .build();
-        emit_portfolio_trigger_recalculate(&handle, payload);
+        emit_portfolio_trigger_recalculate(&handle, payload, &context);
     });
     Ok(())
 }

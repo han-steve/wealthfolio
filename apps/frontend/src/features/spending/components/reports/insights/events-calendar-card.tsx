@@ -1,43 +1,85 @@
 import { useMemo, useState, type FC } from "react";
 import { useTranslation } from "react-i18next";
 
-import { Button, Icons } from "@wealthfolio/ui";
 import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
-import { cn, formatAmount } from "@/lib/utils";
+import { cn, parseLocalDate } from "@/lib/utils";
+import {
+  Button,
+  Icons,
+  calendarDateFromLocalDate,
+  useAmountFormatting,
+  useDateFormatting,
+  useNumberFormatting,
+} from "@wealthfolio/ui";
 
-import { useEventDialog } from "../../event-dialog-provider";
 import { useMonthCalendar } from "../../../hooks/use-month-calendar";
+import { getZonedDateParts } from "../../../lib/timezone";
 import type { EventSpendingSummary } from "../../../types/event";
+import { useEventDialog } from "../../event-dialog-provider";
 import { getEventColors } from "./event-colors";
 
 const CARD_CLASS = "border-border/60 bg-card/40 rounded-2xl border p-4 backdrop-blur-xl";
 const LABEL_CLASS = "text-muted-foreground/70 text-[10px] font-normal uppercase tracking-[0.12em]";
-
-const DAY_NAME_KEYS = [
-  "spending:calendar.dayMon",
-  "spending:calendar.dayTue",
-  "spending:calendar.dayWed",
-  "spending:calendar.dayThu",
-  "spending:calendar.dayFri",
-  "spending:calendar.daySat",
-  "spending:calendar.daySun",
-];
 
 interface Props {
   events: EventSpendingSummary[];
   currency: string;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  rangeStart?: Date;
+  rangeEnd?: Date;
+  timezone?: string | null;
 }
 
-export const EventsCalendarCard: FC<Props> = ({ events, currency, selectedId, onSelect }) => {
+export const EventsCalendarCard: FC<Props> = ({
+  events,
+  currency,
+  selectedId,
+  onSelect,
+  rangeStart,
+  rangeEnd,
+  timezone,
+}) => {
+  const formatting = useAmountFormatting();
+  const dateFormatting = useDateFormatting();
+  const numberFormatting = useNumberFormatting();
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
   const { openEventDialog } = useEventDialog();
   const today = useMemo(() => stripTime(new Date()), []);
-  const [cursor, setCursor] = useState<Date>(() => startOfMonth(today));
+  const firstMonth = rangeStart ? monthInTimezone(rangeStart, timezone) : null;
+  const lastMonth = rangeEnd ? monthInTimezone(rangeEnd, timezone) : null;
+  const selectedStart = firstMonth
+    ? events.find((event) => event.eventId === selectedId)?.startDate
+    : undefined;
+  const eventMonth = selectedStart ? startOfMonth(parseLocalDate(selectedStart)) : null;
+  const initialMonth =
+    eventMonth && firstMonth
+      ? new Date(
+          Math.max(
+            firstMonth.getTime(),
+            Math.min(eventMonth.getTime(), lastMonth?.getTime() ?? Infinity),
+          ),
+        )
+      : (firstMonth ?? startOfMonth(today));
+  const rangeKey = `${rangeStart?.getTime() ?? ""}:${rangeEnd?.getTime() ?? ""}:${timezone ?? ""}:${selectedStart ?? ""}`;
+  const [cursorBinding, setCursorBinding] = useState(() => ({
+    rangeKey,
+    month: initialMonth,
+  }));
+  const cursor = cursorBinding.rangeKey === rangeKey ? cursorBinding.month : initialMonth;
+  const setCursor = (month: Date) => setCursorBinding({ rangeKey, month });
 
-  const { monthLabel, monthStart, monthEnd, weeks, monthEvents } = useMonthCalendar(events, cursor);
+  const { monthLabel, weekStartsOn, monthStart, monthEnd, weeks, monthEvents } = useMonthCalendar(
+    events,
+    cursor,
+  );
+  const dayNames = Array.from({ length: 7 }, (_, index) =>
+    dateFormatting.formatCalendarDate(calendarDateFromLocalDate(new Date(2026, 7, 2 + index)), {
+      weekday: "short",
+    }),
+  );
+  const orderedDayNames = [...dayNames.slice(weekStartsOn), ...dayNames.slice(0, weekStartsOn)];
 
   return (
     <div className={CARD_CLASS}>
@@ -52,6 +94,7 @@ export const EventsCalendarCard: FC<Props> = ({ events, currency, selectedId, on
               variant="outline"
               size="icon"
               aria-label={t("spending:calendar.previousMonth")}
+              disabled={!!firstMonth && cursor <= firstMonth}
               className="h-7 w-7"
               onClick={() => setCursor(addMonths(cursor, -1))}
             >
@@ -61,6 +104,7 @@ export const EventsCalendarCard: FC<Props> = ({ events, currency, selectedId, on
               variant="outline"
               size="icon"
               aria-label={t("spending:calendar.nextMonth")}
+              disabled={!!lastMonth && cursor >= lastMonth}
               className="h-7 w-7"
               onClick={() => setCursor(addMonths(cursor, 1))}
             >
@@ -92,9 +136,9 @@ export const EventsCalendarCard: FC<Props> = ({ events, currency, selectedId, on
 
       {/* Day-of-week header */}
       <div className={cn("grid grid-cols-7 text-center", LABEL_CLASS)}>
-        {DAY_NAME_KEYS.map((key) => (
-          <div key={key} className="pb-1">
-            {t(key)}
+        {orderedDayNames.map((name, index) => (
+          <div key={index} className="pb-1">
+            {name}
           </div>
         ))}
       </div>
@@ -128,7 +172,7 @@ export const EventsCalendarCard: FC<Props> = ({ events, currency, selectedId, on
                         "ring-foreground/70 inline-flex h-5 w-5 items-center justify-center rounded-full ring-1",
                     )}
                   >
-                    {day.getDate()}
+                    {numberFormatting.formatDecimal(day.getDate(), { useGrouping: false })}
                   </span>
                 </div>
               );
@@ -143,7 +187,9 @@ export const EventsCalendarCard: FC<Props> = ({ events, currency, selectedId, on
                   key={`bar-${bar.event.eventId}`}
                   onClick={() => onSelect(bar.event.eventId)}
                   title={`${bar.event.eventName} · ${
-                    isBalanceHidden ? "••••" : formatAmount(bar.event.totalSpending, currency)
+                    isBalanceHidden
+                      ? "••••"
+                      : formatting.formatAmount(bar.event.totalSpending, currency)
                   }`}
                   className={cn(
                     "min-h-[16px] truncate rounded-sm px-1 text-left text-[10px] leading-[16px]",
@@ -176,6 +222,11 @@ function stripTime(d: Date): Date {
 
 function startOfMonth(d: Date): Date {
   return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+function monthInTimezone(date: Date, timezone?: string | null): Date {
+  const parts = getZonedDateParts(date, timezone);
+  return new Date(parts.year, parts.month - 1, 1);
 }
 
 function addMonths(d: Date, n: number): Date {

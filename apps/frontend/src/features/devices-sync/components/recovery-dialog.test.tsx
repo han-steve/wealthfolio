@@ -24,14 +24,18 @@ describe("RecoveryDialog", () => {
   it("shows the consumer recovery copy and runs recovery on confirm", async () => {
     render(<RecoveryDialog open />);
 
-    expect(screen.getAllByText("Set Up This Device Again")).toHaveLength(2);
+    expect(screen.getAllByText("Set up this device again")).toHaveLength(2);
     expect(
       screen.getByText(
         "Sync was turned off for this device. Set it up again to keep your data up to date across your devices.",
       ),
     ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Set Up This Device Again" }));
+    expect(
+      screen.getByRole("button", { name: "Set up this device again" }).parentElement,
+    ).toHaveClass("max-sm:[&>button]:whitespace-normal", "sm:flex-wrap");
+
+    fireEvent.click(screen.getByRole("button", { name: "Set up this device again" }));
 
     expect(hookMocks.mutateAsync).toHaveBeenCalledTimes(1);
   });

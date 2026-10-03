@@ -12,7 +12,7 @@
 
 mod attachments;
 mod history;
-mod provider_clients;
+pub(crate) mod provider_clients;
 mod streaming;
 mod working_context;
 
@@ -20,7 +20,7 @@ use attachments::{messages_have_attachment_markers, validate_attachments, Sessio
 use streaming::spawn_chat_stream;
 use working_context::ChatWorkingContext;
 
-use futures::stream::BoxStream;
+use futures::{stream::BoxStream, StreamExt};
 use log::{debug, error, info};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -33,12 +33,117 @@ use crate::providers::ProviderService;
 use crate::title_generator::truncate_to_title;
 use crate::tools::constants::MAX_HISTORY_CHARS;
 use crate::types::{
-    AiStreamEvent, ChatMessage, ChatMessagePart, ChatMessageRole, ChatThread, ListThreadsRequest,
-    SendMessageRequest, SimpleChatMessage, ThreadPage,
+    AiStreamEvent, ChatMessage, ChatMessagePart, ChatMessageRole, ChatThread, ChatThreadConfig,
+    ListThreadsRequest, SendMessageRequest, SimpleChatMessage, ThreadPage,
 };
 // Used only by the inline `mod tests` (test-only fixtures + redact tests).
 #[cfg(test)]
 use crate::types::MessageAttachment;
+
+/// Poll the bounded channel and its producer together, including when the
+/// producer is waiting for channel capacity. Neither outlives the returned stream.
+fn owned_event_stream(
+    receiver: mpsc::Receiver<AiStreamEvent>,
+    producer: impl std::future::Future<Output = ()> + Send + 'static,
+) -> BoxStream<'static, AiStreamEvent> {
+    let producer = futures::stream::once(producer)
+        .filter_map(|()| futures::future::ready(None::<AiStreamEvent>));
+    futures::stream::select(
+        tokio_stream::wrappers::ReceiverStream::new(receiver),
+        producer,
+    )
+    .boxed()
+}
+
+#[cfg(test)]
+mod stream_ownership_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn bounded_producer_drains_final_events_without_deadlock() {
+        let (tx, rx) = mpsc::channel(100);
+        let mut events = owned_event_stream(rx, async move {
+            for n in 0..250 {
+                tx.send(AiStreamEvent::text_delta(
+                    "thread",
+                    "run",
+                    "message",
+                    &n.to_string(),
+                ))
+                .await
+                .unwrap();
+            }
+            tx.send(AiStreamEvent::done(
+                "thread",
+                "run",
+                ChatMessage::assistant_with_id("message", "thread"),
+                None,
+            ))
+            .await
+            .unwrap();
+        });
+        let mut count = 0;
+        while let Some(event) = tokio::time::timeout(Duration::from_secs(2), events.next())
+            .await
+            .unwrap()
+        {
+            if count == 250 {
+                assert!(matches!(event, AiStreamEvent::Done { .. }));
+            }
+            count += 1;
+        }
+        assert_eq!(count, 251);
+    }
+
+    #[tokio::test]
+    async fn error_event_is_delivered_before_end_of_stream() {
+        let (tx, rx) = mpsc::channel(1);
+        let mut events = owned_event_stream(rx, async move {
+            tx.send(AiStreamEvent::error(
+                "thread", "run", None, "TEST", "failure",
+            ))
+            .await
+            .unwrap();
+        });
+        assert!(matches!(
+            events.next().await,
+            Some(AiStreamEvent::Error { .. })
+        ));
+        assert!(events.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn dropping_running_stream_releases_producer_and_title_resources_immediately() {
+        let producer_resource = Arc::new(());
+        let title_resource = Arc::new(());
+        let producer_capture = producer_resource.clone();
+        let title_capture = title_resource.clone();
+        let (tx, rx) = mpsc::channel(1);
+        let mut events = owned_event_stream(rx, async move {
+            let response = async move {
+                let _capture = producer_capture;
+                tx.send(AiStreamEvent::text_delta(
+                    "thread", "run", "message", "started",
+                ))
+                .await
+                .unwrap();
+                std::future::pending::<()>().await;
+            };
+            let title = async move {
+                let _capture = title_capture;
+                std::future::pending::<()>().await;
+            };
+            tokio::join!(response, title);
+        });
+        assert!(events.next().await.is_some());
+        assert_eq!(Arc::strong_count(&producer_resource), 2);
+        assert_eq!(Arc::strong_count(&title_resource), 2);
+        drop(events);
+        // No yield or shutdown task is needed to release these captures.
+        assert_eq!(Arc::strong_count(&producer_resource), 1);
+        assert_eq!(Arc::strong_count(&title_resource), 1);
+    }
+}
 
 fn derive_initial_thread_title(first_user_message: &str) -> Option<String> {
     let trimmed = first_user_message.trim();
@@ -126,8 +231,36 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
 
     /// Create a new chat thread and persist it to the repository.
     pub async fn create_thread(&self) -> Result<ChatThread, AiError> {
-        let thread = ChatThread::new();
+        let provider_service = ProviderService::new(self.env.clone());
+        let settings = provider_service.get_settings()?;
+        let config =
+            Self::thread_config_snapshot(&provider_service, &settings.provider_id, &settings.model);
+        let thread = ChatThread::with_config(config);
         self.env.chat_repository().create_thread(thread).await
+    }
+
+    fn thread_config_snapshot(
+        provider_service: &ProviderService<E>,
+        provider_id: &str,
+        model_id: &str,
+    ) -> ChatThreadConfig {
+        let mut config = ChatThreadConfig::new(
+            provider_id,
+            model_id,
+            crate::LIVE_PROMPT_ID,
+            crate::LIVE_PROMPT_VERSION,
+        );
+        config.tools_allowlist = provider_service
+            .get_tools_allowlist(provider_id)
+            .or_else(|| {
+                Some(
+                    crate::DEFAULT_TOOLS_ALLOWLIST
+                        .iter()
+                        .map(|tool| (*tool).to_string())
+                        .collect(),
+                )
+            });
+        config
     }
 
     /// Get a thread by ID from the repository.
@@ -209,8 +342,23 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
         let incoming_attachments = request.attachments.clone().unwrap_or_default();
         validate_attachments(&incoming_attachments)?;
 
+        // Resolve the provider/model before thread creation so the persisted
+        // snapshot identifies the actual configuration used for the first turn.
+        let provider_service = ProviderService::new(self.env.clone());
+        let settings = provider_service.get_settings()?;
+        let provider_id = request
+            .effective_provider_id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| settings.provider_id.clone());
+        let model_id = request
+            .effective_model_id()
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| settings.model.clone());
+        let config_snapshot =
+            Self::thread_config_snapshot(&provider_service, &provider_id, &model_id);
+
         // Get or create thread
-        let (thread, is_new_thread, initial_title) = match &request.thread_id {
+        let (mut thread, is_new_thread, initial_title) = match &request.thread_id {
             Some(id) => {
                 let thread = repo
                     .get_thread(id)?
@@ -218,7 +366,7 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
                 (thread, false, None)
             }
             None => {
-                let mut new_thread = ChatThread::new();
+                let mut new_thread = ChatThread::with_config(config_snapshot.clone());
                 new_thread.title = derive_initial_thread_title(&request.content);
                 let created = repo.create_thread(new_thread).await?;
                 let initial_title = created.title.clone();
@@ -231,6 +379,16 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
 
         // Load previous messages for context (history)
         let mut previous_messages = repo.get_messages_by_thread(&thread_id)?;
+
+        // An explicitly created empty thread may have been created before a
+        // per-request model override was known. Snapshot the configuration
+        // actually used by its first turn. Also backfill legacy config-less
+        // threads without rewriting established snapshots.
+        if thread.config.is_none() || (!is_new_thread && previous_messages.is_empty()) {
+            thread.config = Some(config_snapshot);
+            thread.updated_at = chrono::Utc::now();
+            thread = repo.update_thread(thread).await?;
+        }
 
         // When editing a message, truncate context to the parent message (inclusive)
         if let Some(ref parent_id) = request.parent_message_id {
@@ -289,19 +447,6 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
         let user_message = ChatMessage::user(&thread_id, &persist_text);
         repo.create_message(user_message).await?;
 
-        // Get provider settings
-        let provider_service = ProviderService::new(self.env.clone());
-        let settings = provider_service.get_settings()?;
-
-        let provider_id = request
-            .effective_provider_id()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| settings.provider_id.clone());
-        let model_id = request
-            .effective_model_id()
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| settings.model.clone());
-
         debug!("Using provider {} with model {}", provider_id, model_id);
 
         // Generate IDs for this run
@@ -322,8 +467,8 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
         let is_new_thread_clone = is_new_thread;
         let thinking_override = request.config.as_ref().and_then(|c| c.thinking);
 
-        // Spawn the streaming task
-        tokio::spawn(async move {
+        // The returned stream owns this work; disconnecting drops its services.
+        let producer = async move {
             if let Err(e) = spawn_chat_stream(
                 env,
                 tx.clone(),
@@ -355,11 +500,9 @@ impl<E: AiEnvironment + 'static> ChatService<E> {
                     ))
                     .await;
             }
-        });
+        };
 
-        // Convert receiver to stream
-        let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-        Ok(Box::pin(stream))
+        Ok(owned_event_stream(rx, producer))
     }
 
     /// List available tool names.
@@ -499,6 +642,11 @@ mod tests {
 
         let thread = service.create_thread().await.unwrap();
         assert!(!thread.id.is_empty());
+        let config = thread.config.expect("new thread config snapshot");
+        assert_eq!(config.prompt_template_id, crate::LIVE_PROMPT_ID);
+        assert_eq!(config.prompt_version, crate::LIVE_PROMPT_VERSION);
+        assert!(!config.provider_id.is_empty());
+        assert!(!config.model_id.is_empty());
     }
 
     #[tokio::test]

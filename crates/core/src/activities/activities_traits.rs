@@ -223,6 +223,21 @@ pub trait ActivityRepositoryTrait: Send + Sync {
         delete_ids: Vec<String>,
     ) -> Result<ActivityBulkMutationResult>;
     async fn create_activities(&self, activities: Vec<NewActivity>) -> Result<usize>;
+    /// Returns activities from both active and archived accounts.
+    fn get_activities_including_archived_accounts(&self) -> Result<Vec<Activity>> {
+        Err(crate::Error::Unexpected(
+            "Activity repository does not support archived-account activity reads".to_string(),
+        ))
+    }
+    async fn update_activities_for_final_cash_migration(
+        &self,
+        updates: Vec<ActivityFinalCashMigrationUpdate>,
+    ) -> Result<ActivityFinalCashMigrationWriteResult> {
+        let _ = updates;
+        Err(crate::Error::Unexpected(
+            "Activity repository does not support the final-cash migration".to_string(),
+        ))
+    }
     fn get_first_activity_date(
         &self,
         account_ids: Option<&[String]>,
@@ -388,10 +403,12 @@ pub trait ActivityServiceTrait: Send + Sync {
     async fn create_activity(&self, activity: NewActivity) -> Result<Activity>;
     async fn update_activity(&self, activity: ActivityUpdate) -> Result<Activity>;
     async fn delete_activity(&self, activity_id: String) -> Result<Activity>;
+    /// Returns the internal transfer pair for the activity, or `None` when the
+    /// activity exists but is not part of a valid internal transfer pair.
     fn get_transfer_pair_for_activity(
         &self,
         activity_id: String,
-    ) -> Result<InternalTransferPairResponse>;
+    ) -> Result<Option<InternalTransferPairResponse>>;
     fn find_transfer_match_candidates(
         &self,
         request: TransferMatchCandidateRequest,

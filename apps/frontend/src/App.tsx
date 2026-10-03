@@ -1,6 +1,9 @@
+import { ProfileShell } from "@/features/profiles/profile-shell";
+import { NativeDatabaseGate } from "@/features/database-recovery/native-database-gate";
 import { isWeb } from "@/adapters";
 import { AddonRuntimeLoader } from "@/addons/addon-runtime-loader";
 import { setAddonQueryClient } from "@/addons/addons-runtime-context";
+import { AssetLogoRegistrySync } from "@/components/asset-logo-registry-sync";
 import { Toaster } from "@/components/sonner";
 import { AuthGate, AuthProvider } from "@/context/auth-context";
 import { EventDialogProvider } from "@/features/spending/components/event-dialog-provider";
@@ -31,28 +34,37 @@ function App() {
 
   setAddonQueryClient(queryClient as unknown as Parameters<typeof setAddonQueryClient>[0]);
 
-  const routedContent = isWebEnv ? (
-    <AuthGate fallback={<LoginPage />}>
-      <AppRoutes />
-    </AuthGate>
-  ) : (
-    <AppRoutes />
+  const content = (
+    <SettingsProvider>
+      <WealthfolioConnectProvider>
+        <PrivacyProvider>
+          <TooltipProvider>
+            <Toaster mobileOffset={{ top: "68px" }} closeButton expand={false} />
+            <AddonRuntimeLoader />
+            <EventDialogProvider>
+              <AssetLogoRegistrySync />
+              <AppRoutes />
+            </EventDialogProvider>
+          </TooltipProvider>
+        </PrivacyProvider>
+      </WealthfolioConnectProvider>
+    </SettingsProvider>
   );
 
   return (
     <QueryClientProvider client={queryClient}>
       <AuthProvider>
-        <WealthfolioConnectProvider>
-          <PrivacyProvider>
-            <SettingsProvider>
-              <TooltipProvider>
-                <Toaster mobileOffset={{ top: "68px" }} closeButton expand={false} />
-                <AddonRuntimeLoader />
-                <EventDialogProvider>{routedContent}</EventDialogProvider>
-              </TooltipProvider>
-            </SettingsProvider>
-          </PrivacyProvider>
-        </WealthfolioConnectProvider>
+        {isWebEnv ? (
+          <AuthGate fallback={<LoginPage />}>
+            <ProfileShell>
+              <NativeDatabaseGate>{content}</NativeDatabaseGate>
+            </ProfileShell>
+          </AuthGate>
+        ) : (
+          <ProfileShell>
+            <NativeDatabaseGate>{content}</NativeDatabaseGate>
+          </ProfileShell>
+        )}
       </AuthProvider>
     </QueryClientProvider>
   );

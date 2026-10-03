@@ -3,6 +3,7 @@ import { Button } from "@wealthfolio/ui/components/ui/button";
 import { ProgressIndicator } from "@wealthfolio/ui/components/ui/progress-indicator";
 import { FacetedFilter } from "@wealthfolio/ui";
 import { useAccounts } from "@/hooks/use-accounts";
+import { useNameComparator } from "@/hooks/use-name-comparator";
 import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ImportAlert } from "../components/import-alert";
@@ -17,7 +18,7 @@ import {
   type DraftActivity,
 } from "../context";
 import { buildImportAssetCandidateFromDraft } from "../utils/asset-review-utils";
-import { validateDraft } from "../utils/draft-utils";
+import { reconcileExpenseReversalBoundary, validateDraft } from "../utils/draft-utils";
 import { getActivityImportProfileForResolvedAccountIds } from "../utils/activity-import-profile";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -92,6 +93,7 @@ function findDuplicateContextRowIndexes(drafts: DraftActivity[]): number[] {
 export function ReviewStep() {
   const { state, dispatch, validateDrafts } = useImportContext();
   const { t } = useTranslation();
+  const compareNames = useNameComparator();
   const { parsedRows, mapping, draftActivities } = state;
   const isValidating = state.isValidating;
   const { accounts = [] } = useAccounts({ filterActive: true, includeArchived: false });
@@ -167,18 +169,20 @@ export function ReviewStep() {
     ].filter((o) => o.count > 0);
 
     return {
+      // Types and symbols are machine identifiers; only account names use the
+      // UI-language collator.
       types: Array.from(types, ([value, count]) => ({ label: value, value, count })).sort((a, b) =>
         a.label.localeCompare(b.label),
       ),
       accounts: Array.from(accounts, ([value, count]) => ({ label: value, value, count })).sort(
-        (a, b) => a.label.localeCompare(b.label),
+        (a, b) => compareNames(a.label, b.label),
       ),
       symbols: Array.from(symbols, ([value, count]) => ({ label: value, value, count })).sort(
         (a, b) => a.label.localeCompare(b.label),
       ),
       statuses,
     };
-  }, [draftActivities, filterStats, t]);
+  }, [draftActivities, filterStats, t, compareNames]);
 
   // Apply all filters on top of drafts passed to the grid
   const { facetFilteredDrafts, nonSelectableRowIndexes } = useMemo(() => {
@@ -235,6 +239,11 @@ export function ReviewStep() {
       // Find the current draft and merge with updates
       const currentDraft = draftActivities.find((d) => d.rowIndex === rowIndex);
       if (currentDraft) {
+        const reconciledUpdates = reconcileExpenseReversalBoundary(
+          currentDraft,
+          updates,
+          accountTypeById,
+        );
         const changesAssetIdentity = [
           "symbol",
           "exchangeMic",
@@ -244,10 +253,10 @@ export function ReviewStep() {
           "isin",
           "accountId",
           "activityType",
-        ].some((field) => field in updates);
+        ].some((field) => field in reconciledUpdates);
         const mergedDraft = {
           ...currentDraft,
-          ...updates,
+          ...reconciledUpdates,
         } as DraftActivity;
         const nextCandidate = buildImportAssetCandidateFromDraft(mergedDraft);
         // Re-validate the merged draft
@@ -256,7 +265,7 @@ export function ReviewStep() {
         const shouldRevalidateStatus = currentDraft.status !== "skipped";
         dispatch(
           updateDraft(rowIndex, {
-            ...updates,
+            ...reconciledUpdates,
             ...(changesAssetIdentity
               ? {
                   assetId: undefined,
@@ -311,17 +320,19 @@ export function ReviewStep() {
         const currentDraft = draftActivities.find((draft) => draft.rowIndex === rowIndex);
         if (!currentDraft) continue;
 
-        const mergedDraft = {
-          ...currentDraft,
-          accountId: newAccountId,
-        } as DraftActivity;
+        const accountUpdates = reconcileExpenseReversalBoundary(
+          currentDraft,
+          { accountId: newAccountId },
+          accountTypeById,
+        );
+        const mergedDraft = { ...currentDraft, ...accountUpdates } as DraftActivity;
         const nextCandidate = buildImportAssetCandidateFromDraft(mergedDraft);
         const validation = validateDraft(mergedDraft, accountTypeById);
         const shouldRevalidateStatus = currentDraft.status !== "skipped";
 
         dispatch(
           updateDraft(rowIndex, {
-            accountId: newAccountId,
+            ...accountUpdates,
             assetId: undefined,
             importAssetKey: undefined,
             assetCandidateKey: nextCandidate?.key,

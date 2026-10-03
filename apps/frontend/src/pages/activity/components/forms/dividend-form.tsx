@@ -1,16 +1,16 @@
 import { useSettings } from "@/hooks/use-settings";
 import { ACTIVITY_SUBTYPES, ActivityType } from "@/lib/constants";
-import { roundDecimal } from "@/lib/utils";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
 import { Label } from "@wealthfolio/ui/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "@wealthfolio/ui/components/ui/radio-group";
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { z } from "zod";
 import type { TFunction } from "i18next";
+import { useActivityCurrency } from "../../hooks/use-activity-currency";
 import {
   AccountSelect,
   AdvancedOptionsSection,
@@ -23,6 +23,7 @@ import {
   SymbolSearch,
   type AccountSelectOption,
 } from "./fields";
+import { calculateIncomeFinalAmount } from "@/lib/activity-final-amount";
 
 // Non-UI sentinel for the "cash" income mode (not a DB value; internal only).
 const INCOME_MODE_CASH = "CASH";
@@ -52,8 +53,8 @@ export const createDividendFormSchema = (t?: TFunction) =>
           required_error: msg(t, "activity:form.err_enter_amount", "Please enter an amount."),
           invalid_type_error: msg(t, "activity:form.err_amount_number", "Amount must be a number."),
         })
-        .positive({
-          message: msg(t, "activity:form.err_amount_gt_zero", "Amount must be greater than 0."),
+        .min(0, {
+          message: msg(t, "activity:form.err_amount_non_negative", "Amount must be non-negative."),
         }),
       tax: z.coerce
         .number({
@@ -87,7 +88,8 @@ export const createDividendFormSchema = (t?: TFunction) =>
         .positive({
           message: msg(t, "activity:form.err_fxrate_positive", "FX Rate must be positive."),
         })
-        .optional(),
+        .optional()
+        .nullable(),
       subtype: z.string().optional().nullable(),
       // Positivity for unitPrice/quantity is enforced in superRefine, only for
       // asset-backed subtypes: cash records persist 0 for these hidden fields,
@@ -219,6 +221,8 @@ export function DividendForm({
     },
   });
 
+  useActivityCurrency(form, accounts, { isEditing });
+
   const { watch } = form;
   const { getFieldState, getValues, setValue } = form;
   const accountId = watch("accountId");
@@ -226,6 +230,7 @@ export function DividendForm({
   const subtype = watch("subtype");
   const quantity = watch("quantity");
   const unitPrice = watch("unitPrice");
+  const amountWasEdited = useRef(false);
   const isAssetBacked =
     subtype === ACTIVITY_SUBTYPES.DRIP || subtype === ACTIVITY_SUBTYPES.DIVIDEND_IN_KIND;
   const dividendMode = subtype ?? INCOME_MODE_CASH;
@@ -234,13 +239,21 @@ export function DividendForm({
     if (!isAssetBacked) return;
     const q = Number(quantity);
     const p = Number(unitPrice);
+    if (amountWasEdited.current) return;
+    const computedAmount = calculateIncomeFinalAmount(
+      quantity,
+      unitPrice,
+      getValues("symbolInstrumentType"),
+    );
+    if (computedAmount === undefined) return;
     const currentAmount = Number(getValues("amount"));
     const quantityIsDirty = getFieldState("quantity").isDirty;
     const unitPriceIsDirty = getFieldState("unitPrice").isDirty;
     const shouldAutoSetAmount =
-      quantityIsDirty || unitPriceIsDirty || !(Number.isFinite(currentAmount) && currentAmount > 0);
+      quantityIsDirty ||
+      unitPriceIsDirty ||
+      !(Number.isFinite(currentAmount) && currentAmount >= 0);
     if (q > 0 && p > 0 && shouldAutoSetAmount) {
-      const computedAmount = roundDecimal(q * p);
       if (currentAmount !== computedAmount) {
         setValue("amount", computedAmount, {
           shouldDirty: quantityIsDirty || unitPriceIsDirty,
@@ -291,7 +304,7 @@ export function DividendForm({
           <input type="hidden" {...form.register("symbolInstrumentType")} />
           <input type="hidden" {...form.register("existingAssetId")} />
 
-          <AccountSelect name="accountId" accounts={accounts} currencyName="currency" />
+          <AccountSelect name="accountId" accounts={accounts} />
           <DatePicker name="activityDate" label={t("activity:field_date")} />
         </FormSection>
 
@@ -366,6 +379,9 @@ export function DividendForm({
                   : t("activity:form.label_amount")
               }
               currency={currency}
+              onValueChange={() => {
+                amountWasEdited.current = true;
+              }}
             />
             <AmountInput
               name="tax"

@@ -1,3 +1,4 @@
+import { revokeProfileSession } from "@/features/profiles/session";
 import { isWeb } from "@/adapters";
 import { setUnauthorizedHandler } from "@/lib/auth-token";
 import {
@@ -44,6 +45,24 @@ const OIDC_ERROR_KEYS: Record<string, string> = {
 function resolveOidcError(t: TFunction, code: string): string {
   const key = OIDC_ERROR_KEYS[code];
   return key ? t(key) : t("auth:context.oidcErrors.generic");
+}
+
+/**
+ * One-shot per-tab guard for the automatic SSO redirect. Armed before every
+ * automatic redirect and on logout; cleared only once `/auth/me` confirms a
+ * session. While armed, the login page suppresses further automatic redirects
+ * (the manual SSO button is unaffected), so a callback that fails to establish
+ * a session — no cookie, `/auth/me` rejecting — lands on the login page once
+ * instead of looping through the IdP.
+ */
+export const SSO_REDIRECT_GUARD_STORAGE_KEY = "wf.sso-redirect-guard";
+
+function clearSsoRedirectGuard() {
+  try {
+    window.sessionStorage.removeItem(SSO_REDIRECT_GUARD_STORAGE_KEY);
+  } catch {
+    // noop – sessionStorage may be unavailable
+  }
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -94,6 +113,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
               credentials: "same-origin",
             });
             if (meRes.ok && !cancelled) {
+              clearSsoRedirectGuard();
               setCookieSession(true);
             }
           } catch {
@@ -186,7 +206,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   );
 
   const logout = useCallback(() => {
+    revokeProfileSession();
     if (isWeb) {
+      try {
+        window.sessionStorage.setItem(SSO_REDIRECT_GUARD_STORAGE_KEY, "1");
+      } catch {
+        // noop – sessionStorage may be unavailable
+      }
       if (oidcEnabled) {
         // Full-page navigation: the server clears the session (and OIDC id-token
         // cookie) and may redirect to the IdP for single logout.

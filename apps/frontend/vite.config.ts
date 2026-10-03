@@ -12,7 +12,8 @@ const serverProxy = enableProxy
   ? {
       "/api": {
         target: apiTarget,
-        changeOrigin: true,
+        // Profile admission validates the browser Origin against the original Host.
+        changeOrigin: false,
       },
       "/docs": {
         target: apiTarget,
@@ -32,7 +33,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   publicDir: "public",
   optimizeDeps: {
-    include: ["lucide-react", "recharts"],
+    include: ["lucide-react", "recharts", "@tauri-apps/plugin-barcode-scanner"],
   },
   define: {
     __BUILD_TARGET__: JSON.stringify(buildTarget),
@@ -84,6 +85,7 @@ export default defineConfig({
   // https://tauri.app/v1/api/config#buildconfig.beforedevcommand
   envPrefix: ["VITE_", "TAURI_", "CONNECT_"],
   build: {
+    target: ["chrome107", "edge107", "firefox104", "safari16"],
     // Output to project root's dist folder (for Tauri)
     outDir: "../../dist",
     // outDir is outside the Vite root, so Vite won't clean it by default —
@@ -96,8 +98,6 @@ export default defineConfig({
         "addon-sandbox": path.resolve(__dirname, "addon-sandbox.html"),
       },
     },
-    // Tauri uses Chromium on Windows and WebKit on macOS and Linux
-    // Keep target unset to use modern defaults for desktop WebView engines.
     // don't minify for debug builds
     minify: !process.env.TAURI_DEBUG ? "esbuild" : false,
     // produce sourcemaps for debug builds
@@ -107,6 +107,6 @@ export default defineConfig({
     globals: true,
     environment: "jsdom",
     setupFiles: "./src/test/setup.ts",
-    include: ["**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"],
+    include: ["src/**/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}"],
   },
 } as unknown as import("vitest/config").UserConfigExport);

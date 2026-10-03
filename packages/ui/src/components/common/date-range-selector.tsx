@@ -1,8 +1,8 @@
 import * as React from "react";
 import { useTranslation } from "react-i18next";
-import { format, isSameDay, startOfYear, subDays, subMonths, subYears } from "date-fns";
+import { isSameDay, startOfYear, subDays, subMonths, subYears } from "date-fns";
 import { DateRange as DayPickerDateRange } from "react-day-picker";
-import { useDateFnsLocale } from "../../hooks/use-date-fns-locale";
+import { useDateFormatting } from "../formatting-provider";
 import { useIsMobile } from "../../hooks/use-mobile";
 import { cn } from "../../lib/utils";
 import { AnimatedToggleGroup } from "../ui/animated-toggle-group";
@@ -22,66 +22,68 @@ const ranges = [
   {
     label: "1D",
     name: "Last Day",
-    getValue: () => ({ from: subDays(new Date(), 1), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subDays(asOf, 1), to: asOf }),
   },
   {
     label: "1W",
     name: "Last Week",
-    getValue: () => ({ from: subDays(new Date(), 7), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subDays(asOf, 7), to: asOf }),
   },
   {
     label: "1M",
     name: "Last Month",
-    getValue: () => ({ from: subMonths(new Date(), 1), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subMonths(asOf, 1), to: asOf }),
   },
   {
     label: "3M",
     name: "Last 3 Months",
-    getValue: () => ({ from: subMonths(new Date(), 3), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subMonths(asOf, 3), to: asOf }),
   },
   {
     label: "6M",
     name: "Last 6 Months",
-    getValue: () => ({ from: subMonths(new Date(), 6), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subMonths(asOf, 6), to: asOf }),
   },
   {
     label: "YTD",
     name: "Year to Date",
-    getValue: () => ({ from: startOfYear(new Date()), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: startOfYear(asOf), to: asOf }),
   },
   {
     label: "1Y",
     name: "Last Year",
-    getValue: () => ({ from: subYears(new Date(), 1), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subYears(asOf, 1), to: asOf }),
   },
   {
     label: "3Y",
     name: "Last 3 Years",
-    getValue: () => ({ from: subYears(new Date(), 3), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subYears(asOf, 3), to: asOf }),
   },
   {
     label: "5Y",
     name: "Last 5 Years",
-    getValue: () => ({ from: subYears(new Date(), 5), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: subYears(asOf, 5), to: asOf }),
   },
   {
     label: "ALL",
     name: "All Time",
-    getValue: () => ({ from: new Date(1970, 0, 1), to: new Date() }),
+    getValue: (asOf: Date) => ({ from: new Date(1970, 0, 1), to: asOf }),
   },
 ] as const;
 
 type DateRangePresetLabel = (typeof ranges)[number]["label"];
 
 interface DateRangeSelectorProps {
+  /** Calendar date used to anchor relative presets. */
+  asOf?: Date;
   value: DateRange | undefined;
   onChange: (range: DateRange | undefined) => void;
   hiddenRanges?: readonly DateRangePresetLabel[];
 }
 
-export function DateRangeSelector({ value, onChange, hiddenRanges = [] }: DateRangeSelectorProps) {
+export function DateRangeSelector({ value, onChange, hiddenRanges = [], asOf = new Date() }: DateRangeSelectorProps) {
   const { t } = useTranslation();
-  const locale = useDateFnsLocale();
+  const formatting = useDateFormatting();
   const isMobile = useIsMobile();
   const [isCustomPickerOpen, setIsCustomPickerOpen] = React.useState(false);
   const [draftRange, setDraftRange] = React.useState<DateRange | undefined>(value);
@@ -100,7 +102,7 @@ export function DateRangeSelector({ value, onChange, hiddenRanges = [] }: DateRa
     }
 
     const selected = visibleRanges.find((range) => {
-      const predefinedRange = range.getValue();
+      const predefinedRange = range.getValue(asOf);
       return compareDates(value?.from, predefinedRange.from) && compareDates(value?.to, predefinedRange.to);
     });
     return selected?.label;
@@ -109,7 +111,7 @@ export function DateRangeSelector({ value, onChange, hiddenRanges = [] }: DateRa
   const selectedLabel = getSelectedRange();
   const isCustomRange = !selectedLabel;
   const isDraftRangeComplete = !draftRange || (!!draftRange.from && !!draftRange.to);
-  const allTimeRange = visibleRanges.find((range) => range.label === "ALL")?.getValue();
+  const allTimeRange = visibleRanges.find((range) => range.label === "ALL")?.getValue(asOf);
   const appliedDraftRange = draftRange ?? allTimeRange;
 
   const handleCustomPickerOpenChange = (open: boolean) => {
@@ -126,7 +128,12 @@ export function DateRangeSelector({ value, onChange, hiddenRanges = [] }: DateRa
   };
 
   const formatRangeDate = (date: Date | undefined) =>
-    date ? format(date, "MMM d, yyyy", { locale }) : t("ui:dateRange.notSet", "Not set");
+    date
+      ? formatting.formatCalendarDate(
+          { year: date.getFullYear(), month: date.getMonth() + 1, day: date.getDate() },
+          { month: "short", day: "numeric", year: "numeric" },
+        )
+      : t("ui:dateRange.notSet", "Not set");
 
   const triggerButton = (
     <Button
@@ -158,7 +165,7 @@ export function DateRangeSelector({ value, onChange, hiddenRanges = [] }: DateRa
           }
           const selectedRange = visibleRanges.find((r) => r.label === newValue);
           if (selectedRange) {
-            onChange(selectedRange.getValue());
+            onChange(selectedRange.getValue(asOf));
           }
         }}
         size="sm"

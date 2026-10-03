@@ -1,6 +1,8 @@
+import { isExpiredOptionAsset } from "./asset-utils";
 import { createActivity, getAssetHoldings, getAssetLots, searchActivities } from "@/adapters";
 import { ActionPalette, type ActionPaletteGroup } from "@/components/action-palette";
-import { TickerAvatar } from "@/components/ticker-avatar";
+import { AssetLogoDialog } from "@/components/asset-logo/asset-logo-dialog";
+import { EditableTickerAvatar } from "@/components/asset-logo/editable-ticker-avatar";
 import { useHapticFeedback } from "@/hooks";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useAlternativeAssetHolding, useAlternativeHoldings } from "@/hooks/use-alternative-assets";
@@ -15,13 +17,23 @@ import { generateId } from "@/lib/id";
 import { QueryKeys } from "@/lib/query-keys";
 import { useSettingsContext } from "@/lib/settings-provider";
 import type { ActivityDetails, AssetKind, AssetLotView, Holding, Quote } from "@/lib/types";
-import { normalizeCurrency } from "@/lib/utils";
+import { cn, normalizeCurrency } from "@/lib/utils";
+import { ActivityDeleteModal } from "@/pages/activity/components/activity-delete-modal";
+import { ActivityForm, type AccountSelectOption } from "@/pages/activity/components/activity-form";
+import ActivityTable from "@/pages/activity/components/activity-table/activity-table";
+import ActivityTableMobile from "@/pages/activity/components/activity-table/activity-table-mobile";
+import { MobileActivityForm } from "@/pages/activity/components/mobile-forms/mobile-activity-form";
+import { useActivityActionDialogs } from "@/pages/activity/hooks/use-activity-action-dialogs";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { AnimatedToggleGroup, Page, PageContent, PageHeader, SwipableView } from "@wealthfolio/ui";
-import { Badge } from "@wealthfolio/ui/components/ui/badge";
-import { Button } from "@wealthfolio/ui/components/ui/button";
-import { Icons } from "@wealthfolio/ui/components/ui/icons";
-import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
+import {
+  AnimatedToggleGroup,
+  Page,
+  PageContent,
+  PageHeader,
+  SwipableView,
+  useDateFormatting,
+  type FormattingApi,
+} from "@wealthfolio/ui";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -32,29 +44,30 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@wealthfolio/ui/components/ui/alert-dialog";
+import { Badge } from "@wealthfolio/ui/components/ui/badge";
+import { Button } from "@wealthfolio/ui/components/ui/button";
+import { Icons } from "@wealthfolio/ui/components/ui/icons";
+import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
 import { Tabs, TabsContent } from "@wealthfolio/ui/components/ui/tabs";
-import { useCallback, useMemo, useState } from "react";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@wealthfolio/ui/components/ui/tooltip";
 import type { TFunction } from "i18next";
+import { useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { toast } from "sonner";
 import { AlternativeAssetContent, useAlternativeAssetActions } from "./alternative-asset-content";
+import { AssetSnapshotHistory, useHasManualSnapshots } from "./asset-account-holdings";
+import { resolveContractMultiplier } from "./asset-contract-multiplier";
 import AssetDetailCard from "./asset-detail-card";
 import { AssetEditSheet } from "./asset-edit-sheet";
 import AssetHistoryCard from "./asset-history-card";
-import { AssetSnapshotHistory, useHasManualSnapshots } from "./asset-account-holdings";
 import AssetLotsTable from "./asset-lots-table";
-import { ActivityDeleteModal } from "@/pages/activity/components/activity-delete-modal";
-import { ActivityForm, type AccountSelectOption } from "@/pages/activity/components/activity-form";
-import ActivityTable from "@/pages/activity/components/activity-table/activity-table";
-import ActivityTableMobile from "@/pages/activity/components/activity-table/activity-table-mobile";
-import { MobileActivityForm } from "@/pages/activity/components/mobile-forms/mobile-activity-form";
-import { useActivityActionDialogs } from "@/pages/activity/hooks/use-activity-action-dialogs";
 import { useAssetProfile } from "./hooks/use-asset-profile";
 import { useAssetProfileMutations } from "./hooks/use-asset-profile-mutations";
-import { RefreshQuotesConfirmDialog } from "./refresh-quotes-confirm-dialog";
 import { useQuoteMutations } from "./hooks/use-quote-mutations";
 import { QuoteHistoryDataGrid } from "./quote-history-data-grid";
+import { ResetProviderHistoryDialog } from "./reset-provider-history-dialog";
+import { RefreshQuotesConfirmDialog } from "./refresh-quotes-confirm-dialog";
 
 // Alternative asset kinds that should use ValueHistoryDataGrid
 const ALTERNATIVE_ASSET_KINDS: AssetKind[] = [
@@ -124,6 +137,7 @@ interface AssetDetailData {
     strike?: number | null;
     expiration?: string | null;
   } | null;
+  contractMultiplier?: number | null;
 }
 
 type AssetTab = "overview" | "history";
@@ -155,16 +169,19 @@ const parseHealthContext = (value: string | null): AssetHealthContext | null => 
   return null;
 };
 
-const formatHealthDate = (value: string | null): string | null => {
+const formatHealthDate = (
+  value: string | null,
+  formatting: Pick<FormattingApi, "formatDate">,
+): string | null => {
   if (!value) return null;
   const date = new Date(`${value}T00:00:00Z`);
   if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat(undefined, {
+  return formatting.formatDate(date, {
     month: "short",
     day: "numeric",
     year: "numeric",
     timeZone: "UTC",
-  }).format(date);
+  });
 };
 
 function AssetHealthBanner({
@@ -184,33 +201,38 @@ function AssetHealthBanner({
   onRefreshPrices: () => void;
   onClear: () => void;
 }) {
+  const formatting = useDateFormatting();
+  const { t } = useTranslation();
   if (!context) return null;
 
-  const dateLabel = formatHealthDate(date);
+  const dateLabel = formatHealthDate(date, formatting);
   const copy =
     context === "price"
       ? isManualPricingMode
         ? {
-            title: dateLabel ? `Add a price for ${dateLabel}` : "Manual prices need review",
+            title: dateLabel
+              ? t("asset:profile.health.add_price_for_date", { date: dateLabel })
+              : t("asset:profile.health.manual_prices_need_review"),
             description: dateLabel
-              ? "Wealthfolio is carrying forward the last price. Add this date only if it needs its own value."
-              : "Review the missing dates. Add prices that need their own value; carried-forward prices are still used between entries.",
+              ? t("asset:profile.health.carrying_forward_add_date")
+              : t("asset:profile.health.review_missing_dates"),
           }
         : {
-            title: dateLabel ? `Price missing for ${dateLabel}` : "Price history needs review",
+            title: dateLabel
+              ? t("asset:profile.health.price_missing_for_date", { date: dateLabel })
+              : t("asset:profile.health.price_history_needs_review"),
             description: dateLabel
-              ? "Wealthfolio is carrying forward the last available price. Refetch prices if this was a trading day."
-              : "Refetch provider history to restore missing or stale prices. Carried-forward prices are used until exact prices are available.",
+              ? t("asset:profile.health.carrying_forward_refetch")
+              : t("asset:profile.health.refetch_history"),
           }
       : context === "basis"
         ? {
-            title: "Cost basis needs review",
-            description:
-              "Update what you paid for this holding so Wealthfolio can calculate gain/loss.",
+            title: t("asset:profile.health.cost_basis_needs_review"),
+            description: t("asset:profile.health.cost_basis_description"),
           }
         : {
-            title: "Transactions need review",
-            description: "Review the transactions Health Center flagged for this investment.",
+            title: t("asset:profile.health.transactions_need_review"),
+            description: t("asset:profile.health.transactions_description"),
           };
 
   return (
@@ -237,11 +259,11 @@ function AssetHealthBanner({
               ) : (
                 <Icons.Refresh className="mr-2 h-4 w-4" />
               )}
-              Refetch Prices
+              {t("asset:profile.health.refetch_prices")}
             </Button>
           )}
           <Button type="button" variant="ghost" size="sm" onClick={onClear}>
-            Clear
+            {t("common:clear")}
           </Button>
         </div>
       </div>
@@ -268,6 +290,7 @@ export const AssetProfilePage = () => {
   const hasManualSnapshots = useHasManualSnapshots(assetId);
   const [actionPaletteOpen, setActionPaletteOpen] = useState(false);
   const [editSheetOpen, setEditSheetOpen] = useState(false);
+  const [logoDialogOpen, setLogoDialogOpen] = useState(false);
   const [editSheetDefaultTab, setEditSheetDefaultTab] = useState<
     "general" | "classification" | "market-data"
   >("general");
@@ -479,6 +502,8 @@ export const AssetProfilePage = () => {
           couponFrequency?: string | null;
         }
       | undefined;
+    // Frequency alone has nothing to render — the card only draws a coupon cell
+    // (which carries the frequency) and a maturity cell.
     if (!bond || (!bond.maturityDate && bond.couponRate == null)) return null;
     return bond;
   }, [assetProfile]);
@@ -493,12 +518,10 @@ export const AssetProfilePage = () => {
     return option;
   }, [assetProfile]);
 
-  const isExpiredOption = useMemo(() => {
-    if (!optionSpec?.expiration) return false;
-    // Compare date-only: expired once the calendar day after expiration has started
-    const today = new Date().toISOString().split("T")[0];
-    return optionSpec.expiration < today;
-  }, [optionSpec]);
+  const isExpiredOption =
+    optionSpec?.expiration && assetProfile
+      ? isExpiredOptionAsset(assetProfile, settings?.timezone)
+      : false;
 
   const [confirmExpiryOpen, setConfirmExpiryOpen] = useState(false);
   const queryClient = useQueryClient();
@@ -698,6 +721,12 @@ export const AssetProfilePage = () => {
     const quantity = Number(holding?.quantity ?? 0);
 
     const contractMultiplier = Number(holding?.contractMultiplier ?? 1);
+    // What the asset is configured with, independent of any holding. The line
+    // above falls back to 1, which would misreport a closed option as 1x.
+    const configuredContractMultiplier = resolveContractMultiplier(
+      asset?.metadata,
+      asset?.instrumentType,
+    );
     const costUnits =
       optionSpec && contractMultiplier > 0 ? quantity * contractMultiplier : quantity;
     const averageCostPrice =
@@ -836,6 +865,7 @@ export const AssetProfilePage = () => {
       quote: quoteData?.quote ?? null,
       bondSpec: bondSpec ?? null,
       optionSpec: optionSpec ?? null,
+      contractMultiplier: configuredContractMultiplier,
     };
   }, [
     holding,
@@ -1029,6 +1059,9 @@ export const AssetProfilePage = () => {
 
   const isLoading = isHoldingLoading || isQuotesLoading || isAssetProfileLoading;
   const [refreshConfirmOpen, setRefreshConfirmOpen] = useState(false);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [symbolCopied, setSymbolCopied] = useState(false);
+  const displayedSymbol = assetProfile?.displayCode ?? holding?.instrument?.symbol ?? assetId;
 
   const handleUpdateQuotes = useCallback(() => {
     if (!profile?.id) return;
@@ -1049,6 +1082,16 @@ export const AssetProfilePage = () => {
   const handleBack = useCallback(() => {
     navigate(-1);
   }, [navigate]);
+
+  const handleCopySymbol = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(displayedSymbol);
+      setSymbolCopied(true);
+      window.setTimeout(() => setSymbolCopied(false), 1500);
+    } catch (error) {
+      console.error("Failed to copy asset symbol:", error);
+    }
+  }, [displayedSymbol]);
 
   const clearHealthContext = useCallback(() => {
     const next = new URLSearchParams(location.search);
@@ -1110,7 +1153,7 @@ export const AssetProfilePage = () => {
                       items: [
                         {
                           icon: Icons.Download,
-                          label: t("asset:profile.update_price"),
+                          label: t("common:component.update_quotes"),
                           onClick: handleUpdateQuotes,
                         },
                         {
@@ -1118,6 +1161,16 @@ export const AssetProfilePage = () => {
                           label: t("asset:profile.refresh_history"),
                           onClick: handleRefreshQuotesWithConfirm,
                         },
+                        ...(!isManualPricingMode
+                          ? [
+                              {
+                                icon: Icons.Refresh,
+                                label: t("asset:resetDialog.title"),
+                                onClick: () => setResetConfirmOpen(true),
+                                variant: "destructive" as const,
+                              },
+                            ]
+                          : []),
                         {
                           icon: Icons.Pencil,
                           label: t("asset:profile.edit"),
@@ -1191,6 +1244,17 @@ export const AssetProfilePage = () => {
           )}
         </PageContent>
 
+        <RefreshQuotesConfirmDialog
+          open={refreshConfirmOpen}
+          onOpenChange={setRefreshConfirmOpen}
+          onConfirm={handleRefreshQuotes}
+        />
+        <ResetProviderHistoryDialog
+          assetId={assetId}
+          assetName={assetProfile.displayCode ?? assetId}
+          open={resetConfirmOpen}
+          onOpenChange={setResetConfirmOpen}
+        />
         <AssetEditSheet
           open={editSheetOpen}
           onOpenChange={setEditSheetOpen}
@@ -1346,7 +1410,7 @@ export const AssetProfilePage = () => {
                         items: [
                           {
                             icon: Icons.Download,
-                            label: t("asset:profile.update_price"),
+                            label: t("common:component.update_quotes"),
                             onClick: handleUpdateQuotes,
                           },
                           {
@@ -1354,10 +1418,25 @@ export const AssetProfilePage = () => {
                             label: t("asset:profile.refresh_history"),
                             onClick: handleRefreshQuotesWithConfirm,
                           },
+                          ...(!isManualPricingMode
+                            ? [
+                                {
+                                  icon: Icons.Refresh,
+                                  label: t("asset:resetDialog.title"),
+                                  onClick: () => setResetConfirmOpen(true),
+                                  variant: "destructive" as const,
+                                },
+                              ]
+                            : []),
                           {
                             icon: Icons.Pencil,
                             label: t("asset:profile.edit"),
                             onClick: () => setEditSheetOpen(true),
+                          },
+                          {
+                            icon: Icons.ImageUp,
+                            label: t("asset:logo.change"),
+                            onClick: () => setLogoDialogOpen(true),
                           },
                         ],
                       },
@@ -1372,21 +1451,27 @@ export const AssetProfilePage = () => {
           </div>
         }
       >
-        <div className="flex items-center gap-2" data-tauri-drag-region="true">
+        <div className="group/asset-header flex items-center gap-2" data-tauri-drag-region="true">
           {isAltAsset && altHolding ? (
             <div className="bg-muted flex h-9 w-9 items-center justify-center rounded-full">
               <AlternativeAssetIcon kind={altHolding.kind} size={20} />
             </div>
           ) : (
             (profile?.symbol ?? holding?.instrument?.symbol ?? assetProfile?.displayCode) && (
-              <TickerAvatar
+              <EditableTickerAvatar
                 symbol={
                   profile?.symbol ??
                   holding?.instrument?.symbol ??
                   assetProfile?.displayCode ??
                   assetId
                 }
+                exchangeMic={
+                  holding?.instrument?.exchangeMic ?? assetProfile?.instrumentExchangeMic
+                }
+                instrumentType={holding?.instrument?.instrumentType ?? assetProfile?.instrumentType}
+                assetId={assetProfile?.id ?? assetId}
                 className="size-9"
+                onEdit={() => setLogoDialogOpen(true)}
               />
             )
           )}
@@ -1399,7 +1484,32 @@ export const AssetProfilePage = () => {
                 getAlternativeAssetKindLabel(altHolding.kind, t)
               ) : (
                 <>
-                  {assetProfile?.displayCode ?? holding?.instrument?.symbol ?? assetId}
+                  <span className="flex items-center">
+                    <span>{displayedSymbol}</span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className={cn(
+                            "ml-1 h-5 w-5 shrink-0 overflow-hidden rounded-sm p-0 transition-[width,margin,opacity]",
+                            "md:ml-0 md:w-0 md:opacity-0 md:focus-visible:ml-1 md:focus-visible:w-5 md:focus-visible:opacity-100 md:group-hover/asset-header:ml-1 md:group-hover/asset-header:w-5 md:group-hover/asset-header:opacity-100",
+                            symbolCopied && "opacity-100 md:ml-1 md:w-5 md:opacity-100",
+                          )}
+                          aria-label={`${t("ui:dataGrid.copy")} ${displayedSymbol}`}
+                          onClick={() => void handleCopySymbol()}
+                        >
+                          {symbolCopied ? (
+                            <Icons.Check className="text-success size-3.5" />
+                          ) : (
+                            <Icons.Copy className="size-3.5" />
+                          )}
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom">{t("ui:dataGrid.copy")}</TooltipContent>
+                    </Tooltip>
+                  </span>
                   {(assetProfile?.quoteCcy ?? profile?.currency) && (
                     <>
                       <span className="bg-muted-foreground/40 h-3 w-px rounded-full" />
@@ -1564,6 +1674,13 @@ export const AssetProfilePage = () => {
         onConfirm={handleRefreshQuotes}
       />
 
+      <ResetProviderHistoryDialog
+        assetId={assetId}
+        assetName={assetProfile?.displayCode ?? assetId}
+        open={resetConfirmOpen}
+        onOpenChange={setResetConfirmOpen}
+      />
+
       {/* Confirm Option Expiry Dialog */}
       <AlertDialog open={confirmExpiryOpen} onOpenChange={setConfirmExpiryOpen}>
         <AlertDialogContent>
@@ -1620,6 +1737,18 @@ export const AssetProfilePage = () => {
         asset={assetProfile ?? null}
         latestQuote={quote}
         defaultTab={editSheetDefaultTab}
+      />
+
+      <AssetLogoDialog
+        open={logoDialogOpen}
+        onOpenChange={setLogoDialogOpen}
+        assetId={assetProfile?.id ?? assetId}
+        symbol={
+          profile?.symbol ?? holding?.instrument?.symbol ?? assetProfile?.displayCode ?? assetId
+        }
+        exchangeMic={holding?.instrument?.exchangeMic ?? assetProfile?.instrumentExchangeMic}
+        instrumentType={holding?.instrument?.instrumentType ?? assetProfile?.instrumentType}
+        name={assetProfile?.name ?? holding?.instrument?.name}
       />
 
       {/* Alternative Asset Modals */}

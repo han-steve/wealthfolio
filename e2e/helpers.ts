@@ -100,7 +100,7 @@ async function ensureE2ELanguage(page: Page, settings?: E2ESettings | null) {
 }
 
 function appReadyLocator(page: Page) {
-  return page.locator("main").first();
+  return page.locator(".app-shell").first();
 }
 
 function isOnboardingUrl(page: Page) {
@@ -270,15 +270,10 @@ export async function selectAccountOption(
       )}"][data-account-currency="${cssAttributeValue(currency)}"]`,
     )
     .first();
-  await expect(option).toBeAttached({ timeout: 5000 });
-
-  await option.click({ timeout: 3000 }).catch(async () => {
-    await page.keyboard.type(accountName);
-    await page.keyboard.press("Enter");
-  });
+  await expect(option).toBeVisible({ timeout: 5000 });
+  await option.click();
 
   await expect(accountSelect).toContainText(accountName, { timeout: 5000 });
-  await page.waitForTimeout(200);
 }
 
 export async function searchAndSelectSymbol(page: Page, symbol: string) {

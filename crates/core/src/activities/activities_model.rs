@@ -266,19 +266,6 @@ impl Activity {
         self.tax.unwrap_or(Decimal::ZERO).abs()
     }
 
-    /// Get the charge amount for standalone charge handling.
-    pub(crate) fn charge_amt_for(&self, activity_type: &ActivityType) -> Decimal {
-        if matches!(activity_type, ActivityType::Tax) && !self.tax_amt().is_zero() {
-            return self.tax_amt();
-        }
-
-        if !self.fee_amt().is_zero() {
-            return self.fee_amt();
-        }
-
-        self.amt()
-    }
-
     /// Get typed metadata value
     pub fn get_meta<T: serde::de::DeserializeOwned>(&self, key: &str) -> Option<T> {
         self.metadata
@@ -315,6 +302,23 @@ pub struct AssetResolutionInput {
     pub provider_symbol: Option<String>,
 }
 
+impl AssetResolutionInput {
+    /// An empty object is the explicit PATCH representation for removing an
+    /// activity's optional asset. Omitting the object preserves the asset.
+    pub fn is_empty(&self) -> bool {
+        self.id.is_none()
+            && self.symbol.is_none()
+            && self.exchange_mic.is_none()
+            && self.kind.is_none()
+            && self.name.is_none()
+            && self.quote_mode.is_none()
+            && self.quote_ccy.is_none()
+            && self.instrument_type.is_none()
+            && self.provider_id.is_none()
+            && self.provider_symbol.is_none()
+    }
+}
+
 /// Input model for creating a new activity
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -323,7 +327,7 @@ pub struct NewActivity {
     pub account_id: String,
 
     /// Asset resolution input. Accepts the old `symbol` JSON field during transition.
-    /// Optional for cash activities which don't require an asset
+    /// Optional for cash activities which don't require an asset.
     #[serde(alias = "symbol")]
     pub asset: Option<AssetResolutionInput>,
 
@@ -588,8 +592,9 @@ pub struct ActivityUpdate {
     pub id: String,
     pub account_id: String,
 
-    /// Asset resolution input. Accepts the old `symbol` JSON field during transition.
-    /// Optional for cash activities which don't require an asset
+    /// Asset patch. Omit to preserve, provide identity to replace, or provide
+    /// an empty object to explicitly clear an optional asset. Accepts the old
+    /// `symbol` JSON field during transition.
     #[serde(alias = "symbol")]
     pub asset: Option<AssetResolutionInput>,
 
@@ -627,6 +632,9 @@ pub struct ActivityUpdate {
     )]
     pub amount: Option<Option<Decimal>>,
     pub status: Option<ActivityStatus>,
+    /// Review is independent from lifecycle status. Omitted updates preserve the stored flag.
+    #[serde(default)]
+    pub needs_review: Option<bool>,
     #[serde(alias = "comment")]
     pub notes: Option<String>,
     #[serde(
@@ -736,6 +744,29 @@ pub struct ActivityBulkMutationResult {
     pub errors: Vec<ActivityBulkMutationError>,
 }
 
+/// Minimal update applied by the removable one-shot final-cash migration.
+#[derive(Debug, Clone)]
+pub struct ActivityFinalCashMigrationUpdate {
+    pub id: String,
+    pub amount: Option<Decimal>,
+    pub needs_review: bool,
+}
+
+/// What storage actually persisted during the final-cash rewrite. Rejected
+/// amount replacements are reported so core can rebuild from the value that
+/// remains authoritative on the row.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ActivityFinalCashMigrationWriteResult {
+    pub changed: usize,
+    pub unapplied_amount_update_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ActivityFinalCashMigrationResult {
+    pub changed: usize,
+    pub affected_account_ids: Vec<String>,
+}
+
 /// Pair-aware request for creating or updating an internal cash transfer.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -833,6 +864,7 @@ pub struct ActivityDetails {
     pub currency: String,
     pub fee: Option<String>,
     pub tax: Option<String>,
+    /// Authoritative final cash magnitude stored in `amount`.
     pub amount: Option<String>,
     pub needs_review: bool,
     pub comment: Option<String>,
@@ -846,6 +878,8 @@ pub struct ActivityDetails {
     pub exchange_mic: Option<String>,
     pub asset_pricing_mode: String, // MARKET, MANUAL, DERIVED, NONE
     pub instrument_type: Option<String>,
+    /// Effective multiplier resolved from the asset, never from activity metadata.
+    pub asset_contract_multiplier: Option<String>,
     // Sync/source metadata
     pub source_system: Option<String>,
     pub source_record_id: Option<String>,
@@ -1007,7 +1041,7 @@ pub struct ActivityImport {
     /// DB unique constraint is not violated. Set by the user in the review step.
     #[serde(default)]
     pub force_import: bool,
-    /// True when a TRANSFER_IN/OUT crosses the tracked-account boundary (e.g. RSU grant deposit).
+    /// Whether a transfer or credit crosses the tracked-account boundary.
     /// Persisted as `metadata.flow.is_external` so net-contribution and flow classification work.
     #[serde(default)]
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1894,14 +1928,18 @@ impl From<ActivityImport> for NewActivity {
             Some(ActivityStatus::Posted)
         };
 
-        // Persist `is_external` as flow metadata so net_contribution and flow classification
-        // see this transfer the same way the manual activity form would.
+        // Persist boundary metadata so imported activities and manually entered activities
+        // have the same net-contribution and flow-classification semantics.
         let is_transfer = import.activity_type == ACTIVITY_TYPE_TRANSFER_IN
             || import.activity_type == ACTIVITY_TYPE_TRANSFER_OUT;
-        let metadata = if is_transfer && import.is_external == Some(true) {
-            Some(serde_json::json!({ "flow": { "is_external": true } }).to_string())
-        } else {
-            None
+        let metadata = match (import.activity_type.as_str(), import.is_external) {
+            (ACTIVITY_TYPE_CREDIT, Some(is_external)) => {
+                Some(serde_json::json!({ "flow": { "is_external": is_external } }).to_string())
+            }
+            (_, Some(true)) if is_transfer => {
+                Some(serde_json::json!({ "flow": { "is_external": true } }).to_string())
+            }
+            _ => None,
         };
 
         NewActivity {

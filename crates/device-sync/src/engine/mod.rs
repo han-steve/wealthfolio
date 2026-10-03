@@ -9,17 +9,20 @@ use crate::{
 };
 
 pub mod ports;
+mod restore;
+#[cfg(test)]
+mod restore_tests;
 mod runtime;
 
 pub use ports::{
-    CredentialStore, OutboxStore, ReadyReconcileStore, ReplayEvent, ReplayStore,
-    SyncBootstrapResult, SyncCycleResult, SyncIdentity, SyncReadyReconcileResult, SyncTransport,
-    TransportError,
+    CredentialStore, OutboxStore, ReplayEvent, ReplayStore, SyncCycleResult, SyncIdentity,
+    SyncTransport, TransportError,
 };
-pub use runtime::{
-    DeviceSyncRuntimeState, DeviceSyncWakeHandle, OverwriteInfo, OverwriteTableInfo,
-    PairingFlowPhase, PairingFlowResponse, PairingFlowState,
+pub use restore::{
+    RestoreError, RestoreErrorCode, RestoreFile, RestoreOperation, RestorePhase, RestorePorts,
+    RestoreRetry, RestoreSnapshotRef, StartRestore,
 };
+pub use runtime::{DeviceSyncRuntimeState, DeviceSyncWakeHandle};
 
 /// Default periodic sync cadence for the background engine.
 pub const DEVICE_SYNC_PERIODIC_INTERVAL_SECS: u64 = 5 * 60;
@@ -38,6 +41,10 @@ pub const DEVICE_SYNC_OUTBOX_PRUNE_INTERVAL_SECS: u64 = 24 * 60 * 60;
 pub const DEVICE_SYNC_SENT_OUTBOX_RETENTION_DAYS: i64 = 7;
 pub const DEVICE_SYNC_DEAD_OUTBOX_RETENTION_DAYS: i64 = 30;
 const MAX_REMOTE_ENTITY_ID_LEN: usize = 256;
+/// Upper bound on the summed encrypted payload chars in one push request.
+/// The relay rejects batches over 8,000,000 chars with a 400 that dead-letters
+/// the whole batch; large rows (asset logos) can reach that within 500 events.
+const MAX_PUSH_BATCH_CHARS: usize = 7_000_000;
 
 /// Exponential backoff in seconds with cap.
 pub fn backoff_seconds(consecutive_failures: i32) -> i64 {
@@ -84,6 +91,7 @@ fn sync_entity_name(entity: &SyncEntity) -> &'static str {
         SyncEntity::AllocationTargetWeight => "allocation_target_weight",
         SyncEntity::AllocationTargetConstraint => "allocation_target_constraint",
         SyncEntity::SpendingSetting => "spending_setting",
+        SyncEntity::AppPreference => "app_preference",
         SyncEntity::ActivityTaxonomyAssignment => "activity_taxonomy_assignment",
         SyncEntity::SpendingActivitySplit => "spending_activity_split",
         SyncEntity::SpendingActivityEvent => "spending_activity_event",
@@ -96,6 +104,7 @@ fn sync_entity_name(entity: &SyncEntity) -> &'static str {
         SyncEntity::BudgetTarget => "budget_target",
         SyncEntity::BudgetRolloverSetting => "budget_rollover_setting",
         SyncEntity::AddonStorage => "addon_storage",
+        SyncEntity::AssetLogo => "asset_logo",
     }
 }
 
@@ -218,6 +227,28 @@ where
         pulled_count: 0,
     };
 
+    match ports.is_sync_allowed().await {
+        Ok(true) => {}
+        Ok(false) => {
+            return ctx
+                .fail(
+                    "subscription_required",
+                    "Device sync is paused: an active subscription is required.".to_string(),
+                    Some(300),
+                )
+                .await
+        }
+        Err(err) => {
+            return ctx
+                .fail(
+                    "subscription_check_error",
+                    format!("Could not verify sync subscription: {}", err),
+                    Some(60),
+                )
+                .await
+        }
+    }
+
     let identity = match ports.get_sync_identity() {
         Some(value) => value,
         None => {
@@ -291,7 +322,7 @@ where
     }
 
     ports.persist_device_config(&identity, "trusted").await;
-    let token = match ports.get_access_token() {
+    let token = match ports.get_access_token().await {
         Ok(value) => value,
         Err(err) => {
             return ctx
@@ -304,6 +335,11 @@ where
     let reconcile = match ports.get_reconcile_ready_state(&token, &device_id).await {
         Ok(response) => response,
         Err(err) => {
+            if err.is_subscription_blocked() {
+                return ctx
+                    .fail("subscription_required", err.to_string(), Some(300))
+                    .await;
+            }
             return ctx
                 .fail(
                     "reconcile_error",
@@ -450,6 +486,7 @@ where
     let current_key_version = identity.key_version.unwrap_or(1).max(1);
     let mut stale_key_version_event_ids = Vec::new();
     let mut future_key_version_event_ids = Vec::new();
+    let mut push_batch_chars = 0usize;
 
     for event in pending {
         if !remote_entity_id_is_valid(&event.entity, &event.entity_id) {
@@ -462,19 +499,7 @@ where
             invalid_entity_id_event_ids.push(event.event_id.clone());
             continue;
         }
-        max_retry_count = max_retry_count.max(event.retry_count);
-        let event_type = format!(
-            "{}.{}.v1",
-            sync_entity_name(&event.entity),
-            sync_operation_name(&event.op)
-        );
-        push_event_ids.push(event.event_id.clone());
         let payload_key_version = event.payload_key_version.max(1);
-        if payload_key_version < current_key_version {
-            stale_key_version_event_ids.push(event.event_id.clone());
-        } else if payload_key_version > current_key_version {
-            future_key_version_event_ids.push(event.event_id.clone());
-        }
         let encrypted_payload =
             match ports.encrypt_sync_payload(&event.payload, &identity, payload_key_version) {
                 Ok(payload) => payload,
@@ -488,6 +513,32 @@ where
                         .await;
                 }
             };
+        // Byte-aware batching: stop before the relay batch cap; the remaining
+        // events stay pending for the next cycle. A single oversized event
+        // still goes alone so it can be rejected individually, not as a batch.
+        if push_batch_chars + encrypted_payload.len() > MAX_PUSH_BATCH_CHARS
+            && !push_events.is_empty()
+        {
+            debug!(
+                "[DeviceSync] Push batch reached {} chars after {} events; deferring the rest",
+                push_batch_chars,
+                push_events.len()
+            );
+            break;
+        }
+        push_batch_chars += encrypted_payload.len();
+        max_retry_count = max_retry_count.max(event.retry_count);
+        let event_type = format!(
+            "{}.{}.v1",
+            sync_entity_name(&event.entity),
+            sync_operation_name(&event.op)
+        );
+        push_event_ids.push(event.event_id.clone());
+        if payload_key_version < current_key_version {
+            stale_key_version_event_ids.push(event.event_id.clone());
+        } else if payload_key_version > current_key_version {
+            future_key_version_event_ids.push(event.event_id.clone());
+        }
         push_events.push(SyncPushEventRequest {
             event_id: event.event_id,
             device_id: device_id.clone(),
@@ -547,6 +598,11 @@ where
                 server_cursor = push_response.server_cursor;
             }
             Err(err) => {
+                if err.is_subscription_blocked() {
+                    return ctx
+                        .fail("subscription_required", err.to_string(), Some(300))
+                        .await;
+                }
                 let err_str = err.to_string();
 
                 if err_str.contains("KEY_VERSION_MISMATCH") {
@@ -701,6 +757,11 @@ where
             {
                 Ok(value) => value,
                 Err(err) => {
+                    if err.is_subscription_blocked() {
+                        return ctx
+                            .fail("subscription_required", err.to_string(), Some(300))
+                            .await;
+                    }
                     if err.retry_class == ApiRetryClass::ReauthRequired {
                         warn!("[DeviceSync] Auth error during pull — token may need refresh");
                         return ctx
@@ -958,167 +1019,6 @@ where
     })
 }
 
-fn reconcile_error(
-    mut result: SyncReadyReconcileResult,
-    message: String,
-) -> SyncReadyReconcileResult {
-    result.status = "error".to_string();
-    result.message = message;
-    result
-}
-
-fn derive_bootstrap_action(bootstrap_status: &str, bootstrap_snapshot_id: Option<&str>) -> String {
-    if bootstrap_status == "applied" {
-        return "PULL_REMOTE_OVERWRITE".to_string();
-    }
-
-    if bootstrap_status == "requested" {
-        return "WAIT_REMOTE_SNAPSHOT".to_string();
-    }
-
-    if bootstrap_snapshot_id
-        .map(|id| !id.trim().is_empty())
-        .unwrap_or(false)
-    {
-        return "PULL_REMOTE_OVERWRITE".to_string();
-    }
-
-    "NO_BOOTSTRAP".to_string()
-}
-
-pub async fn run_ready_reconcile_state<P>(ports: &P) -> SyncReadyReconcileResult
-where
-    P: ReadyReconcileStore + Send + Sync,
-{
-    let mut result = SyncReadyReconcileResult {
-        status: "ok".to_string(),
-        message: "Device sync reconcile completed".to_string(),
-        bootstrap_action: "NO_BOOTSTRAP".to_string(),
-        bootstrap_status: "not_attempted".to_string(),
-        bootstrap_message: None,
-        bootstrap_snapshot_id: None,
-        cycle_status: None,
-        cycle_needs_bootstrap: false,
-        retry_attempted: false,
-        retry_cycle_status: None,
-        background_status: "skipped".to_string(),
-    };
-
-    let sync_state = match ports.get_sync_state().await {
-        Ok(value) => value,
-        Err(err) => {
-            return reconcile_error(result, format!("Failed to read sync state: {}", err));
-        }
-    };
-    if sync_state != SyncState::Ready {
-        result.status = "skipped_not_ready".to_string();
-        result.message = "Device is not in READY state".to_string();
-        return result;
-    }
-
-    let bootstrap_result = match ports.bootstrap_snapshot_if_needed().await {
-        Ok(value) => value,
-        Err(err) => {
-            return reconcile_error(result, format!("Snapshot bootstrap failed: {}", err));
-        }
-    };
-    result.bootstrap_status = bootstrap_result.status.clone();
-    result.bootstrap_message = Some(bootstrap_result.message);
-    result.bootstrap_snapshot_id = bootstrap_result.snapshot_id;
-    result.bootstrap_action = derive_bootstrap_action(
-        &result.bootstrap_status,
-        result.bootstrap_snapshot_id.as_deref(),
-    );
-
-    if result.bootstrap_status == "applied" {
-        let cycle_result = match ports.run_sync_cycle(true).await {
-            Ok(value) => value,
-            Err(err) => {
-                return reconcile_error(result, format!("Initial sync cycle failed: {}", err));
-            }
-        };
-        result.cycle_status = Some(cycle_result.status.clone());
-        result.cycle_needs_bootstrap = cycle_result.needs_bootstrap;
-
-        if cycle_result.needs_bootstrap {
-            result.retry_attempted = true;
-            let retry_bootstrap_result = match ports.bootstrap_snapshot_if_needed().await {
-                Ok(value) => value,
-                Err(err) => {
-                    return reconcile_error(
-                        result,
-                        format!("Retry snapshot bootstrap failed: {}", err),
-                    );
-                }
-            };
-            result.bootstrap_status = retry_bootstrap_result.status.clone();
-            result.bootstrap_message = Some(retry_bootstrap_result.message);
-            result.bootstrap_snapshot_id = retry_bootstrap_result.snapshot_id;
-            result.bootstrap_action = derive_bootstrap_action(
-                &result.bootstrap_status,
-                result.bootstrap_snapshot_id.as_deref(),
-            );
-
-            if result.bootstrap_status != "applied" {
-                let retry_status = result.bootstrap_status.clone();
-                return reconcile_error(
-                    result,
-                    format!(
-                        "Retry bootstrap did not apply a snapshot (status={})",
-                        retry_status
-                    ),
-                );
-            }
-
-            let retry_cycle_result = match ports.run_sync_cycle(true).await {
-                Ok(value) => value,
-                Err(err) => {
-                    return reconcile_error(result, format!("Retry sync cycle failed: {}", err));
-                }
-            };
-            result.retry_cycle_status = Some(retry_cycle_result.status);
-            result.cycle_needs_bootstrap = retry_cycle_result.needs_bootstrap;
-            if result.cycle_needs_bootstrap {
-                return reconcile_error(
-                    result,
-                    "Retry sync cycle still requires bootstrap".to_string(),
-                );
-            }
-        }
-    }
-
-    match ports.ensure_background_started().await {
-        Ok(true) => {
-            result.background_status = "started".to_string();
-        }
-        Ok(false) => {
-            result.background_status = "skipped".to_string();
-        }
-        Err(err) => {
-            result.background_status = "failed".to_string();
-            let bootstrap_status = result.bootstrap_status.clone();
-            let cycle_status = result.cycle_status.as_deref().unwrap_or("none").to_string();
-            let retry_cycle_status = result
-                .retry_cycle_status
-                .as_deref()
-                .unwrap_or("none")
-                .to_string();
-            return reconcile_error(
-                result,
-                format!(
-                    "Background engine start failed: {} (bootstrap_status={}, cycle_status={}, retry_cycle_status={})",
-                    err,
-                    bootstrap_status,
-                    cycle_status,
-                    retry_cycle_status
-                ),
-            );
-        }
-    }
-
-    result
-}
-
 fn compute_jitter_ms() -> u64 {
     let jitter_bound = DEVICE_SYNC_INTERVAL_JITTER_SECS.saturating_mul(1000);
     if jitter_bound > 0 {
@@ -1133,8 +1033,13 @@ where
     P: OutboxStore + ReplayStore + Send + Sync,
 {
     let mut delay_ms = DEVICE_SYNC_PERIODIC_INTERVAL_SECS.saturating_mul(1000) + jitter_ms;
+    let mut subscription_paused = false;
 
     if let Ok(engine_status) = ports.get_engine_status().await {
+        subscription_paused = matches!(
+            engine_status.last_cycle_status.as_deref(),
+            Some("subscription_required" | "subscription_check_error")
+        );
         if let Some(next_retry_at) = engine_status.next_retry_at.as_deref() {
             if let Some(wait_ms) = millis_until_rfc3339(next_retry_at) {
                 delay_ms = wait_ms.saturating_add(jitter_ms).max(1_000);
@@ -1142,7 +1047,7 @@ where
         }
     }
 
-    if ports.has_pending_outbox().await.unwrap_or(false) {
+    if !subscription_paused && ports.has_pending_outbox().await.unwrap_or(false) {
         delay_ms = delay_ms.min(2_000 + (jitter_ms % 500));
     }
 
@@ -1225,6 +1130,20 @@ where
     let mut next_prune_at =
         tokio::time::Instant::now() + Duration::from_secs(DEVICE_SYNC_OUTBOX_PRUNE_INTERVAL_SECS);
     loop {
+        // A wake can race logout's startup check. Never keep a worker alive
+        // without a session, even if it was spawned just after shutdown.
+        match ports.has_cloud_session() {
+            Ok(true) => {}
+            Ok(false) => break,
+            Err(err) => {
+                warn!(
+                    "[DeviceSync] Could not read cloud session; retrying: {}",
+                    err
+                );
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+        }
         let identity = ports.get_sync_identity();
         if !sync_identity_can_run_background(identity.clone()) {
             if sync_identity_is_revoked(identity) {
@@ -1296,6 +1215,10 @@ mod tests {
 
     #[derive(Clone)]
     struct TestPorts {
+        has_cloud_session: bool,
+        session_read_results: Arc<std::sync::Mutex<VecDeque<Result<bool, String>>>>,
+        sync_allowed: Result<bool, String>,
+        token_lookup_gate: Option<(Arc<Mutex<()>>, Arc<tokio::sync::Notify>)>,
         cursor: i64,
         identity: Option<SyncIdentity>,
         sync_state: Result<SyncState, String>,
@@ -1306,6 +1229,7 @@ mod tests {
         set_cursor_calls: Arc<Mutex<Vec<i64>>>,
         applied_events: Arc<Mutex<Vec<ReplayEvent>>>,
         push_error: Option<TransportError>,
+        push_batches: Arc<Mutex<Vec<Vec<String>>>>,
         reconcile_response: crate::ReconcileReadyStateResponse,
         persisted_trust_states: Arc<Mutex<Vec<String>>>,
         cycle_outcomes: Arc<Mutex<Vec<String>>>,
@@ -1319,6 +1243,10 @@ mod tests {
     impl TestPorts {
         fn new(identity: Option<SyncIdentity>, sync_state: Result<SyncState, String>) -> Self {
             Self {
+                has_cloud_session: true,
+                session_read_results: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+                sync_allowed: Ok(true),
+                token_lookup_gate: None,
                 cursor: 0,
                 identity,
                 sync_state,
@@ -1329,6 +1257,7 @@ mod tests {
                 set_cursor_calls: Arc::new(Mutex::new(Vec::new())),
                 applied_events: Arc::new(Mutex::new(Vec::new())),
                 push_error: None,
+                push_batches: Arc::new(Mutex::new(Vec::new())),
                 reconcile_response: crate::ReconcileReadyStateResponse {
                     action: "NOOP".to_string(),
                     cursor: Some(0),
@@ -1476,7 +1405,7 @@ mod tests {
                 last_error: None,
                 consecutive_failures: 0,
                 next_retry_at: None,
-                last_cycle_status: None,
+                last_cycle_status: self.cycle_outcomes.lock().await.last().cloned(),
                 last_cycle_duration_ms: None,
             })
         }
@@ -1496,8 +1425,15 @@ mod tests {
             &self,
             _token: &str,
             _device_id: &str,
-            _request: SyncPushRequest,
+            request: SyncPushRequest,
         ) -> Result<crate::SyncPushResponse, TransportError> {
+            self.push_batches.lock().await.push(
+                request
+                    .events
+                    .iter()
+                    .map(|event| event.event_id.clone())
+                    .collect(),
+            );
             if let Some(err) = &self.push_error {
                 return Err(err.clone());
             }
@@ -1556,11 +1492,27 @@ mod tests {
 
     #[async_trait]
     impl CredentialStore for TestPorts {
+        fn has_cloud_session(&self) -> Result<bool, String> {
+            self.session_read_results
+                .lock()
+                .unwrap()
+                .pop_front()
+                .unwrap_or(Ok(self.has_cloud_session))
+        }
+
+        async fn is_sync_allowed(&self) -> Result<bool, String> {
+            self.sync_allowed.clone()
+        }
+
         fn get_sync_identity(&self) -> Option<SyncIdentity> {
             self.identity.clone()
         }
 
-        fn get_access_token(&self) -> Result<String, String> {
+        async fn get_access_token(&self) -> Result<String, String> {
+            if let Some((mutex, waiting)) = &self.token_lookup_gate {
+                waiting.notify_one();
+                let _guard = mutex.lock().await;
+            }
             Ok("token".to_string())
         }
 
@@ -1650,6 +1602,144 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
+    }
+
+    #[tokio::test]
+    async fn inactive_subscription_preserves_pending_changes_and_resumes() {
+        let mut ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        ports.sync_allowed = Ok(false);
+        ports.pending_outbox.lock().await.push(outbox_event(
+            "event-1",
+            "019cb093-06a8-7534-8677-546317b17957",
+            1,
+        ));
+        let paused = run_sync_cycle(&ports, false).await.unwrap();
+        assert_eq!(paused.status, "subscription_required");
+        assert_eq!(ports.pending_outbox.lock().await.len(), 1);
+        assert!(ports.persisted_trust_states.lock().await.is_empty());
+        assert_eq!(ports.max_active_reconcile_count.load(Ordering::SeqCst), 0);
+        assert!(compute_cycle_delay_ms(&ports, 0).await >= 300_000);
+        ports.sync_allowed = Ok(true);
+        let resumed = run_sync_cycle(&ports, false).await.unwrap();
+        assert_eq!(resumed.status, "ok");
+        assert_eq!(ports.push_batches.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn subscription_denied_during_push_preserves_pending_changes() {
+        let mut ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        ports.push_error = Some(TransportError {
+            message: "Subscription required".to_string(),
+            retry_class: ApiRetryClass::Permanent,
+            error_code: Some("SUBSCRIPTION_REQUIRED".to_string()),
+            details: None,
+        });
+        ports.pending_outbox.lock().await.push(outbox_event(
+            "event-1",
+            "019cb093-06a8-7534-8677-546317b17957",
+            1,
+        ));
+        assert_eq!(
+            run_sync_cycle(&ports, false).await.unwrap().status,
+            "subscription_required"
+        );
+        assert_eq!(ports.pending_outbox.lock().await.len(), 1);
+        assert!(ports.dead_outbox_batches.lock().await.is_empty());
+        ports.push_error = None;
+        assert_eq!(run_sync_cycle(&ports, false).await.unwrap().status, "ok");
+        assert_eq!(
+            *ports.push_batches.lock().await,
+            vec![vec!["event-1".to_string()], vec!["event-1".to_string()]]
+        );
+    }
+
+    #[tokio::test]
+    async fn subscription_lookup_failure_cannot_push_or_pull() {
+        let mut ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        ports.sync_allowed = Err("service unavailable".to_string());
+        assert_eq!(
+            run_sync_cycle(&ports, false).await.unwrap().status,
+            "subscription_check_error"
+        );
+        assert!(ports.push_batches.lock().await.is_empty());
+        assert!(ports.applied_events.lock().await.is_empty());
+        assert!(ports.persisted_trust_states.lock().await.is_empty());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn background_recovers_from_session_read_error_without_a_wake() {
+        let ports = Arc::new(TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready)));
+        ports
+            .session_read_results
+            .lock()
+            .unwrap()
+            .push_back(Err("storage unavailable".into()));
+        let runtime = Arc::new(DeviceSyncRuntimeState::new());
+        runtime.ensure_background_started(Arc::clone(&ports)).await;
+        tokio::task::yield_now().await;
+        assert!(runtime.is_background_running().await);
+        assert!(ports.cycle_outcomes.lock().await.is_empty());
+        tokio::time::advance(Duration::from_secs(59)).await;
+        assert!(ports.cycle_outcomes.lock().await.is_empty());
+        tokio::time::advance(Duration::from_secs(1)).await;
+        wait_for_cycle_outcomes(&ports, 1, 1_000).await;
+        assert_eq!(ports.cycle_outcomes.lock().await[0], "ok");
+        runtime.ensure_background_stopped().await;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn background_stops_if_session_is_missing_after_read_error() {
+        let ports = Arc::new(TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready)));
+        ports
+            .session_read_results
+            .lock()
+            .unwrap()
+            .extend([Err("storage unavailable".into()), Ok(false)]);
+        let runtime = Arc::new(DeviceSyncRuntimeState::new());
+        runtime.ensure_background_started(Arc::clone(&ports)).await;
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(60)).await;
+        wait_for_background_stopped(&runtime, 1_000).await;
+        assert!(ports.cycle_outcomes.lock().await.is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn background_shutdown_cancels_pending_token_lookup() {
+        let token_mutex = Arc::new(Mutex::new(()));
+        let waiting = Arc::new(tokio::sync::Notify::new());
+        let mut ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        ports.token_lookup_gate = Some((token_mutex.clone(), waiting.clone()));
+        let ports = Arc::new(ports);
+        let runtime = Arc::new(DeviceSyncRuntimeState::new());
+
+        // Logout retains the token mutex until worker shutdown finishes.
+        let logout_guard = token_mutex.lock().await;
+        runtime.ensure_background_started(ports.clone()).await;
+        tokio::time::timeout(Duration::from_secs(2), waiting.notified())
+            .await
+            .expect("worker must reach token lookup");
+        let stopped =
+            tokio::time::timeout(Duration::from_secs(2), runtime.ensure_background_stopped()).await;
+        drop(logout_guard);
+        stopped.expect("shutdown must cancel lookup without waiting for the token mutex");
+        assert!(!runtime.is_background_running().await);
+        assert_eq!(Arc::strong_count(&ports), 1);
+        assert_eq!(ports.max_active_reconcile_count.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn background_wake_without_session_exits_without_cloud_requests() {
+        let mut ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        ports.has_cloud_session = false;
+        let ports = Arc::new(ports);
+        let runtime = Arc::new(DeviceSyncRuntimeState::new());
+        for _ in 0..2 {
+            runtime.ensure_background_started(Arc::clone(&ports)).await;
+            runtime.notify_sync_work_available();
+            wait_for_background_stopped(&runtime, 1_000).await;
+        }
+        assert!(ports.cycle_outcomes.lock().await.is_empty());
+        assert_eq!(ports.max_active_reconcile_count.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -1889,6 +1979,7 @@ mod tests {
             "019cb093-06a8-7534-8677-546317b17957",
             "spending.enabled",
             "spending.account_ids",
+            "spending.excluded_category_ids",
             "custom_groups",
             "spending_categories",
             "income_sources",
@@ -2018,6 +2109,150 @@ mod tests {
             root_key: Some("root-key".to_string()),
             key_version: Some(1),
         }
+    }
+
+    /// Outbox event whose (identity-encrypted) payload is `payload_len` chars.
+    fn sized_outbox_event(
+        event_id: &str,
+        payload_len: usize,
+    ) -> wealthfolio_core::sync::SyncOutboxEvent {
+        let mut event = outbox_event(event_id, "019cb093-06a8-7534-8677-546317b17957", 1);
+        event.entity = SyncEntity::AssetLogo;
+        event.payload = "x".repeat(payload_len);
+        event
+    }
+
+    /// Removes already-pushed events from the fake outbox (the real store does
+    /// this through `mark_outbox_sent`).
+    async fn drop_pushed_from_pending(ports: &TestPorts, pushed: &[String]) {
+        let mut pending = ports.pending_outbox.lock().await;
+        pending.retain(|event| !pushed.contains(&event.event_id));
+    }
+
+    /// A max-size logo row (~205 KB base64) encrypts to exactly this many
+    /// base64 chars; pinned by `max_size_logo_event_fits_relay_per_event_cap`.
+    const MAX_LOGO_EVENT_CHARS: usize = 273_504;
+
+    /// Worst-case `asset_logos` outbox row, serialized as the outbox does
+    /// (`AssetLogoDB`: snake_case column names, no renames), encrypted with
+    /// the real DEK path, must fit the relay per-event payload cap of 350,000
+    /// base64 chars (wealthfolio-cloud apps/api/src/schemas/sync.ts,
+    /// `payload: z.string().max(350000)`).
+    #[test]
+    fn max_size_logo_event_fits_relay_per_event_cap() {
+        const RELAY_MAX_EVENT_PAYLOAD_CHARS: usize = 350_000;
+        // MAX_ASSET_LOGO_BYTES (150 KiB) canonical-base64 encodes to exactly 204,800 chars.
+        let data = "A".repeat(wealthfolio_core::assets::MAX_ASSET_LOGO_BYTES / 3 * 4);
+        assert_eq!(data.len(), 204_800);
+        let row = serde_json::json!({
+            "asset_id": "019cb093-06a8-7534-8677-546317b17957",
+            "mime_type": "image/png",
+            "data": data,
+            "sha256": "0".repeat(64),
+            "width": 256,
+            "height": 256,
+            "created_at": "2026-09-02T21:56:26.440073123+00:00",
+            "updated_at": "2026-09-02T21:56:26.440073123+00:00",
+        });
+        let plaintext = serde_json::to_string(&row).expect("serialize row");
+        let dek = crate::crypto::derive_dek(&crate::crypto::generate_root_key(), 1).expect("dek");
+        let encrypted = crate::crypto::encrypt(&dek, &plaintext).expect("encrypt");
+
+        assert_eq!(encrypted.len(), MAX_LOGO_EVENT_CHARS);
+        assert!(encrypted.len() <= RELAY_MAX_EVENT_PAYLOAD_CHARS);
+    }
+
+    #[tokio::test]
+    async fn push_splits_max_size_logo_events_across_cycles() {
+        let ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        {
+            let mut pending = ports.pending_outbox.lock().await;
+            for i in 0..30 {
+                pending.push(sized_outbox_event(
+                    &format!("evt-logo-{i:02}"),
+                    MAX_LOGO_EVENT_CHARS,
+                ));
+            }
+        }
+
+        let first = run_sync_cycle(&ports, false).await.expect("first cycle");
+        assert_eq!(first.status, "ok");
+        let batches = ports.push_batches.lock().await.clone();
+        assert_eq!(batches.len(), 1);
+        let expected_first = MAX_PUSH_BATCH_CHARS / MAX_LOGO_EVENT_CHARS;
+        assert_eq!(batches[0].len(), expected_first);
+        assert!(batches[0].len() * MAX_LOGO_EVENT_CHARS <= MAX_PUSH_BATCH_CHARS);
+        assert_eq!(batches[0][0], "evt-logo-00");
+        assert!(ports.dead_outbox_batches.lock().await.is_empty());
+
+        drop_pushed_from_pending(&ports, &batches[0]).await;
+        let second = run_sync_cycle(&ports, false).await.expect("second cycle");
+        assert_eq!(second.status, "ok");
+        let batches = ports.push_batches.lock().await.clone();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[1].len(), 30 - expected_first);
+        assert_eq!(batches[1][0], format!("evt-logo-{expected_first:02}"));
+        assert!(ports.dead_outbox_batches.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_mixed_batch_defers_events_after_budget_in_outbox_order() {
+        let ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        let big_count = MAX_PUSH_BATCH_CHARS / MAX_LOGO_EVENT_CHARS + 1;
+        {
+            let mut pending = ports.pending_outbox.lock().await;
+            for i in 0..big_count {
+                pending.push(sized_outbox_event(
+                    &format!("evt-logo-{i:02}"),
+                    MAX_LOGO_EVENT_CHARS,
+                ));
+            }
+            for i in 0..50 {
+                pending.push(outbox_event(
+                    &format!("evt-small-{i:02}"),
+                    "019cb093-06a8-7534-8677-546317b17957",
+                    1,
+                ));
+            }
+        }
+
+        let first = run_sync_cycle(&ports, false).await.expect("first cycle");
+        assert_eq!(first.status, "ok");
+        let batches = ports.push_batches.lock().await.clone();
+        assert_eq!(batches.len(), 1);
+        // Everything up to the budget goes; the last logo and every small
+        // event behind it wait (outbox order is preserved, never reordered).
+        assert_eq!(batches[0].len(), big_count - 1);
+        assert!(batches[0].iter().all(|id| id.starts_with("evt-logo-")));
+
+        drop_pushed_from_pending(&ports, &batches[0]).await;
+        let second = run_sync_cycle(&ports, false).await.expect("second cycle");
+        assert_eq!(second.status, "ok");
+        let batches = ports.push_batches.lock().await.clone();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(batches[1].len(), 1 + 50);
+        assert_eq!(batches[1][0], format!("evt-logo-{:02}", big_count - 1));
+        assert!(batches[1][1..]
+            .iter()
+            .all(|id| id.starts_with("evt-small-")));
+        assert!(ports.dead_outbox_batches.lock().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn push_single_event_over_batch_budget_still_pushes_alone() {
+        let ports = TestPorts::new(Some(ready_identity()), Ok(SyncState::Ready));
+        {
+            let mut pending = ports.pending_outbox.lock().await;
+            pending.push(sized_outbox_event("evt-huge", MAX_PUSH_BATCH_CHARS + 1));
+            pending.push(sized_outbox_event("evt-next", 10));
+        }
+
+        let result = run_sync_cycle(&ports, false).await.expect("cycle");
+        assert_eq!(result.status, "ok");
+        let batches = ports.push_batches.lock().await.clone();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0], vec!["evt-huge".to_string()]);
+        assert!(ports.dead_outbox_batches.lock().await.is_empty());
     }
 
     fn pull_event(
@@ -2213,253 +2448,5 @@ mod tests {
             ports.cycle_outcomes.lock().await.last().map(String::as_str),
             Some("key_version_mismatch")
         );
-    }
-
-    #[derive(Clone)]
-    struct ReconcileTestPorts {
-        sync_state: Result<SyncState, String>,
-        bootstrap_results: Arc<Mutex<Vec<SyncBootstrapResult>>>,
-        cycle_results: Arc<Mutex<Vec<SyncCycleResult>>>,
-        ensure_background_result: Result<bool, String>,
-    }
-
-    impl ReconcileTestPorts {
-        fn new(sync_state: Result<SyncState, String>) -> Self {
-            Self {
-                sync_state,
-                bootstrap_results: Arc::new(Mutex::new(Vec::new())),
-                cycle_results: Arc::new(Mutex::new(Vec::new())),
-                ensure_background_result: Ok(true),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl ReadyReconcileStore for ReconcileTestPorts {
-        async fn get_sync_state(&self) -> Result<SyncState, String> {
-            self.sync_state.clone()
-        }
-
-        async fn bootstrap_snapshot_if_needed(&self) -> Result<SyncBootstrapResult, String> {
-            self.bootstrap_results
-                .lock()
-                .await
-                .pop()
-                .ok_or_else(|| "missing bootstrap result".to_string())
-        }
-
-        async fn run_sync_cycle(&self, _post_bootstrap: bool) -> Result<SyncCycleResult, String> {
-            self.cycle_results
-                .lock()
-                .await
-                .pop()
-                .ok_or_else(|| "missing cycle result".to_string())
-        }
-
-        async fn ensure_background_started(&self) -> Result<bool, String> {
-            self.ensure_background_result.clone()
-        }
-    }
-
-    #[tokio::test]
-    async fn run_ready_reconcile_state_skips_when_not_ready() {
-        let ports = ReconcileTestPorts::new(Ok(SyncState::Registered));
-        let result = run_ready_reconcile_state(&ports).await;
-
-        assert_eq!(result.status, "skipped_not_ready");
-        assert_eq!(result.bootstrap_status, "not_attempted");
-        assert_eq!(result.background_status, "skipped");
-    }
-
-    #[tokio::test]
-    async fn run_ready_reconcile_state_applies_bootstrap_and_cycle() {
-        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
-        ports
-            .bootstrap_results
-            .lock()
-            .await
-            .push(SyncBootstrapResult {
-                status: "applied".to_string(),
-                message: "Snapshot bootstrap completed".to_string(),
-                snapshot_id: Some("snap-1".to_string()),
-            });
-        ports.cycle_results.lock().await.push(SyncCycleResult {
-            status: "ok".to_string(),
-            lock_version: 1,
-            pushed_count: 0,
-            pulled_count: 8,
-            cursor: 25,
-            needs_bootstrap: false,
-            bootstrap_snapshot_id: None,
-            bootstrap_snapshot_seq: None,
-            dead_letter_count: 0,
-        });
-
-        let result = run_ready_reconcile_state(&ports).await;
-        assert_eq!(result.status, "ok");
-        assert_eq!(result.bootstrap_status, "applied");
-        assert_eq!(result.cycle_status.as_deref(), Some("ok"));
-        assert!(!result.retry_attempted);
-        assert_eq!(result.background_status, "started");
-    }
-
-    #[tokio::test]
-    async fn run_ready_reconcile_state_retries_once_when_cycle_needs_bootstrap() {
-        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
-        {
-            let mut bootstrap_results = ports.bootstrap_results.lock().await;
-            bootstrap_results.push(SyncBootstrapResult {
-                status: "applied".to_string(),
-                message: "Retry bootstrap".to_string(),
-                snapshot_id: Some("snap-2".to_string()),
-            });
-            bootstrap_results.push(SyncBootstrapResult {
-                status: "applied".to_string(),
-                message: "Initial bootstrap".to_string(),
-                snapshot_id: Some("snap-1".to_string()),
-            });
-        }
-        {
-            let mut cycle_results = ports.cycle_results.lock().await;
-            cycle_results.push(SyncCycleResult {
-                status: "ok".to_string(),
-                lock_version: 2,
-                pushed_count: 0,
-                pulled_count: 2,
-                cursor: 40,
-                needs_bootstrap: false,
-                bootstrap_snapshot_id: None,
-                bootstrap_snapshot_seq: None,
-                dead_letter_count: 0,
-            });
-            cycle_results.push(SyncCycleResult {
-                status: "stale_cursor".to_string(),
-                lock_version: 1,
-                pushed_count: 0,
-                pulled_count: 0,
-                cursor: 20,
-                needs_bootstrap: true,
-                bootstrap_snapshot_id: None,
-                bootstrap_snapshot_seq: None,
-                dead_letter_count: 0,
-            });
-        }
-
-        let result = run_ready_reconcile_state(&ports).await;
-        assert_eq!(result.status, "ok");
-        assert!(result.retry_attempted);
-        assert_eq!(result.retry_cycle_status.as_deref(), Some("ok"));
-        assert!(!result.cycle_needs_bootstrap);
-    }
-
-    #[tokio::test]
-    async fn run_ready_reconcile_state_errors_when_retry_bootstrap_not_applied() {
-        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
-        {
-            let mut bootstrap_results = ports.bootstrap_results.lock().await;
-            bootstrap_results.push(SyncBootstrapResult {
-                status: "requested".to_string(),
-                message: "requested a new snapshot".to_string(),
-                snapshot_id: None,
-            });
-            bootstrap_results.push(SyncBootstrapResult {
-                status: "applied".to_string(),
-                message: "Initial bootstrap".to_string(),
-                snapshot_id: Some("snap-1".to_string()),
-            });
-        }
-        ports.cycle_results.lock().await.push(SyncCycleResult {
-            status: "stale_cursor".to_string(),
-            lock_version: 1,
-            pushed_count: 0,
-            pulled_count: 0,
-            cursor: 20,
-            needs_bootstrap: true,
-            bootstrap_snapshot_id: None,
-            bootstrap_snapshot_seq: None,
-            dead_letter_count: 0,
-        });
-
-        let result = run_ready_reconcile_state(&ports).await;
-        assert_eq!(result.status, "error");
-        assert!(result.retry_attempted);
-        assert_eq!(result.bootstrap_status, "requested");
-        assert!(result
-            .message
-            .contains("Retry bootstrap did not apply a snapshot"));
-    }
-
-    #[tokio::test]
-    async fn run_ready_reconcile_state_errors_when_retry_cycle_still_needs_bootstrap() {
-        let ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
-        {
-            let mut bootstrap_results = ports.bootstrap_results.lock().await;
-            bootstrap_results.push(SyncBootstrapResult {
-                status: "applied".to_string(),
-                message: "Retry bootstrap".to_string(),
-                snapshot_id: Some("snap-2".to_string()),
-            });
-            bootstrap_results.push(SyncBootstrapResult {
-                status: "applied".to_string(),
-                message: "Initial bootstrap".to_string(),
-                snapshot_id: Some("snap-1".to_string()),
-            });
-        }
-        {
-            let mut cycle_results = ports.cycle_results.lock().await;
-            cycle_results.push(SyncCycleResult {
-                status: "stale_cursor".to_string(),
-                lock_version: 2,
-                pushed_count: 0,
-                pulled_count: 0,
-                cursor: 40,
-                needs_bootstrap: true,
-                bootstrap_snapshot_id: None,
-                bootstrap_snapshot_seq: None,
-                dead_letter_count: 0,
-            });
-            cycle_results.push(SyncCycleResult {
-                status: "stale_cursor".to_string(),
-                lock_version: 1,
-                pushed_count: 0,
-                pulled_count: 0,
-                cursor: 20,
-                needs_bootstrap: true,
-                bootstrap_snapshot_id: None,
-                bootstrap_snapshot_seq: None,
-                dead_letter_count: 0,
-            });
-        }
-
-        let result = run_ready_reconcile_state(&ports).await;
-        assert_eq!(result.status, "error");
-        assert!(result.retry_attempted);
-        assert!(result.cycle_needs_bootstrap);
-        assert_eq!(result.retry_cycle_status.as_deref(), Some("stale_cursor"));
-        assert!(result
-            .message
-            .contains("Retry sync cycle still requires bootstrap"));
-    }
-
-    #[tokio::test]
-    async fn run_ready_reconcile_state_surfaces_background_start_failure() {
-        let mut ports = ReconcileTestPorts::new(Ok(SyncState::Ready));
-        ports.ensure_background_result = Err("start failed".to_string());
-        ports
-            .bootstrap_results
-            .lock()
-            .await
-            .push(SyncBootstrapResult {
-                status: "skipped".to_string(),
-                message: "Snapshot bootstrap already completed".to_string(),
-                snapshot_id: None,
-            });
-
-        let result = run_ready_reconcile_state(&ports).await;
-        assert_eq!(result.status, "error");
-        assert_eq!(result.background_status, "failed");
-        assert!(result.message.contains("Background engine start failed"));
-        assert!(result.message.contains("bootstrap_status=skipped"));
-        assert_eq!(result.bootstrap_status, "skipped");
     }
 }

@@ -1,8 +1,13 @@
+import { formatZonedDateKey } from "@/features/spending/lib/timezone";
+import { useSettingsContext } from "@/lib/settings-provider";
+import { AccountScopeSelector } from "@/components/account-filter-selector";
 import { BenchmarkSymbolSelector } from "@/components/benchmark-symbol-selector";
 import {
   ANNUALIZED_RETURN_INFO as annualizedReturnInfo,
   MAX_DRAWDOWN_INFO as maxDrawdownInfo,
+  MetricInfoPopoverBody,
   MetricLabelWithInfo,
+  metricWarningItems,
   MONEY_WEIGHTED_RETURN_INFO,
   PRICE_RETURN_INFO,
   SIMPLE_RETURN_INFO,
@@ -14,9 +19,9 @@ import { PerformanceChart } from "@/components/performance-chart";
 import { PerformanceChartMobile } from "@/components/performance-chart-mobile";
 
 import { PERFORMANCE_CHART_COLORS } from "@/components/performance-chart-colors";
-import { EmptyPlaceholder } from "@wealthfolio/ui/components/ui/empty-placeholder";
 import { useAccounts } from "@/hooks/use-accounts";
 import { usePersistentState } from "@/hooks/use-persistent-state";
+import { useAccountScopeStore } from "@/lib/account-scope-store";
 import { useIsMobileViewport } from "@/hooks/use-platform";
 import { AccountPurpose, PORTFOLIO_SCOPE_ID } from "@/lib/constants";
 import {
@@ -26,7 +31,7 @@ import {
 } from "@/lib/performance";
 import { getPerformanceDateRangeForRequest } from "@/lib/performance-date-range";
 import { DateRange, PerformanceResult, TrackedItem } from "@/lib/types";
-import { cn, formatAmount } from "@/lib/utils";
+import { cn, parseLocalDate } from "@/lib/utils";
 import {
   AlertFeedback,
   Badge,
@@ -44,7 +49,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  formatPercent,
   GainPercent,
   Icons,
   Popover,
@@ -58,7 +62,11 @@ import {
   SheetDescription,
   SheetHeader,
   SheetTitle,
+  useAmountFormatting,
+  useNumberFormatting,
+  type FormattingApi,
 } from "@wealthfolio/ui";
+import { EmptyPlaceholder } from "@wealthfolio/ui/components/ui/empty-placeholder";
 import { isSameDay, subDays, subMonths } from "date-fns";
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -75,9 +83,23 @@ import {
   ALL_PORTFOLIO_ITEM,
   migratePerformanceSelectedItemId,
   migratePerformanceSelectedItems,
+  prunePerformanceSelectedItems,
 } from "./performance-selection";
+import { usePerformanceScopeBridge } from "./hooks/use-performance-scope-bridge";
 
 type TFunction = ReturnType<typeof useTranslation>["t"];
+
+// Helper function to sort comparison items (accounts first, then symbols)
+function sortComparisonItems(items: TrackedItem[]): TrackedItem[] {
+  return [...items].sort((a, b) => {
+    // Sort by type first (accounts before symbols)
+    if (a.type !== b.type) {
+      return a.type === "account" ? -1 : 1;
+    }
+    // If same type, maintain original order
+    return 0;
+  });
+}
 
 function chartMetricForResult(result: PerformanceResult): PerformanceMetric {
   return result.mode === "valueReturn" ? "valueReturn" : "twr";
@@ -289,21 +311,29 @@ function humanizeAccountIds(text: string, namesById: Map<string, string>): strin
 }
 
 /** Trim long raw decimals (e.g. "95.50000000") in warnings to readable amounts. */
-function formatWarningNumbers(text: string): string {
-  return text.replace(DECIMAL_RE, (value) => formatAmount(Number(value), "USD", false));
+function formatWarningNumbers(
+  text: string,
+  formatting: Pick<FormattingApi, "formatAmount">,
+): string {
+  return text.replace(DECIMAL_RE, (value) => formatting.formatAmount(Number(value), "USD", false));
 }
 
 /** Make a data-quality warning user-facing: real account names + tidy numbers. */
-function presentWarning(text: string, namesById: Map<string, string>): string {
-  return formatWarningNumbers(humanizeAccountIds(text, namesById));
+function presentWarning(
+  text: string,
+  namesById: Map<string, string>,
+  formatting: Pick<FormattingApi, "formatAmount">,
+): string {
+  return formatWarningNumbers(humanizeAccountIds(text, namesById), formatting);
 }
 
 function presentMoneyWeightedWarning(
   text: string,
   namesById: Map<string, string>,
   t: TFunction,
+  formatting: Pick<FormattingApi, "formatAmount">,
 ): string {
-  return presentWarning(text, namesById)
+  return presentWarning(text, namesById, formatting)
     .replace(/\bXIRR\b/gi, t("performance:metric.annualized_mwr"))
     .replace(/\bIRR\b/g, "MWR");
 }
@@ -317,6 +347,7 @@ function MetricValue({
   className?: string;
   tone?: "gain" | "neutral";
 }) {
+  const formatting = useNumberFormatting();
   const { t } = useTranslation();
   if (value == null) {
     return (
@@ -328,7 +359,9 @@ function MetricValue({
 
   if (tone === "neutral") {
     return (
-      <span className={cn("text-foreground font-medium", className)}>{formatPercent(value)}</span>
+      <span className={cn("text-foreground font-medium", className)}>
+        {formatting.formatPercent(value)}
+      </span>
     );
   }
 
@@ -421,19 +454,52 @@ function StripMetric({
   value,
   tone = "gain",
   reason,
-  hasWarning = false,
+  infoText,
+  warningText,
+  boldTerms,
 }: {
   label: string;
   value: number | null;
   tone?: "gain" | "neutral";
   reason?: string;
-  hasWarning?: boolean;
+  infoText: string;
+  warningText?: string | string[];
+  boldTerms?: string[];
 }) {
+  const { t } = useTranslation();
+  const warningItems = metricWarningItems(warningText);
+
   return (
     <div className="flex min-w-0 flex-col items-start gap-2">
       <div className="flex max-w-full items-center gap-1">
         <span className={STRIP_LABEL_CLASS}>{label}</span>
-        {hasWarning && <Icons.AlertTriangle className="text-warning h-3 w-3 shrink-0" />}
+        {warningItems.length > 0 && (
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="text-warning hover:text-warning h-4 w-4 shrink-0 rounded-full p-0"
+              >
+                <Icons.AlertTriangle className="h-3 w-3" />
+                <span className="sr-only">
+                  {t("common:component.calculation_note_for", { label })}
+                </span>
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent
+              className="w-[34rem] max-w-[calc(100vw-2rem)] p-0 text-sm"
+              side="bottom"
+              align="start"
+            >
+              <MetricInfoPopoverBody
+                infoText={infoText}
+                warningItems={warningItems}
+                boldTerms={boldTerms}
+              />
+            </PopoverContent>
+          </Popover>
+        )}
       </div>
       {value == null && reason ? (
         <span className="text-muted-foreground line-clamp-2 max-w-[12rem] text-xs leading-snug">
@@ -972,6 +1038,8 @@ const SelectedItemBadge = ({
 };
 
 export default function PerformancePage() {
+  const amountFormatting = useAmountFormatting();
+
   const { t } = useTranslation();
   const isMobile = useIsMobileViewport();
   const [storedSelectedItems, setSelectedItems] = usePersistentState<TrackedItem[]>(
@@ -982,106 +1050,90 @@ export default function PerformancePage() {
     "performance:selectedItemId",
     null,
   );
-  const [dateRange, setDateRange] = usePersistentState<DateRange | undefined>(
+  const { settings } = useSettingsContext();
+  const todayISO = formatZonedDateKey(new Date(), settings?.timezone);
+  const today = useMemo(() => parseLocalDate(todayISO), [todayISO]);
+  const [savedDateRange, setDateRange] = usePersistentState<DateRange | undefined | null>(
     "performance:dateRange",
-    {
-      from: subMonths(new Date(), 12),
-      to: new Date(),
-    },
+    null,
+  );
+  const dateRange = useMemo(
+    () => (savedDateRange === null ? { from: subMonths(today, 12), to: today } : savedDateRange),
+    [savedDateRange, today],
   );
 
   useEffect(() => {
     if (!dateRange?.from || !dateRange?.to) return;
-    const today = new Date();
     if (isSameDay(dateRange.from, subDays(today, 1)) && isSameDay(dateRange.to, today)) {
       setDateRange({ from: subDays(today, 7), to: today });
     }
-  }, [dateRange, setDateRange]);
-  const { accounts, isLoading: isAccountsLoading } = useAccounts({
-    accountPurpose: AccountPurpose.PERFORMANCE,
+  }, [dateRange, setDateRange, today]);
+  // Scope selectors include hidden accounts and mixed account types. Resolve
+  // their names from the full inventory; the backend applies report eligibility.
+  const {
+    accounts,
+    isLoading: isAccountsLoading,
+    isError: isAccountsError,
+    error: accountsError,
+  } = useAccounts({
+    filterActive: false,
+    includeArchived: true,
   });
 
   // State for mobile dropdown menu
   const [accountSheetOpen, setAccountSheetOpen] = useState(false);
   const [benchmarkSheetOpen, setBenchmarkSheetOpen] = useState(false);
-  const selectedItems = useMemo(
-    () => migratePerformanceSelectedItems(storedSelectedItems),
-    [storedSelectedItems],
-  );
+  const selectedItems = useMemo(() => {
+    const migrated = migratePerformanceSelectedItems(storedSelectedItems);
+    if (isAccountsLoading || isAccountsError) return migrated;
+    // Reconcile before both fetching and bridging so neither can reuse stale IDs.
+    return prunePerformanceSelectedItems(migrated, new Set(accounts.map((account) => account.id)));
+  }, [accounts, isAccountsLoading, isAccountsError, storedSelectedItems]);
   const selectedItemId = migratePerformanceSelectedItemId(storedSelectedItemId);
 
   useEffect(() => {
     if (selectedItems !== storedSelectedItems) {
-      setSelectedItems(selectedItems);
+      // A bridge or user action may have replaced this snapshot already (also
+      // when StrictMode replays mount effects). Never overwrite that newer list.
+      setSelectedItems((current) => (current === storedSelectedItems ? selectedItems : current));
     }
   }, [selectedItems, setSelectedItems, storedSelectedItems]);
 
   useEffect(() => {
     if (selectedItemId !== storedSelectedItemId) {
-      setSelectedItemId(selectedItemId);
+      setSelectedItemId((current) => (current === storedSelectedItemId ? selectedItemId : current));
     }
   }, [selectedItemId, setSelectedItemId, storedSelectedItemId]);
 
   useEffect(() => {
-    if (isAccountsLoading) {
+    if (isAccountsLoading || isAccountsError) {
       return;
     }
-    const reportAccountIds = new Set(accounts.map((account) => account.id));
-    // User-created portfolios resolve to account ids at calc time, so we keep
-    // them regardless of `reportAccountIds`; the backend filter handles it.
-    const isPortfolioItem = (item: TrackedItem) => item.accountScope?.type === "portfolio";
-    setSelectedItems((current) => {
-      const next = current.filter(
-        (item) =>
-          item.type !== "account" ||
-          item.id === PORTFOLIO_SCOPE_ID ||
-          isPortfolioItem(item) ||
-          reportAccountIds.has(item.id),
-      );
-      if (next.length === current.length) {
-        return current;
-      }
-      return next.length > 0 ? next : [ALL_PORTFOLIO_ITEM];
-    });
     const selectedItemStillPresent =
-      !selectedItemId ||
-      selectedItems.some(
-        (item) =>
-          item.id === selectedItemId &&
-          (item.type !== "account" ||
-            item.id === PORTFOLIO_SCOPE_ID ||
-            isPortfolioItem(item) ||
-            reportAccountIds.has(item.id)),
-      );
+      !selectedItemId || selectedItems.some((item) => item.id === selectedItemId);
     if (!selectedItemStillPresent) {
-      setSelectedItemId(null);
+      setSelectedItemId((current) => (current === selectedItemId ? null : current));
     }
-  }, [
+  }, [isAccountsLoading, isAccountsError, selectedItemId, selectedItems, setSelectedItemId]);
+
+  const accountScope = useAccountScopeStore((state) => state.scope);
+  const setAccountScope = useAccountScopeStore((state) => state.setScope);
+  const releaseBridgedItem = useAccountScopeStore((state) => state.releaseBridgedItem);
+
+  usePerformanceScopeBridge({
     accounts,
-    isAccountsLoading,
-    selectedItemId,
+    isAccountsLoading: isAccountsLoading || isAccountsError,
     selectedItems,
-    setSelectedItemId,
     setSelectedItems,
-  ]);
+    setSelectedItemId,
+    sortItems: sortComparisonItems,
+  });
 
   const accountNamesById = useMemo(() => {
     const map = new Map<string, string>();
     for (const account of accounts) map.set(account.id.toLowerCase(), account.name);
     return map;
   }, [accounts]);
-
-  // Helper function to sort comparison items (accounts first, then symbols)
-  const sortComparisonItems = (items: TrackedItem[]): TrackedItem[] => {
-    return [...items].sort((a, b) => {
-      // Sort by type first (accounts before symbols)
-      if (a.type !== b.type) {
-        return a.type === "account" ? -1 : 1;
-      }
-      // If same type, maintain original order
-      return 0;
-    });
-  };
 
   // Use the custom hook for parallel data fetching with effective date calculation
   const {
@@ -1091,7 +1143,7 @@ export default function PerformancePage() {
     errorMessages,
     displayDateRange,
   } = useCalculatePerformanceHistory({
-    selectedItems,
+    selectedItems: isAccountsLoading || isAccountsError ? [] : selectedItems,
     dateRange: getPerformanceDateRangeForRequest(dateRange),
   });
 
@@ -1199,9 +1251,9 @@ export default function PerformancePage() {
     const rawMoneyWeightedWarnings = rawWarnings.filter(isMoneyWeightedMessage);
     const visibleWarnings = rawWarnings
       .filter((warning) => !isMoneyWeightedMessage(warning))
-      .map((warning) => presentWarning(warning, accountNamesById));
+      .map((warning) => presentWarning(warning, accountNamesById, amountFormatting));
     const moneyWeightedWarnings = rawMoneyWeightedWarnings.map((warning) =>
-      presentMoneyWeightedWarning(warning, accountNamesById, t),
+      presentMoneyWeightedWarning(warning, accountNamesById, t, amountFormatting),
     );
     const rawReason = selectedMetricValue == null ? firstNotApplicableReason(found) : undefined;
     const showAnnualizedMoneyWeightedReturn =
@@ -1212,7 +1264,7 @@ export default function PerformancePage() {
     const rawMoneyWeightedReason =
       moneyWeightedReturn == null ? firstMoneyWeightedReason(found) : undefined;
     const presentedMoneyWeightedReason = rawMoneyWeightedReason
-      ? presentMoneyWeightedWarning(rawMoneyWeightedReason, accountNamesById, t)
+      ? presentMoneyWeightedWarning(rawMoneyWeightedReason, accountNamesById, t, amountFormatting)
       : undefined;
     const moneyWeightedReason =
       presentedMoneyWeightedReason ??
@@ -1274,7 +1326,9 @@ export default function PerformancePage() {
       result: found,
       chartMetric: selectedMetric,
       selectedMetricValue,
-      selectedMetricReason: rawReason ? presentWarning(rawReason, accountNamesById) : undefined,
+      selectedMetricReason: rawReason
+        ? presentWarning(rawReason, accountNamesById, amountFormatting)
+        : undefined,
       warningTerms: Array.from(accountNamesById.values()),
       annualizedReturn: annualizedDisplayMetricValue(found, selectedMetric),
       annualizedReturnLabel:
@@ -1298,7 +1352,7 @@ export default function PerformancePage() {
       warnings: visibleWarnings,
       notApplicableReasons: found.dataQuality.notApplicableReasons ?? [],
     };
-  }, [selectedPerformanceData, accountNamesById, t]);
+  }, [selectedPerformanceData, accountNamesById, amountFormatting, t]);
 
   const preserveCurrentChartAnchor = (fallbackId: string) => {
     setSelectedItemId(
@@ -1311,6 +1365,7 @@ export default function PerformancePage() {
     const exists = selectedItems.some((item) => item.id === accountId);
 
     if (exists) {
+      releaseBridgedItem(accountId);
       const nextItems = sortComparisonItems(selectedItems.filter((item) => item.id !== accountId));
       setSelectedItems(nextItems);
       if (selectedItemId === accountId) {
@@ -1336,6 +1391,7 @@ export default function PerformancePage() {
     const exists = selectedItems.some((item) => item.id === portfolioId);
 
     if (exists) {
+      releaseBridgedItem(portfolioId);
       const nextItems = sortComparisonItems(
         selectedItems.filter((item) => item.id !== portfolioId),
       );
@@ -1393,9 +1449,11 @@ export default function PerformancePage() {
 
   return (
     <>
-      {/* Date range selector - fixed position in header area */}
-      <div className="pointer-events-auto fixed right-2 top-4 z-20 hidden md:block lg:right-4">
+      {/* Account scope + date range selectors - fixed position in header area */}
+      <div className="pointer-events-auto fixed right-2 top-4 z-20 hidden items-center gap-2 md:flex lg:right-4">
+        <AccountScopeSelector value={accountScope} onChange={setAccountScope} />
         <DateRangeSelector
+          asOf={today}
           value={dateRange}
           onChange={setDateRange}
           hiddenRanges={PERFORMANCE_HIDDEN_DATE_RANGES}
@@ -1403,8 +1461,10 @@ export default function PerformancePage() {
       </div>
 
       <div className="flex h-full flex-col space-y-4">
-        <div className="flex justify-end md:hidden">
+        <div className="flex items-center justify-end gap-2 md:hidden">
+          <AccountScopeSelector value={accountScope} onChange={setAccountScope} />
           <DateRangeSelector
+            asOf={today}
             value={dateRange}
             onChange={setDateRange}
             hiddenRanges={PERFORMANCE_HIDDEN_DATE_RANGES}
@@ -1717,24 +1777,29 @@ export default function PerformancePage() {
                                 label={stripReturnLabel(selectedItemData?.label, t)}
                                 value={selectedItemData?.selectedMetricValue ?? null}
                                 reason={selectedItemData?.selectedMetricReason}
-                                hasWarning={Boolean(
-                                  selectedItemData?.returnWarnings.length ||
-                                  selectedItemData?.selectedMetricReason,
-                                )}
+                                infoText={selectedItemData?.infoText ?? SIMPLE_RETURN_INFO}
+                                warningText={[
+                                  ...(selectedItemData?.returnWarnings ?? []),
+                                  ...(selectedItemData?.selectedMetricReason
+                                    ? [selectedItemData.selectedMetricReason]
+                                    : []),
+                                ]}
+                                boldTerms={selectedItemData?.warningTerms}
                               />
                               {selectedItemData?.showMoneyWeightedReturn && (
                                 <StripMetric
                                   label={selectedItemData.moneyWeightedReturnLabel}
                                   value={selectedItemData.moneyWeightedReturn}
                                   reason={selectedItemData.moneyWeightedReason}
-                                  hasWarning={Boolean(
-                                    selectedItemData.moneyWeightedWarnings.length,
-                                  )}
+                                  infoText={MONEY_WEIGHTED_RETURN_INFO}
+                                  warningText={selectedItemData.moneyWeightedWarnings}
+                                  boldTerms={selectedItemData.warningTerms}
                                 />
                               )}
                               <StripMetric
                                 label={t("performance:metric.annualized_short")}
                                 value={selectedItemData?.annualizedReturn ?? null}
+                                infoText={annualizedReturnInfo}
                               />
                             </div>
                           </StripSection>
@@ -1745,11 +1810,14 @@ export default function PerformancePage() {
                                 label={t("performance:metric.volatility")}
                                 value={selectedItemData?.volatility ?? null}
                                 tone="neutral"
-                                hasWarning={Boolean(selectedItemData?.volatilityWarnings.length)}
+                                infoText={volatilityInfo}
+                                warningText={selectedItemData?.volatilityWarnings}
+                                boldTerms={selectedItemData?.warningTerms}
                               />
                               <StripMetric
                                 label={t("performance:metric.max_drawdown_short")}
                                 value={selectedItemData?.maxDrawdown ?? null}
+                                infoText={maxDrawdownInfo}
                               />
                             </div>
                           </StripSection>
@@ -1794,9 +1862,11 @@ export default function PerformancePage() {
                 <div className="min-h-0 flex-1">
                   <PerformanceContent
                     chartData={chartData}
-                    isLoading={isLoadingPerformance}
-                    hasErrors={hasErrors}
-                    errorMessages={errorMessages}
+                    isLoading={isLoadingPerformance || isAccountsLoading}
+                    hasErrors={hasErrors || isAccountsError}
+                    errorMessages={
+                      accountsError ? [accountsError.message, ...errorMessages] : errorMessages
+                    }
                     isMobile={isMobile}
                   />
                 </div>

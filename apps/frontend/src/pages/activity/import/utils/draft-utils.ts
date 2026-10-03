@@ -7,7 +7,7 @@ import {
 } from "@/lib/constants";
 import { canonicalizeActivitySubtype } from "@/lib/activity-utils";
 import type { ActivityImport } from "@/lib/types";
-import { tryParseDate } from "@/lib/utils";
+import { type DateOrder, detectDateOrder, tryParseDate } from "@/lib/utils";
 import { isValid, parse, parseISO } from "date-fns";
 import { findMappedActivityType } from "./activity-type-mapping";
 import { getDateFnsPattern } from "./date-format-options";
@@ -79,11 +79,125 @@ export function hasDuplicateWarning(draft: DraftActivity): boolean {
   );
 }
 
+function defaultCreditBoundary(
+  activityType: string | undefined,
+  subtype: string | undefined,
+): boolean | undefined {
+  if (activityType?.trim().toUpperCase() !== ActivityType.CREDIT) {
+    return undefined;
+  }
+
+  const canonicalSubtype = canonicalizeActivitySubtype(activityType, subtype?.trim());
+  return canonicalSubtype === ACTIVITY_SUBTYPES.BONUS ? true : undefined;
+}
+
+function hasExpenseReversalInference(
+  activityType: string | undefined,
+  subtype: string | undefined,
+  rawType?: string,
+  rawSubtype?: string,
+): boolean {
+  if (activityType?.trim().toUpperCase() !== ActivityType.CREDIT) return false;
+
+  const canonicalSubtype = canonicalizeActivitySubtype(activityType, subtype?.trim());
+  return (
+    canonicalSubtype === ACTIVITY_SUBTYPES.REIMBURSEMENT ||
+    [rawType, rawSubtype].some((label) =>
+      EXTERNAL_EXPENSE_REVERSAL_LABELS.has(normalizeSignAwareActivityLabel(label)),
+    )
+  );
+}
+
+export function inferExpenseReversalBoundary(
+  activityType: string | undefined,
+  subtype: string | undefined,
+  accountType: string | undefined,
+  rawType?: string,
+  rawSubtype?: string,
+): boolean | undefined {
+  if (activityType?.trim().toUpperCase() !== ActivityType.CREDIT) {
+    return undefined;
+  }
+
+  const defaultBoundary = defaultCreditBoundary(activityType, subtype);
+  if (defaultBoundary !== undefined) return defaultBoundary;
+  if (accountType !== AccountType.CASH) {
+    return undefined;
+  }
+
+  return hasExpenseReversalInference(activityType, subtype, rawType, rawSubtype) ? true : undefined;
+}
+
+export function reconcileExpenseReversalBoundary(
+  currentDraft: DraftActivity,
+  updates: Partial<DraftActivity>,
+  accountTypeById: ReadonlyMap<string, AccountType>,
+): Partial<DraftActivity> {
+  const changesBoundaryInputs = ["accountId", "activityType", "subtype"].some(
+    (field) => field in updates,
+  );
+  if (!changesBoundaryInputs || "isExternal" in updates) {
+    return updates;
+  }
+  if (currentDraft.isExternal === false) {
+    return updates;
+  }
+
+  const mergedDraft = { ...currentDraft, ...updates };
+  const currentIsCredit = currentDraft.activityType?.trim().toUpperCase() === ActivityType.CREDIT;
+  const mergedIsCredit = mergedDraft.activityType?.trim().toUpperCase() === ActivityType.CREDIT;
+  if (!currentIsCredit && !mergedIsCredit) {
+    return updates;
+  }
+
+  let boundaryInference = currentDraft.boundaryInference;
+  if (
+    boundaryInference === undefined &&
+    currentIsCredit &&
+    canonicalizeActivitySubtype(currentDraft.activityType, currentDraft.subtype?.trim()) ===
+      ACTIVITY_SUBTYPES.REIMBURSEMENT
+  ) {
+    boundaryInference = "expense-reversal";
+  }
+
+  if ("activityType" in updates && !mergedIsCredit) {
+    boundaryInference = undefined;
+  }
+  if ("subtype" in updates) {
+    boundaryInference =
+      mergedIsCredit &&
+      canonicalizeActivitySubtype(mergedDraft.activityType, mergedDraft.subtype?.trim()) ===
+        ACTIVITY_SUBTYPES.REIMBURSEMENT
+        ? "expense-reversal"
+        : undefined;
+  }
+
+  const isExternal =
+    defaultCreditBoundary(mergedDraft.activityType, mergedDraft.subtype) ??
+    (mergedIsCredit &&
+    boundaryInference === "expense-reversal" &&
+    accountTypeById.get(mergedDraft.accountId) === AccountType.CASH
+      ? true
+      : undefined);
+  const reconciled: Partial<DraftActivity> = {
+    ...updates,
+    isExternal,
+  };
+  if (boundaryInference !== currentDraft.boundaryInference) {
+    reconciled.boundaryInference = boundaryInference;
+  }
+  return reconciled;
+}
+
 /**
  * Parse a date value using the configured format (priority) then auto-detection fallback.
  * Returns a full ISO datetime string preserving any time component from the source.
  */
-export function parseDateValue(value: string | undefined, dateFormat: string): string {
+export function parseDateValue(
+  value: string | undefined,
+  dateFormat: string,
+  order?: DateOrder,
+): string {
   if (!value || value.trim() === "") return "";
 
   const trimmed = value.trim();
@@ -110,7 +224,7 @@ export function parseDateValue(value: string | undefined, dateFormat: string): s
   }
 
   // 3. Auto-detection fallback (handles 80+ formats)
-  const autoDetected = tryParseDate(trimmed);
+  const autoDetected = tryParseDate(trimmed, order);
   if (autoDetected) return autoDetected.toISOString();
 
   // 4. Return as-is if nothing works (will surface as validation error)
@@ -147,6 +261,26 @@ const REIMBURSEMENT_LABELS = new Set([
   "REIMBURSED",
   "REIMBURSE",
   "EXPENSEREIMBURSEMENT",
+]);
+
+const REFUND_LABELS = new Set([
+  "REFUND",
+  "RETURN",
+  "REVERSAL",
+  "STATEMENTCREDIT",
+  "CREDITADJUSTMENT",
+  "MERCHANTREFUND",
+  "PURCHASEREFUND",
+  "PURCHASERETURN",
+]);
+
+const REBATE_LABELS = new Set(["REBATE", "CASHBACK", "REWARDS"]);
+const EXTERNAL_EXPENSE_REVERSAL_LABELS = new Set([
+  ...REIMBURSEMENT_LABELS,
+  "MERCHANTREFUND",
+  "PURCHASEREFUND",
+  "PURCHASERETURN",
+  "CASHBACK",
 ]);
 
 function normalizeSignAwareActivityLabel(value: string | undefined): string {
@@ -555,6 +689,14 @@ export function createDraftActivities(
     return row[idx];
   };
 
+  // Numeric dates are ambiguous per row but usually not per column: one
+  // "26/06/2026" among them fixes the day/month order for every other row.
+  const dateOrder =
+    dateFormat === "auto"
+      ? (detectDateOrder(parsedRows.map((row) => getColumnValue(row, ImportFormat.DATE) ?? "")) ??
+        undefined)
+      : undefined;
+
   return parsedRows.flatMap((row, rowIndex): DraftActivity[] => {
     // Extract raw values from CSV
     const rawDate = getColumnValue(row, ImportFormat.DATE);
@@ -584,7 +726,7 @@ export function createDraftActivities(
       : getColumnValue(row, ImportFormat.INSTRUMENT_TYPE);
 
     // Parse and normalize values
-    const activityDate = parseDateValue(rawDate, dateFormat);
+    const activityDate = parseDateValue(rawDate, dateFormat, dateOrder);
     const signedAmount = parseSignedNumericValue(rawAmount, decimalSeparator, thousandsSeparator);
     const signedQuantity = parseSignedNumericValue(
       rawQuantity,
@@ -649,12 +791,19 @@ export function createDraftActivities(
     const rawTypePositionIntentSubtype = rawTypePositionIntentType ? rawType : undefined;
     const trimmedRawSubtype = rawSubtype?.trim();
     const normalizedSubtype = trimmedRawSubtype || rawTypePositionIntentSubtype || signedFxSubtype;
+    const normalizedRawType = normalizeSignAwareActivityLabel(rawType);
+    const normalizedRawSubtype = normalizeSignAwareActivityLabel(rawSubtype);
     const inferredCreditSubtype =
-      activityType === ActivityType.CREDIT &&
-      (REIMBURSEMENT_LABELS.has(normalizeSignAwareActivityLabel(rawType)) ||
-        REIMBURSEMENT_LABELS.has(normalizeSignAwareActivityLabel(rawSubtype)))
-        ? ACTIVITY_SUBTYPES.REIMBURSEMENT
-        : undefined;
+      activityType !== ActivityType.CREDIT
+        ? undefined
+        : REIMBURSEMENT_LABELS.has(normalizedRawType) ||
+            REIMBURSEMENT_LABELS.has(normalizedRawSubtype)
+          ? ACTIVITY_SUBTYPES.REIMBURSEMENT
+          : REFUND_LABELS.has(normalizedRawType) || REFUND_LABELS.has(normalizedRawSubtype)
+            ? ACTIVITY_SUBTYPES.REFUND
+            : REBATE_LABELS.has(normalizedRawType) || REBATE_LABELS.has(normalizedRawSubtype)
+              ? ACTIVITY_SUBTYPES.REBATE
+              : undefined;
     const canonicalSubtype =
       normalizedSubtype && normalizedSubtype.toUpperCase() !== activityType
         ? canonicalizeActivitySubtype(activityType ?? "", normalizedSubtype)
@@ -687,13 +836,22 @@ export function createDraftActivities(
     }
     const resolved = resolveCashActivityFields(activityType, quantity, amount, unitPrice, subtype);
 
-    // Infer isExternal for transfers: external unless the raw CSV label says "INTERNAL"
+    // Infer boundary semantics for transfers and cash-account expense reversals.
     const isTransfer =
       activityType === ActivityType.TRANSFER_IN || activityType === ActivityType.TRANSFER_OUT;
+    const accountType = accountTypeById?.get(accountId);
     const isExternal = isTransfer
       ? signedFxTransferType
         ? false
         : !rawType?.trim().toUpperCase().includes("INTERNAL")
+      : inferExpenseReversalBoundary(activityType, subtype, accountType, rawType, rawSubtype);
+    const boundaryInference = hasExpenseReversalInference(
+      activityType,
+      subtype,
+      rawType,
+      rawSubtype,
+    )
+      ? "expense-reversal"
       : undefined;
 
     // Create draft object
@@ -733,6 +891,7 @@ export function createDraftActivities(
       fxRate,
       subtype,
       isExternal,
+      boundaryInference,
       accountId,
       comment,
       isEdited: false,
@@ -757,6 +916,7 @@ export function draftToActivityImport(draft: DraftActivity): ActivityImport {
   const subtype = canonicalizeActivitySubtype(draft.activityType ?? "", draft.subtype?.trim());
   const isTransfer =
     activityType === ActivityType.TRANSFER_IN || activityType === ActivityType.TRANSFER_OUT;
+  const isCredit = activityType === ActivityType.CREDIT;
 
   return {
     id: undefined,
@@ -789,6 +949,6 @@ export function draftToActivityImport(draft: DraftActivity): ActivityImport {
     isDraft: false,
     comment: draft.comment,
     forceImport: draft.forceImport ?? false,
-    isExternal: isTransfer ? draft.isExternal : undefined,
+    isExternal: isTransfer || isCredit ? draft.isExternal : undefined,
   };
 }

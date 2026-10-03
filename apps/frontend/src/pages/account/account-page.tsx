@@ -1,3 +1,5 @@
+import { parseLocalDate } from "@/lib/utils";
+import { formatZonedDateKey } from "@/features/spending/lib/timezone";
 import { getContributionLimit, getSnapshots, searchActivities } from "@/adapters";
 import { HistoryChart } from "@/components/history-chart";
 import type { ActivityDetails } from "@/lib/types";
@@ -10,6 +12,7 @@ import {
   GainPercent,
   AnimatedToggleGroup,
   IntervalSelector,
+  getInitialIntervalData,
   Page,
   PageContent,
   PageHeader,
@@ -52,7 +55,6 @@ import {
   Account,
   AccountValuation,
   ContributionLimit,
-  DateRange,
   SnapshotInfo,
   TimePeriod,
   TrackedItem,
@@ -93,7 +95,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@wealthfolio/ui/components/ui/sheet";
-import { format, subMonths } from "date-fns";
+import { format } from "date-fns";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { AccountContributionLimit } from "./account-contribution-limit";
 import AccountHoldings from "./account-holdings";
@@ -126,12 +128,6 @@ const accountTypeIcons: Record<AccountType, Icon> = {
   CREDIT_CARD: Icons.CreditCard,
   CRYPTOCURRENCY: Icons.Bitcoin,
 };
-
-// Helper function to get the initial date range (copied from dashboard)
-const getInitialDateRange = (): DateRange => ({
-  from: subMonths(new Date(), 3),
-  to: new Date(),
-});
 
 // Define the initial interval code (consistent with other pages)
 const INITIAL_INTERVAL_CODE: TimePeriod = "3M";
@@ -182,9 +178,14 @@ const AccountPage = () => {
   const requestedAccountDetailTab = parseAccountDetailTab(searchParams.get("tab"));
   const navigate = useNavigate();
   const isMobile = useIsMobileViewport();
-  const [dateRange, setDateRange] = useState<DateRange | undefined>(getInitialDateRange());
   const [selectedIntervalCode, setSelectedIntervalCode] =
     useState<TimePeriod>(INITIAL_INTERVAL_CODE);
+  const todayISO = formatZonedDateKey(new Date(), appTimezone);
+  const today = useMemo(() => parseLocalDate(todayISO), [todayISO]);
+  const dateRange = useMemo(
+    () => getInitialIntervalData(selectedIntervalCode, today).range,
+    [selectedIntervalCode, today],
+  );
   const [desktopSelectorOpen, setDesktopSelectorOpen] = useState(false);
   const [mobileSelectorOpen, setMobileSelectorOpen] = useState(false);
   const [actionPaletteOpen, setActionPaletteOpen] = useState(false);
@@ -220,7 +221,7 @@ const AccountPage = () => {
     account,
     AccountPurpose.CONTRIBUTION_LIMITS,
   );
-  const currentContributionYear = new Date().getFullYear();
+  const currentContributionYear = today.getFullYear();
 
   const { data: contributionLimits, isLoading: isContributionLimitsLoading } = useQuery<
     ContributionLimit[],
@@ -255,7 +256,6 @@ const AccountPage = () => {
 
   // Check if account has any holdings (including cash)
   const hasHoldings = useMemo(() => {
-    if (!holdings) return false;
     return holdings.length > 0;
   }, [holdings]);
 
@@ -553,8 +553,14 @@ const AccountPage = () => {
   });
 
   const negativeCashAuditTarget = useMemo(
-    () => buildCashAuditReviewTarget(currentNegativeCashRun, cashAuditActivities, appTimezone),
-    [appTimezone, cashAuditActivities, currentNegativeCashRun],
+    () =>
+      buildCashAuditReviewTarget(
+        currentNegativeCashRun,
+        cashAuditActivities,
+        appTimezone,
+        isLiabilityAccount,
+      ),
+    [appTimezone, cashAuditActivities, currentNegativeCashRun, isLiabilityAccount],
   );
 
   const selectedCashAuditTarget =
@@ -620,13 +626,8 @@ const AccountPage = () => {
   const isLoading = isAccountsLoading || isValuationHistoryLoading;
 
   // Callback for IntervalSelector
-  const handleIntervalSelect = (
-    code: TimePeriod,
-    _description: string,
-    range: DateRange | undefined,
-  ) => {
+  const handleIntervalSelect = (code: TimePeriod) => {
     setSelectedIntervalCode(code);
-    setDateRange(range);
   };
 
   const percentageToDisplay = useMemo(() => {
@@ -665,10 +666,13 @@ const AccountPage = () => {
         handleDelete={handleActivityDelete}
         onDuplicate={handleActivityDuplicate}
         onAdd={() => navigate(`/activities/manage?account=${id}`)}
+        onLoadMore={accountActivitiesSearch.fetchNextPage}
+        hasNextPage={accountActivitiesSearch.hasNextPage}
+        isFetching={accountActivitiesSearch.isFetching}
+        isFetchingNextPage={accountActivitiesSearch.isFetchingNextPage}
+        hasLoadMoreError={accountActivitiesSearch.isFetchNextPageError}
       />
       <ActivityPagination
-        hasMore={accountActivitiesSearch.hasNextPage ?? false}
-        onLoadMore={accountActivitiesSearch.fetchNextPage}
         isFetching={accountActivitiesSearch.isFetchingNextPage}
         totalFetched={accountActivitiesSearch.data.length}
         totalCount={accountActivitiesSearch.totalRowCount}
@@ -684,10 +688,13 @@ const AccountPage = () => {
         handleEdit={handleActivityEdit}
         handleDelete={handleActivityDelete}
         onAdd={() => navigate(`/activities/manage?account=${id}`)}
+        onLoadMore={accountActivitiesSearch.fetchNextPage}
+        hasNextPage={accountActivitiesSearch.hasNextPage}
+        isFetching={accountActivitiesSearch.isFetching}
+        isFetchingNextPage={accountActivitiesSearch.isFetchingNextPage}
+        hasLoadMoreError={accountActivitiesSearch.isFetchNextPageError}
       />
       <ActivityPagination
-        hasMore={accountActivitiesSearch.hasNextPage ?? false}
-        onLoadMore={accountActivitiesSearch.fetchNextPage}
         isFetching={accountActivitiesSearch.isFetchingNextPage}
         totalFetched={accountActivitiesSearch.data.length}
         totalCount={accountActivitiesSearch.totalRowCount}
@@ -1173,7 +1180,7 @@ const AccountPage = () => {
             </SheetHeader>
             <div className="flex-1 overflow-hidden px-6">
               <HoldingsEditMode
-                holdings={holdings ?? []}
+                holdings={holdings}
                 account={account}
                 isLoading={isHoldingsLoading}
                 onClose={() => {
@@ -1229,6 +1236,7 @@ const AccountPage = () => {
           currentValuation?.accountCurrency
         }
         cashAuditTarget={selectedCashAuditTarget ?? undefined}
+        isCreditCardAccount={isLiabilityAccount}
       />
 
       {/* Bulk Holdings Modal for Transfer Holdings */}

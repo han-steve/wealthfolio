@@ -5,19 +5,26 @@ import {
   isCashActivity,
   localizeActivitySubtypeName,
   localizeActivityTypeName,
+  supportsPerformanceBoundary,
 } from "@/lib/activity-utils";
 import {
   ActivityStatus,
   ActivityType,
-  INSTRUMENT_TYPE_OPTIONS,
   getExchangeDisplayName,
+  INSTRUMENT_TYPE_OPTIONS,
   SUBTYPES_BY_ACTIVITY_TYPE,
 } from "@/lib/constants";
-import { parseOccSymbol } from "@/lib/occ-symbol";
+import { formatOptionSubtitle, parseOccSymbol } from "@/lib/occ-symbol";
 import type { Account, ActivityDetails } from "@/lib/types";
-import type { TFunction } from "i18next";
 import type { ColumnDef } from "@tanstack/react-table";
-import { Badge, Checkbox, type SymbolSearchResult } from "@wealthfolio/ui";
+import {
+  Badge,
+  Checkbox,
+  type SymbolSearchResult,
+  useDateFormatting,
+  useNumberFormatting,
+} from "@wealthfolio/ui";
+import type { TFunction } from "i18next";
 import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { ActivityOperations } from "../activity-operations";
@@ -61,6 +68,13 @@ const shouldDisplaySubtype = (
   );
 };
 
+export const shouldDisplaySubtypeInTypeColumn = (
+  showSubtypeInType: boolean,
+  transaction: LocalTransaction | undefined,
+  activityType: string | undefined,
+  subtype: string | null | undefined,
+): boolean => showSubtypeInType && shouldDisplaySubtype(transaction, activityType, subtype);
+
 const getSubtypeDisplayLabel = (t: TFunction, subtype: string, optionLabel?: string): string => {
   return optionLabel ?? localizeActivitySubtypeName(t, subtype);
 };
@@ -72,6 +86,7 @@ interface UseActivityColumnsOptions {
   onDelete: (activity: ActivityDetails) => void;
   onLinkTransfer?: (activity: ActivityDetails) => void;
   onUnlinkTransfer?: (activity: ActivityDetails) => void;
+  showSubtypeInType: boolean;
   /** Called when a symbol is selected from search, with the full result including exchangeMic */
   onSymbolSelect?: (rowIndex: number, result: SymbolSearchResult) => void;
   /** Called when user wants to create a custom asset. Opens a dialog to collect asset metadata. */
@@ -88,9 +103,15 @@ export function useActivityColumns({
   onDelete,
   onLinkTransfer,
   onUnlinkTransfer,
+  showSubtypeInType,
   onSymbolSelect,
   onCreateCustomAsset,
 }: UseActivityColumnsOptions) {
+  const numberFormatting = useNumberFormatting();
+  const dateFormatting = useDateFormatting();
+
+  const formatting = { ...dateFormatting, ...numberFormatting };
+
   const { t } = useTranslation();
 
   const activityTypeOptions = useMemo(
@@ -188,6 +209,16 @@ export function useActivityColumns({
         size: 150,
         enablePinning: false,
         meta: {
+          renderKey: showSubtypeInType,
+          getRenderKey: (rowData) => {
+            if (!showSubtypeInType) return null;
+            const transaction = rowData as LocalTransaction;
+            return JSON.stringify([
+              transaction.subtype ?? null,
+              transaction.needsReview,
+              transaction.isNew === true,
+            ]);
+          },
           cell: {
             variant: "select",
             options: activityTypeOptions,
@@ -198,7 +229,11 @@ export function useActivityColumns({
               return (
                 <ActivityTypeBadge
                   type={value as ActivityType}
-                  subtype={shouldDisplaySubtype(transaction, value, subtype) ? subtype : undefined}
+                  subtype={
+                    shouldDisplaySubtypeInTypeColumn(showSubtypeInType, transaction, value, subtype)
+                      ? subtype
+                      : undefined
+                  }
                   className="text-xs font-normal"
                 />
               );
@@ -251,7 +286,7 @@ export function useActivityColumns({
           },
         },
       },
-      // 7. External (checkbox for TRANSFER_IN/TRANSFER_OUT only)
+      // 7. Explicit performance boundary for transfers and credits
       {
         id: "isExternal",
         accessorKey: "isExternal",
@@ -262,14 +297,9 @@ export function useActivityColumns({
         meta: {
           cell: {
             variant: "checkbox",
-            // Only enabled for transfer types
             isDisabled: (rowData: unknown) => {
               const row = rowData as LocalTransaction;
-              const activityType = row.activityType?.toUpperCase();
-              return (
-                activityType !== ActivityType.TRANSFER_IN &&
-                activityType !== ActivityType.TRANSFER_OUT
-              );
+              return !supportsPerformanceBoundary(row.activityType);
             },
           },
         },
@@ -299,11 +329,7 @@ export function useActivityColumns({
               // Show contract description for options
               const parsed = row.instrumentType === "OPTION" ? parseOccSymbol(symbol) : null;
               if (parsed) {
-                const expDisplay = new Date(parsed.expiration + "T12:00:00").toLocaleDateString(
-                  "en-US",
-                  { month: "short", day: "numeric" },
-                );
-                return `${expDisplay} $${parsed.strikePrice} ${parsed.optionType}`;
+                return formatOptionSubtitle(parsed, formatting);
               }
               return getExchangeDisplayName(row.exchangeMic);
             },
@@ -461,6 +487,7 @@ export function useActivityColumns({
     [
       accountOptions,
       activityTypeOptions,
+      formatting,
       handleSymbolSearch,
       onCreateCustomAsset,
       onDelete,
@@ -469,6 +496,7 @@ export function useActivityColumns({
       onLinkTransfer,
       onUnlinkTransfer,
       onSymbolSelect,
+      showSubtypeInType,
       t,
     ],
   );

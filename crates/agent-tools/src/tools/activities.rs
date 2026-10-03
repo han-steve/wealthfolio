@@ -45,6 +45,7 @@ pub struct ActivityDto {
     pub currency: String,
     pub account_id: String,
     pub account_name: Option<String>,
+    pub notes: Option<String>,
 }
 
 /// Output envelope for activities tool.
@@ -231,11 +232,7 @@ impl AgentTool for SearchActivities {
                 let unit_price = a.unit_price.as_ref().and_then(|v| v.parse::<f64>().ok());
                 let fee = a.fee.as_ref().and_then(|v| v.parse::<f64>().ok());
                 let fx_rate = a.fx_rate.as_ref().and_then(|v| v.parse::<f64>().ok());
-                let amount = a
-                    .amount
-                    .as_ref()
-                    .and_then(|s| s.parse::<f64>().ok())
-                    .or_else(|| Some(quantity? * unit_price?));
+                let amount = a.amount.as_ref().and_then(|s| s.parse::<f64>().ok());
 
                 ActivityDto {
                     id: a.id,
@@ -254,6 +251,7 @@ impl AgentTool for SearchActivities {
                     currency: a.currency,
                     account_id: a.account_id.clone(),
                     account_name: Some(a.account_name),
+                    notes: a.comment,
                 }
             })
             .collect();

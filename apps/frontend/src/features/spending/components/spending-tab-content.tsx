@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FC } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FC } from "react";
 import { useTranslation } from "react-i18next";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
@@ -13,28 +13,37 @@ import {
 } from "recharts";
 
 import { DashboardCard } from "@/components/dashboard-card";
-import { useTaxonomy } from "@/hooks/use-taxonomies";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
+import { useTaxonomy } from "@/hooks/use-taxonomies";
 import { useSettingsContext } from "@/lib/settings-provider";
 import type { DateRange, TaxonomyCategory } from "@/lib/types";
-import { cn, formatAmount, formatDateISO } from "@/lib/utils";
+import { cn, formatDateISO } from "@/lib/utils";
 import Balance from "@/pages/dashboard/balance";
 
 import {
   Icons,
   PrivacyAmount,
   Skeleton,
-  formatCompactAmount,
-  usePersistentState,
+  useAmountFormatting,
+  type FormattingApi,
+  useDateFormatting,
+  useNumberFormatting,
 } from "@wealthfolio/ui";
+import { usePersistentState } from "@/hooks/use-persistent-state";
 
 import { useBudget } from "../hooks/use-budget";
-import { useCategorizationRules } from "../hooks/use-categorization-rules";
 import { useCashActivities, useUncategorizedCount } from "../hooks/use-cash-activities";
+import { useCategorizationRules } from "../hooks/use-categorization-rules";
 import { useSpendingReport } from "../hooks/use-spending-report";
 import { useSpendingSettings } from "../hooks/use-spending-settings";
 import { SAVINGS_ROW_COLOR, SAVINGS_ROW_ID, buildWhereItWentRows } from "../lib/category-rollup";
+import {
+  SPENDING_RANGE_FROM_PARAM,
+  SPENDING_RANGE_TO_PARAM,
+  spendingRangeFromParams,
+  type SpendingDateRange,
+} from "../lib/date-range-params";
 import {
   SPENDING_MONTH_PARAM,
   SPENDING_MONTH_STORAGE_KEY,
@@ -45,6 +54,7 @@ import {
   monthRange,
   parseMonthKey,
 } from "../lib/month-period";
+import { spendingActivityHref } from "../lib/navigation";
 import {
   DASHBOARD_PERIOD_UPDATED_AT_STORAGE_KEY,
   INSIGHTS_PERIOD_STORAGE_KEY,
@@ -78,7 +88,8 @@ type SpendingDashboardPeriod = "MTD" | "LAST_MONTH" | "3M" | "6M" | "YTD" | "1Y"
 
 type SpendingSelection =
   | { kind: "period"; code: SpendingDashboardPeriod }
-  | { kind: "month"; monthKey: string; restoreCode: SpendingDashboardPeriod };
+  | { kind: "month"; monthKey: string; restoreCode: SpendingDashboardPeriod }
+  | { kind: "range"; range: SpendingDateRange; restoreCode: SpendingDashboardPeriod };
 
 const SPENDING_DASHBOARD_PERIODS: SpendingDashboardPeriod[] = [
   "MTD",
@@ -197,6 +208,8 @@ function selectionFromParams(
   const intervalParam = params.get("spendingInterval");
   const monthParam = params.get(SPENDING_MONTH_PARAM);
   const restoreCode = normalizeSpendingDashboardPeriod(intervalParam ?? persistedInterval);
+  const customRange = spendingRangeFromParams(params);
+  if (customRange) return { kind: "range", range: customRange, restoreCode };
   const monthKey = monthParam ?? (intervalParam === null ? persistedMonth : null);
   if (monthKey && parseMonthKey(monthKey)) return { kind: "month", monthKey, restoreCode };
   return { kind: "period", code: restoreCode };
@@ -217,16 +230,38 @@ function budgetMonthStateForSelection(
 
 function budgetSelectionSyncKey(selection: SpendingSelection, currentMonthKey: string): string {
   if (selection.kind === "month") return `month:${selection.monthKey}`;
+  if (selection.kind === "range") {
+    return `range:${formatDateISO(selection.range.from)}:${formatDateISO(selection.range.to)}`;
+  }
   if (selection.code === "LAST_MONTH") return `period:${selection.code}:${currentMonthKey}`;
   return `period:${selection.code}`;
 }
 
-function selectionData(selection: SpendingSelection, timezone?: string | null) {
+function selectionData(
+  selection: SpendingSelection,
+  formatting: Pick<FormattingApi, "formatCalendarDate">,
+  timezone?: string | null,
+) {
   if (selection.kind === "month") {
     return {
       range: monthRange(selection.monthKey),
-      description: monthLabel(selection.monthKey),
+      description: monthLabel(selection.monthKey, formatting),
       insightPeriod: "LAST_MONTH" as ReportsPeriod,
+    };
+  }
+
+  if (selection.kind === "range") {
+    const { from, to } = selection.range;
+    const format = (date: Date) =>
+      formatting.formatCalendarDate(localDateParts(date), {
+        month: "short",
+        day: "numeric",
+        year: "numeric",
+      });
+    return {
+      range: selection.range,
+      description: `${format(from)} – ${format(to)}`,
+      insightPeriod: selection.restoreCode,
     };
   }
 
@@ -293,14 +328,20 @@ function barKeyToRange(
 }
 
 export default function SpendingTabContent() {
+  const dateFormatting = useDateFormatting();
+  const formatting = useAmountFormatting();
+  const numberFormatting = useNumberFormatting();
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
   const { settings } = useSettingsContext();
   const baseCurrency = settings?.baseCurrency ?? "USD";
   const appTimezone = settings?.timezone ?? undefined;
   const navigate = useNavigate();
-  const { accountIds: spendingAccountIds, isLoading: spendingSettingsLoading } =
-    useSpendingSettings();
+  const {
+    accountIds: spendingAccountIds,
+    excludedCategoryIds,
+    isLoading: spendingSettingsLoading,
+  } = useSpendingSettings();
 
   const [searchParams, setSearchParams] = useSearchParams();
   // URL-driven so `/dashboard?tab=spending&spendingInterval=3M` is shareable
@@ -333,12 +374,16 @@ export default function SpendingTabContent() {
   );
   const selectedPeriod = selection.kind === "period" ? selection.code : null;
   const customMonth = selection.kind === "month" ? selection.monthKey : null;
-  const restoreCode = selection.kind === "month" ? selection.restoreCode : selection.code;
+  const customRange = selection.kind === "range" ? selection.range : undefined;
+  const restoreCode = selection.kind === "period" ? selection.code : selection.restoreCode;
   const {
     range: dateRange,
     description: selectedIntervalDescription,
     insightPeriod,
-  } = useMemo(() => selectionData(selection, appTimezone), [selection, appTimezone]);
+  } = useMemo(
+    () => selectionData(selection, dateFormatting, appTimezone),
+    [selection, dateFormatting, appTimezone],
+  );
   const theme: Palette = FOREST_THEME;
 
   const [whereItWentView, setWhereItWentView] = usePersistentState<"list" | "map">(
@@ -381,6 +426,13 @@ export default function SpendingTabContent() {
     endDate: reportReq.endDate,
   });
   const taxonomy = useTaxonomy(SPENDING_TAXONOMY);
+  // Hint count: only excluded ids that still exist in the taxonomy (stale ids
+  // keep filtering backend-side but shouldn't inflate the hint).
+  const excludedCategoryCount = useMemo(() => {
+    if (excludedCategoryIds.length === 0) return 0;
+    const liveIds = new Set((taxonomy.data?.categories ?? []).map((c) => c.id));
+    return excludedCategoryIds.filter((id) => liveIds.has(id)).length;
+  }, [excludedCategoryIds, taxonomy.data?.categories]);
   const { data: budget, isError: budgetErrored } = useBudget();
   const todayParts = useMemo(() => getZonedDateParts(new Date(), appTimezone), [appTimezone]);
   const currentBudgetMonthKey = useMemo(() => monthKeyFromParts(todayParts), [todayParts]);
@@ -478,7 +530,7 @@ export default function SpendingTabContent() {
     const end = { ...endMonth, day: daysInCalendarMonth(endMonth.year, endMonth.month) };
     const days = Math.max(1, calendarDaysBetweenInclusive(start, end));
     return total / days;
-  }, [historyReport?.current.outflow, budgetMonthKey, todayParts]);
+  }, [historyReport, budgetMonthKey, todayParts]);
 
   // Always render in the user's base currency. The backend FX-converts every
   // activity in `report` to base at period end, so labeling by the first
@@ -486,11 +538,13 @@ export default function SpendingTabContent() {
   // accounts. Single-currency users see the same number either way.
   const currency = baseCurrency;
   const dashboardInsightHref = useMemo(() => {
-    const preferDashboardPeriod = shouldPreferDashboardPeriod({
-      persistedInsightPeriod,
-      dashboardUpdatedAt: dashboardPeriodUpdatedAt,
-      insightUpdatedAt: insightPeriodUpdatedAt,
-    });
+    const preferDashboardPeriod =
+      selection.kind === "range" ||
+      shouldPreferDashboardPeriod({
+        persistedInsightPeriod,
+        dashboardUpdatedAt: dashboardPeriodUpdatedAt,
+        insightUpdatedAt: insightPeriodUpdatedAt,
+      });
     const linkPeriod = preferDashboardPeriod
       ? insightPeriod
       : (normalizeReportsPeriod(persistedInsightPeriod) ?? insightPeriod);
@@ -498,8 +552,12 @@ export default function SpendingTabContent() {
       preferDashboardPeriod && selection.kind === "month"
         ? `&${SPENDING_MONTH_PARAM}=${selection.monthKey}`
         : "";
+    const rangeParams =
+      selection.kind === "range"
+        ? `&${SPENDING_RANGE_FROM_PARAM}=${formatDateISO(selection.range.from)}&${SPENDING_RANGE_TO_PARAM}=${formatDateISO(selection.range.to)}`
+        : "";
     const href = (stage: (typeof INSIGHT_STAGES)[number]["stage"], hash = "") =>
-      `/spending/insights?stage=${stage}&period=${linkPeriod}${monthParams}${hash}`;
+      `/spending/insights?stage=${stage}&period=${linkPeriod}${monthParams}${rangeParams}${hash}`;
     const cashflow = href("where", "#cashflow");
     return {
       where: href("where"),
@@ -514,6 +572,17 @@ export default function SpendingTabContent() {
     persistedInsightPeriod,
     selection,
   ]);
+  // "Where it went" deep-links carry the selected period (interval or month)
+  // so the activities spending tab opens pre-filtered to the same range.
+  const activityHrefFor = useCallback(
+    (id: string) =>
+      spendingActivityHref(id, {
+        savingsHref: dashboardInsightHref.cashflow,
+        startDate: dateRange?.from ? formatDateISO(dateRange.from) : undefined,
+        endDate: dateRange?.to ? formatDateISO(dateRange.to) : undefined,
+      }),
+    [dashboardInsightHref.cashflow, dateRange],
+  );
   const accountTypeById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account.accountType])),
     [accounts],
@@ -546,6 +615,8 @@ export default function SpendingTabContent() {
         const p = new URLSearchParams(prev);
         p.set("spendingInterval", code);
         p.delete(SPENDING_MONTH_PARAM);
+        p.delete(SPENDING_RANGE_FROM_PARAM);
+        p.delete(SPENDING_RANGE_TO_PARAM);
         return p;
       },
       { replace: true },
@@ -568,6 +639,8 @@ export default function SpendingTabContent() {
         if (monthKey) {
           p.set("spendingInterval", restoreCode);
           p.set(SPENDING_MONTH_PARAM, monthKey);
+          p.delete(SPENDING_RANGE_FROM_PARAM);
+          p.delete(SPENDING_RANGE_TO_PARAM);
         } else {
           p.set("spendingInterval", restoreCode);
           p.delete(SPENDING_MONTH_PARAM);
@@ -585,8 +658,39 @@ export default function SpendingTabContent() {
     }
   };
 
+  const handleCustomRangeSelect = (range: DateRange | undefined) => {
+    if (range && (!range.from || !range.to)) return;
+    setPersistedMonth(null);
+    setDashboardPeriodUpdatedAt(periodPreferenceTimestamp());
+    setSearchParams(
+      (prev) => {
+        const p = new URLSearchParams(prev);
+        p.set("spendingInterval", restoreCode);
+        p.delete(SPENDING_MONTH_PARAM);
+        if (range?.from && range.to) {
+          p.set(SPENDING_RANGE_FROM_PARAM, formatDateISO(range.from));
+          p.set(SPENDING_RANGE_TO_PARAM, formatDateISO(range.to));
+        } else {
+          p.delete(SPENDING_RANGE_FROM_PARAM);
+          p.delete(SPENDING_RANGE_TO_PARAM);
+        }
+        return p;
+      },
+      { replace: true },
+    );
+    setBudgetMonthKey(currentBudgetMonthKey);
+    setBudgetMonthTouched(false);
+  };
+
   const granularity: "day" | "week" | "month" = useMemo(() => {
     if (selection.kind === "month") return "day";
+    if (selection.kind === "range") {
+      const days = calendarDaysBetweenInclusive(
+        localDateParts(selection.range.from),
+        localDateParts(selection.range.to),
+      );
+      return days <= 45 ? "day" : days <= 180 ? "week" : "month";
+    }
     switch (selection.code) {
       case "MTD":
       case "LAST_MONTH":
@@ -756,14 +860,18 @@ export default function SpendingTabContent() {
           <>
             {t("spending:tabContent.spendingAbovePrefix")}{" "}
             <span className="font-semibold">
-              {t("spending:tabContent.pctAbove", { pct: (deltaPct * 100).toFixed(0) })}
+              {t("spending:tabContent.pctAbove", {
+                pct: numberFormatting.formatDecimal(deltaPct * 100, {
+                  maximumFractionDigits: 0,
+                }),
+              })}
             </span>{" "}
             {t("spending:tabContent.thePriorPeriod")}
           </>
         ),
         sub: t("spending:tabContent.moreThan", {
-          more: isBalanceHidden ? "••••" : formatAmount(delta, currency),
-          prior: isBalanceHidden ? "••••" : formatAmount(priorSpending, currency),
+          more: isBalanceHidden ? "••••" : formatting.formatAmount(delta, currency),
+          prior: isBalanceHidden ? "••••" : formatting.formatAmount(priorSpending, currency),
         }),
       });
     }
@@ -825,6 +933,8 @@ export default function SpendingTabContent() {
     isBalanceHidden,
     categorizationRules,
     categorizationRulesLoading,
+    formatting,
+    numberFormatting,
     theme.deep,
     t,
   ]);
@@ -854,6 +964,19 @@ export default function SpendingTabContent() {
               {selectedIntervalDescription
                 ? ` · ${selectedIntervalDescription.startsWith("spending:") ? t(selectedIntervalDescription) : selectedIntervalDescription}`
                 : ""}
+              {excludedCategoryCount > 0 && (
+                <>
+                  {" · "}
+                  <Link
+                    to="/settings/spending/categories"
+                    className="hover:text-foreground hover:underline"
+                  >
+                    {t("spending:tabContent.excludedCategoriesHint", {
+                      count: excludedCategoryCount,
+                    })}
+                  </Link>
+                </>
+              )}
             </div>
             <Balance
               isLoading={isLoading}
@@ -948,7 +1071,7 @@ export default function SpendingTabContent() {
                               className="inline-block h-px w-3 border-t border-dashed border-current opacity-60"
                             />
                             <span>
-                              {avgLabel} · {formatCompactAmount(avgValue, currency)}
+                              {avgLabel} · {formatting.formatCompactAmount(avgValue, currency)}
                             </span>
                           </div>
                         )}
@@ -973,7 +1096,13 @@ export default function SpendingTabContent() {
                     const entry = ((data as { payload?: (typeof barData)[number] })?.payload ??
                       data) as (typeof barData)[number];
                     if (!entry || entry.future || entry.value <= 0) return;
-                    const { from, to } = barKeyToRange(entry.key, granularity);
+                    const bucket = barKeyToRange(entry.key, granularity);
+                    const rangeStart = dateRange?.from
+                      ? formatDateISO(dateRange.from)
+                      : bucket.from;
+                    const rangeEnd = dateRange?.to ? formatDateISO(dateRange.to) : bucket.to;
+                    const from = bucket.from < rangeStart ? rangeStart : bucket.from;
+                    const to = bucket.to > rangeEnd ? rangeEnd : bucket.to;
                     navigate(`/activities?tab=spending&from=${from}&to=${to}`);
                   }}
                 >
@@ -995,8 +1124,10 @@ export default function SpendingTabContent() {
               value={selectedPeriod}
               onValueChange={handleIntervalSelect}
               customMonth={customMonth}
+              customRange={customRange}
               maxMonth={maxPickerMonth}
               onCustomMonthChange={handleCustomMonthSelect}
+              onCustomRangeChange={handleCustomRangeSelect}
               isLoading={isLoading}
             />
           </div>
@@ -1037,7 +1168,7 @@ export default function SpendingTabContent() {
                     currency={currency}
                     themeColor={theme.deep}
                     hasNoIncludedAccounts={hasNoIncludedAccounts}
-                    savingsHref={dashboardInsightHref.cashflow}
+                    activityHrefFor={activityHrefFor}
                   />
                 ) : (
                   <CategoryRankedBar
@@ -1047,7 +1178,7 @@ export default function SpendingTabContent() {
                     themeColor={theme.deep}
                     groupRows={budget?.computed.groupRows ?? []}
                     hasNoIncludedAccounts={hasNoIncludedAccounts}
-                    savingsHref={dashboardInsightHref.cashflow}
+                    activityHrefFor={activityHrefFor}
                   />
                 )}
               </DashboardCard>
@@ -1057,7 +1188,6 @@ export default function SpendingTabContent() {
                   activities={activities}
                   accountTypeById={accountTypeById}
                   categoriesMeta={categoriesMeta}
-                  currency={currency}
                   uncategorizedCount={uncategorizedCount}
                 />
               </div>
@@ -1229,18 +1359,6 @@ interface CategoryRow {
   amount: number;
 }
 
-/**
- * Deep-link for a "Where it went" node. The synthetic uncategorized bucket has
- * no real category id, so it routes to the status filter — the category filter
- * would match nothing and render an empty list.
- */
-function spendingActivityHref(id: string, savingsHref?: string): string {
-  if (id === SAVINGS_ROW_ID) return savingsHref ?? "/activities?tab=spending";
-  return id === "__uncategorized__"
-    ? "/activities?tab=spending&status=uncategorized"
-    : `/activities?tab=spending&category=${id}`;
-}
-
 function WhereItWentEmptyState({ hasNoIncludedAccounts }: { hasNoIncludedAccounts: boolean }) {
   const { t } = useTranslation();
   return (
@@ -1291,16 +1409,17 @@ function CategoryTreemapMono({
   currency,
   themeColor,
   hasNoIncludedAccounts,
-  savingsHref,
+  activityHrefFor,
 }: {
   rows: CategoryRow[];
   total: number;
   currency: string;
   themeColor: string;
   hasNoIncludedAccounts: boolean;
-  savingsHref?: string;
+  activityHrefFor: (id: string) => string;
 }) {
   const { t } = useTranslation();
+  const numberFormatting = useNumberFormatting();
   const navigate = useNavigate();
 
   if (rows.length === 0 || total <= 0) {
@@ -1350,7 +1469,7 @@ function CategoryTreemapMono({
                   currency={currency}
                   onActivate={(id) => {
                     if (id && id !== "__other__") {
-                      navigate(spendingActivityHref(id, savingsHref));
+                      navigate(activityHrefFor(id));
                     }
                   }}
                 />
@@ -1360,7 +1479,7 @@ function CategoryTreemapMono({
             onClick={(node: unknown) => {
               const id = (node as { id?: string } | null)?.id;
               if (id && id !== "__other__") {
-                navigate(spendingActivityHref(id, savingsHref));
+                navigate(activityHrefFor(id));
               }
             }}
           >
@@ -1373,7 +1492,8 @@ function CategoryTreemapMono({
                   <div className="bg-background rounded-md border px-3 py-2 text-xs shadow-sm">
                     <div className="text-foreground font-semibold">{p.name}</div>
                     <div className="text-muted-foreground tabular-nums">
-                      <PrivacyAmount value={p.amount} currency={currency} /> · {p.pct.toFixed(1)}%
+                      <PrivacyAmount value={p.amount} currency={currency} /> ·{" "}
+                      {numberFormatting.formatPercent(p.pct / 100, { digits: 1 })}
                     </div>
                   </div>
                 );
@@ -1401,6 +1521,8 @@ const CategoryTreemapNodeMono: FC<CategoryTreemapNodeMonoProps> = ({
   id,
   onActivate,
 }) => {
+  const formatting = useAmountFormatting();
+  const numberFormatting = useNumberFormatting();
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
   if (depth === 0) return null;
@@ -1416,8 +1538,8 @@ const CategoryTreemapNodeMono: FC<CategoryTreemapNodeMonoProps> = ({
   const dotR = Math.max(2.5, Math.min(4, Math.min(width, height) * 0.04));
   const showDot = accent && width > 40 && height > 28;
 
-  const amountText = isBalanceHidden ? "••••" : formatAmount(amount, currency);
-  const pctText = `${pct.toFixed(1)}%`;
+  const amountText = isBalanceHidden ? "••••" : formatting.formatAmount(amount, currency);
+  const pctText = numberFormatting.formatPercent(pct / 100, { digits: 1 });
   const amountTextW = amountText.length * amountFontSize * 0.58;
   const pctTextW = pctText.length * pctFontSize * 0.6;
   const innerW = Math.max(0, width - padX * 2);
@@ -1514,7 +1636,7 @@ function CategoryRankedBar({
   themeColor,
   groupRows = [],
   hasNoIncludedAccounts,
-  savingsHref,
+  activityHrefFor,
 }: {
   rows: CategoryRow[];
   total: number;
@@ -1526,8 +1648,10 @@ function CategoryRankedBar({
    * group, the list switches to a grouped layout with collapsible group rows.
    */
   groupRows?: import("../types/budget").BudgetGroupRow[];
-  savingsHref?: string;
+  activityHrefFor: (id: string) => string;
 }) {
+  const formatting = useAmountFormatting();
+  const numberFormatting = useNumberFormatting();
   const { t } = useTranslation();
   const { isBalanceHidden } = useBalancePrivacy();
   // Memoize derivations so we don't rebuild the Map + reduce + slices on every
@@ -1584,8 +1708,8 @@ function CategoryRankedBar({
               borderRight: "1px solid var(--card)",
             }}
             title={`${s.name} — ${
-              isBalanceHidden ? "••••" : formatAmount(s.amount, currency)
-            } (${share.toFixed(1)}%)`}
+              isBalanceHidden ? "••••" : formatting.formatAmount(s.amount, currency)
+            } (${numberFormatting.formatPercent(share / 100, { digits: 1 })})`}
           />
         );
       })}
@@ -1663,7 +1787,7 @@ function CategoryRankedBar({
               total={total}
               currency={currency}
               themeColor={themeColor}
-              savingsHref={savingsHref}
+              activityHrefFor={activityHrefFor}
             />
           ))}
         </div>
@@ -1684,7 +1808,7 @@ function CategoryRankedBar({
           return (
             <Link
               key={r.id}
-              to={spendingActivityHref(r.id, savingsHref)}
+              to={activityHrefFor(r.id)}
               className="hover:bg-muted/40 group flex items-center gap-2.5 rounded-md px-1 py-1 transition-colors"
             >
               <span
@@ -1695,7 +1819,7 @@ function CategoryRankedBar({
                 {r.name}
               </span>
               <span className="text-muted-foreground/70 w-12 text-right text-[11px] tabular-nums">
-                {share.toFixed(1)}%
+                {numberFormatting.formatPercent(share / 100, { digits: 1 })}
               </span>
               <span className="text-foreground w-24 text-right text-xs font-semibold tabular-nums">
                 <PrivacyAmount value={r.amount} currency={currency} />
@@ -1705,7 +1829,7 @@ function CategoryRankedBar({
         })}
         {uncategorizedAmount > 0.01 && (
           <Link
-            to="/activities?tab=spending&status=uncategorized"
+            to={activityHrefFor("__uncategorized__")}
             className="border-border/60 hover:bg-muted/40 mt-1 flex items-center gap-2.5 rounded-md border border-dashed px-2 py-1.5 transition-colors"
           >
             <Icons.AlertCircle className="text-muted-foreground h-3 w-3 shrink-0" />
@@ -1713,7 +1837,7 @@ function CategoryRankedBar({
               {t("spending:tabContent.uncategorizedImprove")}
             </span>
             <span className="text-muted-foreground/70 w-12 text-right text-[11px] tabular-nums">
-              {uncategorizedShare.toFixed(1)}%
+              {numberFormatting.formatPercent(uncategorizedShare / 100, { digits: 1 })}
             </span>
             <span className="text-foreground w-24 text-right text-xs font-semibold tabular-nums">
               <PrivacyAmount value={uncategorizedAmount} currency={currency} />
@@ -1736,7 +1860,7 @@ function GroupedCategoryBlock({
   total,
   currency,
   themeColor,
-  savingsHref,
+  activityHrefFor,
 }: {
   bucket: {
     id: string;
@@ -1748,8 +1872,9 @@ function GroupedCategoryBlock({
   total: number;
   currency: string;
   themeColor: string;
-  savingsHref?: string;
+  activityHrefFor: (id: string) => string;
 }) {
+  const numberFormatting = useNumberFormatting();
   const [expanded, setExpanded] = useState(false);
   const share = total > 0 ? (bucket.total / total) * 100 : 0;
   const accent = bucket.color ?? themeColor;
@@ -1787,7 +1912,7 @@ function GroupedCategoryBlock({
           {bucket.name}
         </span>
         <span className="text-muted-foreground/80 w-12 text-right text-[11px] font-medium tabular-nums">
-          {share.toFixed(1)}%
+          {numberFormatting.formatPercent(share / 100, { digits: 1 })}
         </span>
         <span className="text-foreground w-24 text-right text-xs font-semibold tabular-nums">
           <PrivacyAmount value={bucket.total} currency={currency} />
@@ -1798,7 +1923,7 @@ function GroupedCategoryBlock({
           {sortedCats.map((cat) => {
             const catShare = total > 0 ? (cat.amount / total) * 100 : 0;
             const isUncategorized = cat.id === "__uncategorized__";
-            const to = spendingActivityHref(cat.id, savingsHref);
+            const to = activityHrefFor(cat.id);
             const dotColor = cat.color ?? accent;
             return (
               <Link
@@ -1819,7 +1944,7 @@ function GroupedCategoryBlock({
                   {cat.name}
                 </span>
                 <span className="text-muted-foreground/70 w-12 text-right text-[11px] tabular-nums">
-                  {catShare.toFixed(1)}%
+                  {numberFormatting.formatPercent(catShare / 100, { digits: 1 })}
                 </span>
                 <span className="text-foreground w-24 text-right text-xs font-medium tabular-nums">
                   <PrivacyAmount value={cat.amount} currency={currency} />
@@ -1850,6 +1975,7 @@ function SpendingDeltaLine({
   deltaPct: number | null;
 }) {
   const { t } = useTranslation();
+  const numberFormatting = useNumberFormatting();
   const isFlat = Math.abs(delta) < 1;
   const direction = delta < 0 ? t("spending:tabContent.down") : t("spending:tabContent.up");
   const tone = isFlat ? "text-muted-foreground" : delta < 0 ? "text-success" : "text-destructive";
@@ -1862,7 +1988,10 @@ function SpendingDeltaLine({
     );
   }
 
-  const pctSuffix = deltaPct !== null ? ` (${(Math.abs(deltaPct) * 100).toFixed(1)}%)` : "";
+  const pctSuffix =
+    deltaPct !== null
+      ? ` (${numberFormatting.formatPercent(Math.abs(deltaPct), { digits: 1 })})`
+      : "";
 
   return (
     <span className="lg:text-md text-sm font-light">

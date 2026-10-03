@@ -179,7 +179,7 @@ export interface Activity {
   assetId?: string; // NOW OPTIONAL for pure cash events
 
   // Classification
-  activityType: string; // Canonical type (closed set of 15)
+  activityType: string; // Canonical type (closed set of 14)
   activityTypeOverride?: string; // User override (never touched by sync)
   sourceType?: string; // Raw provider label (REI, DIV, etc.)
   subtype?: string; // Semantic variation (DRIP, STAKING_REWARD, etc.)
@@ -308,6 +308,8 @@ export interface ActivityCreate {
   currency?: string;
   fee?: string | number | null;
   tax?: string | number | null;
+  status?: ActivityStatus;
+  needsReview?: boolean;
   comment?: string | null;
   fxRate?: string | number | null;
   metadata?: string | Record<string, unknown>;
@@ -320,6 +322,7 @@ export interface ActivityUpdate {
   subtype?: string | null;
   activityDate: string | Date;
   sourceGroupId?: string;
+  /** Omit to preserve the current asset; pass an empty object to clear it. */
   asset?: AssetResolutionInput;
   /** @deprecated Use asset. */
   symbol?: AssetResolutionInput;
@@ -329,6 +332,8 @@ export interface ActivityUpdate {
   currency?: string;
   fee?: string | number | null;
   tax?: string | number | null;
+  status?: ActivityStatus;
+  needsReview?: boolean;
   comment?: string | null;
   fxRate?: string | number | null;
   metadata?: string | Record<string, unknown>;
@@ -357,6 +362,59 @@ export interface ActivityBulkMutationResult {
   deleted: Activity[];
   createdMappings: ActivityBulkIdentifierMapping[];
   errors: ActivityBulkMutationError[];
+}
+
+interface InternalTransferPairRequestBase {
+  sourceGroupId?: string;
+  fromAccountId: string;
+  toAccountId: string;
+  activityDate: string | Date;
+  sourceAmount: string | number;
+  destinationAmount: string | number;
+  sourceCurrency: string;
+  destinationCurrency: string;
+  fxRate?: string | number | null;
+  notes?: string | null;
+  transferMode?: 'cash';
+}
+
+/** Create both legs of a new internal transfer pair. */
+export interface CreateInternalTransferPairRequest extends InternalTransferPairRequestBase {
+  transferOutId?: never;
+  transferInId?: never;
+}
+
+/**
+ * Update an existing internal transfer pair. Both leg ids are required: the host
+ * rejects a request that names one leg without the other.
+ */
+export interface UpdateInternalTransferPairRequest extends InternalTransferPairRequestBase {
+  transferOutId: string;
+  transferInId: string;
+}
+
+export type InternalTransferPairRequest =
+  | CreateInternalTransferPairRequest
+  | UpdateInternalTransferPairRequest;
+
+export interface InternalTransferPairResponse {
+  transferOut: Activity;
+  transferIn: Activity;
+}
+
+export interface TransferMatchCandidateRequest {
+  activityId: string;
+  windowDays?: number;
+  limit?: number;
+}
+
+export interface TransferMatchCandidate {
+  activity: Activity;
+  matchKind: 'cash' | 'security' | 'cash_fx_conversion';
+  confidence: 'high' | 'medium' | 'low';
+  score: number;
+  reasons: string[];
+  warnings: string[];
 }
 
 export interface ActivityImport {
@@ -396,6 +454,12 @@ export interface ActivityImport {
   lineNumber?: number;
   isDraft: boolean;
   forceImport?: boolean;
+  /**
+   * Whether a transfer or credit crosses the tracked-account boundary.
+   * Controls flow classification; internal transfers may omit
+   * `metadata.flow.is_external` because false is the default.
+   */
+  isExternal?: boolean;
   comment?: string;
 }
 
@@ -525,6 +589,211 @@ export interface CategoryWithWeight {
   weight: number;
 }
 
+/**
+ * The three fixed activity-scope taxonomies a categorization rule can target,
+ * in Wealthfolio's own vocabulary (matches the app's quick-categorize picker).
+ */
+export type SpendCategoryKind = 'expense' | 'income' | 'saving';
+
+/**
+ * A selectable spend category, flattened from one of the three activity-scope
+ * taxonomies. Used to classify activities (e.g. WITHDRAWALs) via categorization
+ * rules, as distinct from the asset-classification taxonomies above.
+ */
+export interface SpendCategory {
+  kind: SpendCategoryKind;
+  taxonomyId: string;
+  categoryId: string;
+  /** Machine key, e.g. "groceries" */
+  key: string;
+  /** Display name, e.g. "Groceries" */
+  name: string;
+  /** Full breadcrumb path, e.g. "Food & Dining / Groceries" */
+  path: string;
+}
+
+export type CategorizationRuleMatchType = 'contains' | 'starts_with' | 'exact' | 'regex';
+
+/**
+ * A categorization rule as returned by the host. `getRules()` only ever
+ * returns rules this addon created via `saveRule`.
+ */
+export interface CategorizationRule {
+  id: string;
+  name: string;
+  pattern: string;
+  matchType: CategorizationRuleMatchType;
+  kind: SpendCategoryKind;
+  categoryId: string;
+  /** Restricted to one activity type, e.g. "WITHDRAWAL". Absent if it matches any type. */
+  activityType?: ActivityType;
+  /** Restricted to one account. Absent if it applies to all accounts. */
+  accountId?: string;
+  priority: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CategorizationRuleInput {
+  /**
+   * Stable key you choose and keep reusing for the same logical rule across
+   * edits/re-saves. Internally combined with your addon's id, so it can't
+   * collide with another addon's ruleKey. Calling this again with the same
+   * ruleKey updates the existing rule in place instead of creating a
+   * duplicate.
+   */
+  ruleKey: string;
+  /** Shown in Wealthfolio's own Settings → Spending → Rules UI */
+  name: string;
+  /** Text matched against the activity's notes/description */
+  pattern: string;
+  /** @default "contains" */
+  matchType?: CategorizationRuleMatchType;
+  kind: SpendCategoryKind;
+  categoryId: string;
+  /** Restrict to one activity type, e.g. "WITHDRAWAL". Omit to match any type. */
+  activityType?: ActivityType;
+  /** Restrict the rule to one account. Omit for a rule that applies everywhere. */
+  accountId?: string;
+  /** @default 0 */
+  priority?: number;
+}
+
+export interface ActivityTaxonomyAssignment {
+  id: string;
+  activityId: string;
+  taxonomyId: string;
+  categoryId: string;
+  weight: number;
+  source: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface ActivitySplit {
+  id: string;
+  activityId: string;
+  taxonomyId: string;
+  categoryId: string;
+  amount: string | number;
+  note?: string | null;
+  sortOrder: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type CashFlowBucket = 'spending' | 'income' | 'saving' | 'neutral';
+export type TransferLinkStatus = 'linked' | 'unlinked' | 'invalid';
+export type CashActivityStatusFilter =
+  | 'all'
+  | 'needs_review'
+  | 'uncategorized'
+  | 'categorized';
+export type CashActivitySortField = 'date' | 'amount';
+export type CashActivitySortDirection = 'asc' | 'desc';
+
+export interface CashActivitySearchRequest {
+  search?: string;
+  accountIds?: string[];
+  activityTypes?: ActivityType[];
+  categoryIds?: string[];
+  subcategoryIds?: string[];
+  eventIds?: string[];
+  status?: CashActivityStatusFilter;
+  /** Inclusive RFC3339 timestamp. */
+  startDate?: string;
+  /** Inclusive RFC3339 timestamp. */
+  endDate?: string;
+  minAmount?: number;
+  maxAmount?: number;
+  sortBy?: CashActivitySortField;
+  sortDir?: CashActivitySortDirection;
+  offset?: number;
+  limit?: number;
+}
+
+/** A cash activity enriched with its spending classification and category assignments. */
+export interface CashActivity extends Activity {
+  cashFlowBucket: CashFlowBucket;
+  assignments: ActivityTaxonomyAssignment[];
+  splits: ActivitySplit[];
+  eventId?: string | null;
+  transferLinkStatus?: TransferLinkStatus | null;
+  /** Signed cash movement in the activity's own currency. */
+  netAmount: number;
+  /** `netAmount` converted to the response's `baseCurrency`, when available. */
+  netAmountBase?: number | null;
+  /** Signed spending in the activity's own currency, after excluded portions are removed. */
+  visibleSpendingAmount?: number;
+}
+
+export interface CurrencyNet {
+  currency: string;
+  amount: number;
+}
+
+export interface NetSummary {
+  byCurrency: CurrencyNet[];
+  converted?: CurrencyNet | null;
+}
+
+export interface CashActivitySearchResponse {
+  items: CashActivity[];
+  totalCount: number;
+  /** Net over the complete filtered result. Present only on the first page. */
+  net?: NetSummary | null;
+  baseCurrency?: string | null;
+}
+
+export interface SpendingReportRequest {
+  /** Inclusive RFC3339 timestamp. */
+  startDate: string;
+  /** Inclusive RFC3339 timestamp. */
+  endDate: string;
+  accountIds?: string[];
+}
+
+export interface SpendingPeriodSummary {
+  income: number;
+  outflow: number;
+  saved: number;
+  net: number;
+  count: number;
+}
+
+export interface SpendingCategoryBreakdownRow {
+  taxonomyId: string;
+  categoryId: string;
+  amount: number;
+  count: number;
+}
+
+export interface SpendingDayBucket {
+  date: string;
+  income: number;
+  outflow: number;
+}
+
+export interface SpendingDayCategoryBucket {
+  date: string;
+  taxonomyId: string;
+  categoryId: string;
+  amount: number;
+  count: number;
+}
+
+export interface SpendingReport {
+  /** Currency of all monetary amounts; rates are taken at each period's end. */
+  baseCurrency: string;
+  current: SpendingPeriodSummary;
+  prior: SpendingPeriodSummary;
+  spendingBreakdown: SpendingCategoryBreakdownRow[];
+  incomeBreakdown: SpendingCategoryBreakdownRow[];
+  savingsBreakdown: SpendingCategoryBreakdownRow[];
+  byDay: SpendingDayBucket[];
+  byDayByCategory: SpendingDayCategoryBucket[];
+}
+
 export interface MonetaryValue {
   local: number;
   base: number;
@@ -630,6 +899,42 @@ export interface Asset {
   // Audit
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * Alternative asset holding with valuation details (property, vehicle,
+ * collectible, precious metal, liability, other). Simplified model: no
+ * account, no activities, just asset + quotes.
+ */
+export interface AlternativeAssetHolding {
+  /** Asset ID (e.g., "PROP-a1b2c3d4") */
+  id: string;
+  /** Asset kind (property, vehicle, collectible, precious, liability, other) */
+  kind: string;
+  /** Asset name */
+  name: string;
+  /** Asset symbol (display type label, e.g., "Property", "Vehicle") */
+  symbol: string;
+  /** Currency */
+  currency: string;
+  /** Current market value from latest quote */
+  marketValue: string;
+  /** Purchase price if available (from metadata) */
+  purchasePrice?: string | null;
+  /** Purchase date if available (from metadata) */
+  purchaseDate?: string | null;
+  /** Unrealized gain (market_value - purchase_price) */
+  unrealizedGain?: string | null;
+  /** Unrealized gain percentage */
+  unrealizedGainPct?: string | null;
+  /** Date of the latest valuation (ISO format) */
+  valuationDate: string;
+  /** Kind-specific metadata */
+  metadata?: Record<string, unknown> | null;
+  /** For liabilities: linked asset ID if any */
+  linkedAssetId?: string | null;
+  /** Asset notes */
+  notes?: string | null;
 }
 
 export interface Quote {
@@ -785,7 +1090,8 @@ export interface AccountValuation {
     | 'ACTIVITY_DERIVED'
     | 'STORED_GROSS'
     | 'NET_CONTRIBUTION_FALLBACK'
-    | 'MIXED';
+    | 'MIXED'
+    | 'MIXED_EXACT';
   performanceEligibleValueBase: number;
   valueStatus: ValuationStatus;
   basisStatus: BasisStatus;
@@ -837,6 +1143,21 @@ export interface ExchangeRate {
   source: string;
   isLoading?: boolean;
   timestamp: string;
+}
+
+export interface ExchangeRateDateQuery {
+  fromCurrency: string;
+  toCurrency: string;
+  /** Requested date in YYYY-MM-DD format. */
+  date: string;
+}
+
+export interface ExchangeRateDateResult {
+  fromCurrency: string;
+  toCurrency: string;
+  date: string;
+  rate: number | null;
+  error: string | null;
 }
 
 export interface ContributionLimit {

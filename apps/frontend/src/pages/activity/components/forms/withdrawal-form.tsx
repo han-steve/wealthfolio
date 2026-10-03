@@ -7,6 +7,7 @@ import { useTranslation } from "react-i18next";
 import { FormProvider, useForm, type Resolver } from "react-hook-form";
 import { z } from "zod";
 import type { TFunction } from "i18next";
+import { useActivityCurrency } from "../../hooks/use-activity-currency";
 import {
   AccountSelect,
   AdvancedOptionsSection,
@@ -37,8 +38,8 @@ export const createWithdrawalFormSchema = (t?: TFunction) =>
         required_error: msg(t, "activity:form.err_enter_amount", "Please enter an amount."),
         invalid_type_error: msg(t, "activity:form.err_amount_number", "Amount must be a number."),
       })
-      .positive({
-        message: msg(t, "activity:form.err_amount_gt_zero", "Amount must be greater than 0."),
+      .min(0, {
+        message: msg(t, "activity:form.err_amount_non_negative", "Amount must be non-negative."),
       }),
     comment: z.string().optional().nullable(),
     // Advanced options
@@ -52,7 +53,8 @@ export const createWithdrawalFormSchema = (t?: TFunction) =>
       .positive({
         message: msg(t, "activity:form.err_fxrate_positive", "FX Rate must be positive."),
       })
-      .optional(),
+      .optional()
+      .nullable(),
   });
 
 // Zod schema for WithdrawalForm validation (English messages; used by tests).
@@ -103,6 +105,8 @@ export function WithdrawalForm({
     },
   });
 
+  useActivityCurrency(form, accounts, { isEditing });
+
   const { watch } = form;
   const accountId = watch("accountId");
   const currency = watch("currency");
@@ -122,7 +126,7 @@ export function WithdrawalForm({
     <FormProvider {...form}>
       <form onSubmit={handleSubmit} className="space-y-4">
         <FormSection title={t("activity:form.section_account")}>
-          <AccountSelect name="accountId" accounts={accounts} currencyName="currency" />
+          <AccountSelect name="accountId" accounts={accounts} />
           <DatePicker name="activityDate" label={t("activity:field_date")} />
         </FormSection>
 

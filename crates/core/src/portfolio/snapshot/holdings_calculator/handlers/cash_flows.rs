@@ -3,6 +3,8 @@ use super::super::economics::*;
 use super::super::HoldingsCalculator;
 use crate::activities::{Activity, ActivityType};
 use crate::errors::Result;
+use crate::portfolio::economic_events::ActivityEconomicsResolver;
+use crate::portfolio::performance::affects_net_contribution;
 use crate::portfolio::snapshot::AccountStateSnapshot;
 use log::warn;
 use rust_decimal::Decimal;
@@ -19,15 +21,16 @@ impl HoldingsCalculator {
     ) -> Result<()> {
         let activity_currency = &activity.currency;
         let activity_date = self.activity_local_date(activity);
-        let activity_amount = activity.amt();
+        let resolved = ActivityEconomicsResolver::resolve_cash(activity, Decimal::ONE);
+        let cash_effect = resolved.signed_cash_effect.unwrap_or(Decimal::ZERO);
+        let gross_effect = resolved.signed_gross_effect.unwrap_or(Decimal::ZERO);
 
-        // Book cash in ACTIVITY currency (amount - fee - tax)
-        let net_amount = activity_amount - activity.fee_amt() - activity.tax_amt();
-        add_cash(state, activity_currency, net_amount);
+        let (cash_currency, cash_effect) = cash_booking(activity, cash_effect);
+        add_cash(state, &cash_currency, cash_effect);
 
         // Convert for net_contribution (pre-fee amount in account currency)
         let amount_acct = self.convert_to_account_currency(
-            activity_amount,
+            gross_effect,
             activity,
             account_currency,
             "Deposit Amount",
@@ -36,7 +39,7 @@ impl HoldingsCalculator {
         // Convert for net_contribution_base
         let base_ccy = self.base_currency.read().unwrap();
         let amount_base = match self.fx_service.convert_currency_for_date(
-            activity_amount,
+            gross_effect,
             activity_currency,
             &base_ccy,
             activity_date,
@@ -45,7 +48,7 @@ impl HoldingsCalculator {
             Err(e) => {
                 warn!(
                     "Holdings Calc (NetContrib Deposit {}): Failed conversion {} {}->{} on {}: {}. Base contribution not updated.",
-                    activity.id, activity_amount, activity_currency, &base_ccy, activity_date, e
+                    activity.id, gross_effect, activity_currency, base_ccy, activity_date, e
                 );
                 Decimal::ZERO
             }
@@ -67,16 +70,16 @@ impl HoldingsCalculator {
     ) -> Result<()> {
         let activity_currency = &activity.currency;
         let activity_date = self.activity_local_date(activity);
-        // Use absolute value - activity type dictates direction
-        let activity_amount = -activity.amt().abs();
+        let resolved = ActivityEconomicsResolver::resolve_cash(activity, Decimal::ONE);
+        let cash_effect = resolved.signed_cash_effect.unwrap_or(Decimal::ZERO);
+        let gross_effect = resolved.signed_gross_effect.unwrap_or(Decimal::ZERO);
 
-        // Book cash outflow in ACTIVITY currency (amount + fee + tax)
-        let net_amount = activity_amount - activity.fee_amt() - activity.tax_amt();
-        add_cash(state, activity_currency, net_amount);
+        let (cash_currency, cash_effect) = cash_booking(activity, cash_effect);
+        add_cash(state, &cash_currency, cash_effect);
 
         // Convert for net_contribution (pre-fee amount in account currency)
         let amount_acct = self.convert_to_account_currency(
-            activity_amount,
+            gross_effect,
             activity,
             account_currency,
             "Withdrawal Amount",
@@ -85,7 +88,7 @@ impl HoldingsCalculator {
         // Convert for net_contribution_base
         let base_ccy = self.base_currency.read().unwrap();
         let amount_base = match self.fx_service.convert_currency_for_date(
-            activity_amount,
+            gross_effect,
             activity_currency,
             &base_ccy,
             activity_date,
@@ -94,7 +97,7 @@ impl HoldingsCalculator {
             Err(e) => {
                 warn!(
                     "Holdings Calc (NetContrib Withdrawal {}): Failed conversion {} {}->{} on {}: {}. Base contribution not updated.",
-                    activity.id, activity_amount, activity_currency, &base_ccy, activity_date, e
+                    activity.id, gross_effect, activity_currency, base_ccy, activity_date, e
                 );
                 Decimal::ZERO
             }
@@ -109,8 +112,8 @@ impl HoldingsCalculator {
     /// Books cash inflow in ACTIVITY currency.
     ///
     /// Net contribution behavior:
-    /// - CREDIT/BONUS: external flow (new capital), updates net_contribution like DEPOSIT
-    /// - CREDIT/REBATE, CREDIT/REFUND, other: internal flow, no net_contribution change
+    /// - External CREDIT: updates net_contribution like DEPOSIT
+    /// - Internal CREDIT: no net_contribution change
     /// - DIVIDEND, INTEREST: no net_contribution change
     pub(crate) fn handle_income(
         &self,
@@ -118,35 +121,29 @@ impl HoldingsCalculator {
         state: &mut AccountStateSnapshot,
         account_currency: &str,
     ) -> Result<()> {
-        use crate::activities::{ACTIVITY_SUBTYPE_BONUS, ACTIVITY_TYPE_CREDIT};
-
         let activity_currency = &activity.currency;
-        let activity_amount = activity.amt();
+        let resolved = ActivityEconomicsResolver::resolve_cash(activity, Decimal::ONE);
+        let cash_effect = resolved.signed_cash_effect.unwrap_or(Decimal::ZERO);
+        let gross_effect = resolved.signed_gross_effect.unwrap_or(Decimal::ZERO);
 
-        // Book cash in ACTIVITY currency (gross income - fees - withholding tax).
-        // All types dispatched here (DIVIDEND/INTEREST/CREDIT) apply withholding tax.
-        let net_amount = activity_amount - activity.fee_amt() - activity.tax_amt();
-        add_cash(state, activity_currency, net_amount);
+        let (cash_currency, cash_effect) = cash_booking(activity, cash_effect);
+        add_cash(state, &cash_currency, cash_effect);
 
-        // CREDIT/BONUS is external contribution (new capital entering portfolio)
-        // Other CREDIT subtypes (REBATE, REFUND) and income types don't affect net_contribution
-        if activity.effective_type() == ACTIVITY_TYPE_CREDIT
-            && activity.subtype.as_deref() == Some(ACTIVITY_SUBTYPE_BONUS)
-        {
+        if affects_net_contribution(activity) {
             let activity_date = self.activity_local_date(activity);
 
             // Convert to account currency for net_contribution
             let amount_acct = self.convert_to_account_currency(
-                activity_amount,
+                gross_effect,
                 activity,
                 account_currency,
-                "Credit Bonus",
+                "External Credit",
             );
 
             // Convert to base currency for net_contribution_base
             let base_ccy = self.base_currency.read().unwrap();
             let amount_base = match self.fx_service.convert_currency_for_date(
-                activity_amount,
+                gross_effect,
                 activity_currency,
                 &base_ccy,
                 activity_date,
@@ -154,11 +151,11 @@ impl HoldingsCalculator {
                 Ok(c) => c,
                 Err(e) => {
                     warn!(
-                        "Holdings Calc (NetContrib Credit Bonus {}): Failed conversion {} {}->{} on {}: {}. Base contribution not updated.",
+                        "Holdings Calc (NetContrib External Credit {}): Failed conversion {} {}->{} on {}: {}. Base contribution not updated.",
                         activity.id,
-                        activity_amount,
+                        gross_effect,
                         activity_currency,
-                        &base_ccy,
+                        base_ccy,
                         activity_date,
                         e
                     );
@@ -182,9 +179,12 @@ impl HoldingsCalculator {
         state: &mut AccountStateSnapshot,
         activity_type: &ActivityType,
     ) -> Result<()> {
-        let activity_currency = &activity.currency;
-
-        let charge = activity.charge_amt_for(activity_type);
+        let resolved = ActivityEconomicsResolver::resolve_cash_with_account_context(
+            activity,
+            Decimal::ONE,
+            *activity_type == ActivityType::Interest,
+        );
+        let charge = resolved.signed_cash_effect.unwrap_or(Decimal::ZERO);
 
         if charge == Decimal::ZERO {
             let expected_fields = match activity_type {
@@ -201,7 +201,8 @@ impl HoldingsCalculator {
         }
 
         // Book cash outflow in ACTIVITY currency
-        add_cash(state, activity_currency, -charge.abs());
+        let (cash_currency, cash_effect) = cash_booking(activity, charge);
+        add_cash(state, &cash_currency, cash_effect);
 
         // Charges do not affect net_contribution
         Ok(())

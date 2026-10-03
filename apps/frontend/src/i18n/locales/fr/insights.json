@@ -50,7 +50,10 @@
       "target": "Cible",
       "no_target_yet": "Aucune répartition cible pour l'instant",
       "compare_weights": "Comparez les pondérations actuelles avec votre portefeuille souhaité.",
-      "set_target_allocation": "Définir une répartition cible"
+      "set_target_allocation": "Définir une répartition cible",
+      "outside_range_one": "{{count}} hors de la plage · plus grand écart {{gap}}",
+      "outside_range_other": "{{count}} hors de la plage · plus grand écart {{gap}}",
+      "outside_range_many": "{{count}} hors de la plage · plus grand écart {{gap}}"
     },
     "value_strip": {
       "portfolio_value": "Valeur du portefeuille",
@@ -62,11 +65,22 @@
       "available_cash": "Trésorerie disponible",
       "holdings_count_one": "{{count}} position",
       "holdings_count_other": "{{count}} positions",
+      "holdings_count_many": "{{count}} positions",
       "accounts_count_one": "{{count}} compte",
-      "accounts_count_other": "{{count}} comptes"
+      "accounts_count_other": "{{count}} comptes",
+      "accounts_count_many": "{{count}} comptes",
+      "pnl_current_holdings": "Positions actuelles"
     }
   },
   "networth": {
+    "attention": {
+      "title": "À vérifier",
+      "update_value": "Actualiser la valeur",
+      "update_balance": "Actualiser le solde",
+      "link_property": "Associer un bien à {{name}}",
+      "add_property": "Ajouter un bien pour {{name}}",
+      "link_explanation": "Associer un bien existant ne modifie pas votre patrimoine net."
+    },
     "failed_to_load": "Échec du chargement de la valeur nette",
     "stale_valuations_tooltip": "Valorisations obsolètes (90+ jours) :",
     "days_ago": "il y a {{count}}j",
@@ -74,9 +88,6 @@
     "breakdown": "Répartition",
     "no_assets_found": "Aucun actif trouvé.",
     "add_first_asset": "Ajoutez votre premier actif",
-    "update_valuations": "Mettez à jour vos valorisations",
-    "assets_count_one": "{{count}} actif",
-    "assets_count_other": "{{count}} actifs",
     "not_updated_over_90_days": "Non mis à jour depuis plus de 90 jours.",
     "chart": {
       "net_worth": "Valeur nette",
@@ -90,6 +101,7 @@
       "category": "Catégorie",
       "value": "Valeur",
       "delta_period": "Δ {{period}}",
+      "new": "Nouveau",
       "liabilities": "Passifs",
       "net_worth": "Valeur nette"
     },
@@ -111,14 +123,50 @@
     },
     "velocity": {
       "monthly_pace": "Rythme mensuel",
-      "over_months_one": "sur {{count}} mois",
-      "over_months_other": "sur {{count}} mois",
-      "trailing_pace": " · {{multiple}}× rythme sur 12 mois glissants",
-      "drivers_of_change": "Facteurs d'évolution sur {{period}}",
-      "market_returns": "Rendements du marché",
+      "since": "depuis le {{date}}",
+      "trailing_pace": " · {{multiple}}× la moyenne sur 12 mois",
+      "drivers_of_change": "Facteurs d'évolution",
+      "investment_gains": "Gains d'investissement",
+      "investment_losses": "Pertes d'investissement",
+      "other_assets": "Autres actifs",
       "contributions": "Contributions",
-      "equity_built": "Capital constitué",
+      "withdrawals": "Retraits",
+      "debt_paid_down": "Dette remboursée",
+      "debt_added": "Nouvelle dette",
       "per_month": "/mois"
-    }
+    },
+    "days_ago_one": "il y a {{count}}j",
+    "days_ago_other": "il y a {{count}}j",
+    "days_ago_many": "il y a {{count}}j"
+  },
+  "highlights": {
+    "movers": "Plus fortes variations",
+    "concentration": "Concentration",
+    "daily": "Variation du jour · positions actuelles",
+    "rank_by": "Classer les variations du jour par",
+    "gainers": "Hausses",
+    "losers": "Baisses",
+    "no_moves": "Aucune variation avec les données disponibles.",
+    "portfolio_share": "Part de la valeur du portefeuille, trésorerie incluse",
+    "largest": "Position la plus importante",
+    "top_five": "Les cinq principales positions",
+    "concentration_unavailable": "La concentration nécessite des valeurs de positions positives et un portefeuille sans positions à découvert."
+  },
+  "customize": {
+    "edit": "Personnaliser",
+    "widgets": "Widgets",
+    "reset": "Réinitialiser la disposition",
+    "cancel": "Annuler",
+    "save": "Enregistrer la disposition",
+    "saving": "Enregistrement…",
+    "hint": "Déplacez les widgets à l’aide de leur poignée ou ajustez leur largeur depuis le bord droit.",
+    "description": "Choisissez les widgets à afficher. Utilisez les flèches pour modifier leur ordre, y compris sur mobile.",
+    "value": "Résumé du portefeuille",
+    "breakdown": "Répartition",
+    "move_up": "Déplacer {{widget}} vers le haut",
+    "move_down": "Déplacer {{widget}} vers le bas",
+    "hide": "Masquer {{widget}}",
+    "drag": "Déplacer {{widget}}",
+    "empty": "Aucun widget sélectionné. Personnalisez cette page pour ajouter des widgets."
   }
 }

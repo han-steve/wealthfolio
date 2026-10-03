@@ -1,9 +1,14 @@
 use std::sync::Arc;
 
-use crate::{error::ApiResult, main_lib::AppState};
+use crate::{
+    error::{ApiError, ApiResult},
+    main_lib::AppState,
+};
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    body::Body,
+    extract::{Path, Query},
+    http::{header, StatusCode},
+    response::Response,
     routing::{delete, get, post},
     Json, Router,
 };
@@ -31,7 +36,7 @@ struct AddonIdBody {
 }
 
 async fn install_addon_zip_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<InstallZipBody>,
 ) -> ApiResult<Json<AddonManifest>> {
     let zip_bytes = decode_zip_data(body.zip_data, body.zip_data_b64)?;
@@ -48,7 +53,7 @@ async fn install_addon_zip_web(
 }
 
 async fn list_installed_addons_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<InstalledAddon>>> {
     let installed = state
         .addon_service
@@ -58,7 +63,7 @@ async fn list_installed_addons_web(
 }
 
 async fn check_addon_update_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<AddonIdBody>,
 ) -> ApiResult<Json<AddonUpdateCheckResult>> {
     let result = state
@@ -70,7 +75,7 @@ async fn check_addon_update_web(
 }
 
 async fn check_all_addon_updates_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<AddonUpdateCheckResult>>> {
     let results = state
         .addon_service
@@ -88,7 +93,7 @@ struct ToggleBody {
 }
 
 async fn toggle_addon_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<ToggleBody>,
 ) -> ApiResult<StatusCode> {
     state
@@ -100,7 +105,7 @@ async fn toggle_addon_web(
 
 async fn uninstall_addon_web(
     Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<StatusCode> {
     state
         .addon_service
@@ -112,7 +117,7 @@ async fn uninstall_addon_web(
 
 async fn load_addon_for_runtime_web(
     Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<ExtractedAddon>> {
     let extracted = state
         .addon_service
@@ -121,8 +126,28 @@ async fn load_addon_for_runtime_web(
     Ok(Json(extracted))
 }
 
+async fn load_addon_asset_web(
+    Path((id, asset_id)): Path<(String, String)>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
+) -> ApiResult<Response> {
+    let addon_service = Arc::clone(&state.addon_service);
+    let asset = tokio::task::spawn_blocking(move || addon_service.load_addon_asset(&id, &asset_id))
+        .await
+        .map_err(|error| ApiError::Internal(format!("Addon asset task failed: {error}")))?
+        .map_err(ApiError::BadRequest)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, asset.mime_type)
+        .header(header::CACHE_CONTROL, "private, no-store")
+        .body(Body::from(asset.bytes))
+        .map_err(|error| {
+            ApiError::Internal(format!("Failed to build addon asset response: {error}"))
+        })
+}
+
 async fn get_enabled_addons_on_startup_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<ExtractedAddon>>> {
     let enabled = state
         .addon_service
@@ -140,7 +165,7 @@ struct ExtractBody {
 }
 
 async fn extract_addon_zip_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<ExtractBody>,
 ) -> ApiResult<Json<ExtractedAddon>> {
     let zip_bytes = decode_zip_data(body.zip_data, body.zip_data_b64)?;
@@ -154,7 +179,7 @@ async fn extract_addon_zip_web(
 // ====== Store + staging ======
 
 async fn fetch_addon_store_listings_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<serde_json::Value>>> {
     let listings = state
         .addon_service
@@ -173,7 +198,7 @@ struct SubmitRatingBody {
 }
 
 async fn submit_addon_rating_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<SubmitRatingBody>,
 ) -> ApiResult<Json<serde_json::Value>> {
     let resp = state
@@ -202,7 +227,7 @@ struct StagingDownloadBody {
 }
 
 async fn download_addon_to_staging_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<StagingDownloadBody>,
 ) -> ApiResult<Json<ExtractedAddon>> {
     let extracted = state
@@ -232,7 +257,7 @@ struct UpdateNetworkApprovalsBody {
 }
 
 async fn update_addon_from_store_by_id_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<AddonIdBody>,
 ) -> ApiResult<Json<AddonManifest>> {
     let metadata = state
@@ -244,7 +269,7 @@ async fn update_addon_from_store_by_id_web(
 }
 
 async fn update_addon_network_approvals_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<UpdateNetworkApprovalsBody>,
 ) -> ApiResult<Json<AddonManifest>> {
     let metadata = state
@@ -255,7 +280,7 @@ async fn update_addon_network_approvals_web(
 }
 
 async fn install_addon_from_staging_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<InstallFromStagingBody>,
 ) -> ApiResult<Json<AddonManifest>> {
     let metadata = state
@@ -271,7 +296,7 @@ async fn install_addon_from_staging_web(
 }
 
 async fn clear_addon_staging_web(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Query(rq): Query<RatingsQuery>,
 ) -> ApiResult<StatusCode> {
     state
@@ -290,7 +315,7 @@ struct StorageSetBody {
 
 async fn get_addon_storage_item_web(
     Path((addon_id, key)): Path<(String, String)>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<Option<String>>> {
     let value = state
         .addon_service
@@ -302,7 +327,7 @@ async fn get_addon_storage_item_web(
 
 async fn set_addon_storage_item_web(
     Path((addon_id, key)): Path<(String, String)>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(body): Json<StorageSetBody>,
 ) -> ApiResult<StatusCode> {
     state
@@ -315,7 +340,7 @@ async fn set_addon_storage_item_web(
 
 async fn delete_addon_storage_item_web(
     Path((addon_id, key)): Path<(String, String)>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<StatusCode> {
     state
         .addon_service
@@ -342,13 +367,17 @@ fn decode_zip_data(
     }
 }
 
-pub fn router() -> Router<Arc<AppState>> {
+pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new()
         .route("/addons/installed", get(list_installed_addons_web))
         .route("/addons/install-zip", post(install_addon_zip_web))
         .route("/addons/toggle", post(toggle_addon_web))
         .route("/addons/{id}", delete(uninstall_addon_web))
         .route("/addons/runtime/{id}", get(load_addon_for_runtime_web))
+        .route(
+            "/addons/runtime/{id}/assets/{asset_id}",
+            get(load_addon_asset_web),
+        )
         .route(
             "/addons/enabled-on-startup",
             get(get_enabled_addons_on_startup_web),

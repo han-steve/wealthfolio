@@ -1,10 +1,17 @@
+import { profilePreferenceKey } from "@/hooks/use-persistent-state";
+import { usesLegacyPreferences } from "@/features/profiles/session";
 import { ColumnDef } from "@tanstack/react-table";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 
 import { TickerAvatar } from "@/components/ticker-avatar";
-import { Badge } from "@wealthfolio/ui";
+import {
+  Badge,
+  useAmountFormatting,
+  useNumberFormatting,
+  useDateFormatting,
+} from "@wealthfolio/ui";
 import { DataTable } from "@wealthfolio/ui/components/ui/data-table";
 import { DataTableColumnHeader } from "@wealthfolio/ui/components/ui/data-table/data-table-column-header";
 import { DataTableFacetedFilterProps } from "@wealthfolio/ui/components/ui/data-table/data-table-faceted-filter";
@@ -27,11 +34,10 @@ import {
 } from "@wealthfolio/ui/components/ui/table";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@wealthfolio/ui/components/ui/tooltip";
 
-import { ASSET_KIND_DISPLAY_NAMES, LatestQuoteSnapshot } from "@/lib/types";
-import { parseOccSymbol } from "@/lib/occ-symbol";
-import { formatDate } from "@/lib/utils";
-import { formatPrice } from "@wealthfolio/ui";
+import { formatOptionSubtitle, parseOccSymbol } from "@/lib/occ-symbol";
 import { useSettingsContext } from "@/lib/settings-provider";
+import { ASSET_KIND_DISPLAY_NAMES, LatestQuoteSnapshot } from "@/lib/types";
+import { formatDate } from "@/lib/utils";
 import { getNoQuoteReasonText, isStaleQuote, ParsedAsset } from "./asset-utils";
 
 interface AssetsTableProps {
@@ -59,6 +65,9 @@ export function AssetsTable({
   isUpdatingQuotes,
   isRefetchingQuotes,
 }: AssetsTableProps) {
+  const formatting = useAmountFormatting();
+  const numberFormatting = useNumberFormatting();
+  const dateFormatting = useDateFormatting();
   const { t } = useTranslation();
   const { settings } = useSettingsContext();
   const baseCurrency = settings?.baseCurrency ?? "USD";
@@ -98,16 +107,23 @@ export function AssetsTable({
             ? parsedOption.underlying
             : (asset.displayCode ?? asset.name ?? t("asset:table.unknown"));
           const subtitle = parsedOption
-            ? `${new Date(parsedOption.expiration + "T12:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })} $${parsedOption.strikePrice} ${parsedOption.optionType}`
+            ? formatOptionSubtitle(parsedOption, { ...numberFormatting, ...dateFormatting })
             : (asset.name ?? "—");
           const avatarSymbol = parsedOption ? parsedOption.underlying : rawSymbol;
           return (
             <button
               type="button"
+              data-testid={`security-${asset.instrumentType}-${asset.displayCode}`}
               onClick={() => navigate(`/holdings/${encodeURIComponent(asset.id)}`)}
               className="hover:bg-muted/60 focus-visible:ring-ring group flex w-full items-center gap-2.5 rounded-md py-1 text-left transition"
             >
-              <TickerAvatar symbol={avatarSymbol} className="h-8 w-8 shrink-0" />
+              <TickerAvatar
+                symbol={avatarSymbol}
+                exchangeMic={asset.instrumentExchangeMic}
+                instrumentType={asset.instrumentType}
+                assetId={asset.id}
+                className="h-8 w-8 shrink-0"
+              />
               <div className="min-w-0 flex-1">
                 <div className="group-hover:text-primary flex items-center gap-1.5 font-semibold leading-tight transition-colors">
                   {displaySymbol}
@@ -260,10 +276,15 @@ export function AssetsTable({
                   </Tooltip>
                 ) : null}
                 <span className="font-semibold tabular-nums">
-                  {formatPrice(quote.close, quote.currency ?? asset.quoteCcy ?? baseCurrency)}
+                  {formatting.formatPrice(
+                    quote.close,
+                    quote.currency ?? asset.quoteCcy ?? baseCurrency,
+                  )}
                 </span>
               </div>
-              <div className="text-muted-foreground text-[11px]">{formatDate(quote.timestamp)}</div>
+              <div className="text-muted-foreground text-[11px]">
+                {formatDate(quote.timestamp, dateFormatting)}
+              </div>
             </div>
           );
         },
@@ -319,6 +340,9 @@ export function AssetsTable({
       },
     ],
     [
+      baseCurrency,
+      dateFormatting,
+      formatting,
       latestQuotes,
       onDelete,
       onEdit,
@@ -327,6 +351,7 @@ export function AssetsTable({
       isRefetchingQuotes,
       isUpdatingQuotes,
       navigate,
+      numberFormatting,
       t,
     ],
   );
@@ -456,7 +481,8 @@ export function AssetsTable({
       }}
       defaultColumnFilters={[{ id: "holdingStatus", value: ["true"] }]}
       defaultSorting={[{ id: "symbol", desc: false }]}
-      storageKey="securities-table-v5"
+      storageKey={profilePreferenceKey("securities-table-v5")}
+      fallbackStorageKey={usesLegacyPreferences() ? "securities-table-v5" : undefined}
       scrollable
     />
   );

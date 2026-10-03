@@ -16,6 +16,7 @@ node_modules
 # Build outputs
 dist
 dist-ssr
+apps/frontend/public/__generated__/
 *.local
 build
 out
@@ -114,7 +115,9 @@ Thumbs.db
 .codex/
 .kiro/
 .conductor/
-db/
+# Anchored: an unanchored `db/` also matches source directories such as
+# crates/storage-sqlite/src/db/.
+/db/
 apps/db/
 apps/tauri/db/
 tasks

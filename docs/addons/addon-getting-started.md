@@ -72,6 +72,7 @@ hello-world-addon/
 │   ├── utils/              # Utility functions
 │   └── types/              # Type definitions
 ├── dist/                   # Built files (generated)
+├── assets/                 # Private static assets (optional)
 ├── manifest.json           # Addon metadata and permissions
 ├── package.json            # NPM package configuration
 ├── vite.config.ts          # Build configuration
@@ -92,8 +93,8 @@ permissions it needs:
   "description": "My first Wealthfolio addon",
   "author": "Your Name",
   "main": "dist/addon.js",
-  "sdkVersion": "3.6.1",
-  "minWealthfolioVersion": "3.6.1",
+  "sdkVersion": "3.8.0",
+  "minWealthfolioVersion": "3.8.0",
   "enabled": true,
   "contributes": {
     "routes": [{ "id": "hello-world" }],
@@ -125,11 +126,11 @@ The host derives the route URL from the manifest `id`, so this root page is
 mounted at `/addons/hello-world-addon`. Omit `path` for the root; nested pages
 use a relative suffix such as `"path": "reports/:year"`.
 
-> **Permissions:** `ui`, `query`, `toast`, `logger`, and `storage` are implicit
-> **baseline capabilities** — you do not declare them. Only data categories
-> (`accounts`, `portfolio`, `activities`, …) plus `files`, `network`, `secrets`,
-> `events`, `snapshots`, and `settings` require a permission entry and user
-> consent.
+> **Permissions:** `ui`, `navigation`, `query`, `toast`, `logger`, and `storage`
+> are implicit **baseline capabilities** — you do not declare them. Only data
+> categories (`accounts`, `portfolio`, `activities`, …) plus `files`, `network`,
+> `secrets`, `events`, `snapshots`, and `settings` require a permission entry
+> and user consent.
 
 ## Main Addon File
 
@@ -187,6 +188,30 @@ const enable: AddonEnableFunction = (ctx) => {
 
 export default enable;
 ```
+
+## Add Packaged Assets
+
+Wealthfolio 3.7 automatically indexes `assets/**` and `dist/assets/**`; there is
+no `assets` manifest field or permission. Load a hand-authored image, JSON file,
+font, media file, or Wasm module through the private registry:
+
+```typescript
+const logoUrl = await ctx.assets.getUrl("assets/logo.png");
+const configBlob = await ctx.assets.getBlob("assets/config.json");
+const config = JSON.parse(await configBlob.text());
+```
+
+Use Blob URLs only for the current addon lifetime. The sandbox revokes them on
+reload or disable. Local CSS `url(...)` references are resolved relative to the
+stylesheet automatically, while remote CSS URLs and `@import` are rejected.
+JavaScript/JSX strings are not rewritten, so images rendered by components must
+use `getUrl()`.
+
+`ctx.assets` contains package files; `ctx.api.assets` manages Wealthfolio
+financial instruments. Addons using `ctx.assets` must set `sdkVersion` and
+`minWealthfolioVersion` to `3.7.0`. See the
+[v3.6 to v3.7 guide](./addon-migration-guide-v3.6-to-v3.7.md) for limits and
+compatibility.
 
 > **Do not call `createRoot` yourself.** The host owns the single React root and
 > mounts your `component` into it. A per-route `createRoot` leaves an orphaned
@@ -258,6 +283,7 @@ import {
   QueryClientProvider,
   useQuery,
 } from '@tanstack/react-query';
+import { useEffect } from 'react';
 import type {
   Account,
   AddonContext,
@@ -274,12 +300,15 @@ function HelloWorldPage({ ctx }: { ctx: AddonContext }) {
   } = useQuery<Account[]>({
     queryKey: ['accounts'],
     queryFn: () => ctx.api.accounts.getAll(),
-    onError: (error) => {
-      ctx.api.logger.error('Failed to load accounts:', error);
-    },
     staleTime: 5 * 60 * 1000, // 5 minutes
     refetchOnWindowFocus: false,
   });
+
+  useEffect(() => {
+    if (isError) {
+      ctx.api.logger.error(`Failed to load accounts: ${String(error)}`);
+    }
+  }, [ctx, error, isError]);
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
@@ -331,9 +360,9 @@ function HelloWorldPage({ ctx }: { ctx: AddonContext }) {
                       </div>
                       <div className="text-right">
                         <div className="text-lg font-semibold">
-                          {account.totalValue?.toLocaleString() || 'N/A'}
+                          {account.balance.toLocaleString()}
                         </div>
-                        <div className="text-sm text-muted-foreground">Total Value</div>
+                        <div className="text-sm text-muted-foreground">Balance</div>
                       </div>
                     </div>
                   </div>
@@ -392,8 +421,8 @@ declaring a data `category`, the `functions` you call, and a human-readable
   "description": "My first Wealthfolio addon",
   "author": "Your Name",
   "main": "dist/addon.js",
-  "sdkVersion": "3.6.1",
-  "minWealthfolioVersion": "3.6.1",
+  "sdkVersion": "3.8.0",
+  "minWealthfolioVersion": "3.8.0",
   "enabled": true,
   "contributes": {
     "routes": [{ "id": "hello-world" }],
@@ -478,6 +507,11 @@ const enable: AddonEnableFunction = (ctx) => {
 - Source maps for debugging
 - Real-time TypeScript checking
 - Hot Module Replacement
+- Coherent `/runtime-package` generations for code, CSS, and private assets
+
+Wealthfolio 3.7 requires `@wealthfolio/addon-dev-tools` 3.7 or newer. If the
+host reports that the server does not support v3.7 runtime packages, upgrade the
+package and restart `pnpm dev:server`.
 
 ## IDE Setup
 
@@ -531,12 +565,12 @@ pnpm format
 ```json
 {
   "scripts": {
-    "dev:server": "wealthfolio dev",
+    "dev:server": "wealthfolio-addon dev",
     "build": "vite build",
     "type-check": "tsc --noEmit",
     "lint": "eslint src --ext .ts,.tsx",
     "format": "prettier --write \"src/**/*.{ts,tsx}\"",
-    "bundle": "pnpm build && zip -r addon.zip manifest.json dist/"
+    "bundle": "pnpm build && zip -r addon.zip manifest.json dist/ assets/"
   }
 }
 ```
@@ -574,9 +608,9 @@ import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
 // Host-provided dependencies are marked `external` so they are NOT bundled —
-// the sandbox provides the real instances at runtime (one shared React, one
-// shared QueryClient). Keep this list aligned with `hostDependencies` in
-// manifest.json.
+// the sandbox provides the real instances at runtime (one shared React module
+// and one QueryClient scoped to this addon). Keep this list aligned with
+// `hostDependencies` in manifest.json.
 const hostProvidedDependencies = [
   "@tanstack/react-query",
   "@wealthfolio/addon-sdk",
@@ -604,6 +638,7 @@ export default defineConfig({
     "process.env.NODE_ENV": JSON.stringify("production"),
   },
   build: {
+    target: ["chrome107", "edge107", "firefox104", "safari16"],
     lib: {
       entry: "src/addon.tsx",
       formats: ["es"],

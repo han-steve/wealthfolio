@@ -1,7 +1,8 @@
 import { openUrlInBrowser } from "@/adapters";
-import { getSubscriptionPlans } from "../services/broker-service";
-import { useWealthfolioConnect } from "../providers/wealthfolio-connect-provider";
-import type { BillingPeriod, SubscriptionPlan } from "../types";
+import { useConnectUrl } from "../hooks/use-connect-url";
+import { QueryKeys } from "@/lib/query-keys";
+import { useQuery } from "@tanstack/react-query";
+import { useAmountFormatting } from "@wealthfolio/ui";
 import { Badge } from "@wealthfolio/ui/components/ui/badge";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import {
@@ -11,17 +12,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@wealthfolio/ui/components/ui/card";
-import { Popover, PopoverContent, PopoverTrigger } from "@wealthfolio/ui/components/ui/popover";
-import { toast } from "@wealthfolio/ui/components/ui/use-toast";
 import { Icons } from "@wealthfolio/ui/components/ui/icons";
+import { Popover, PopoverContent, PopoverTrigger } from "@wealthfolio/ui/components/ui/popover";
 import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
 import { ToggleGroup, ToggleGroupItem } from "@wealthfolio/ui/components/ui/toggle-group";
-import { WEALTHFOLIO_CONNECT_PORTAL_URL } from "@/lib/constants";
-import { QueryKeys } from "@/lib/query-keys";
-import { useQuery } from "@tanstack/react-query";
+import { toast } from "@wealthfolio/ui/components/ui/use-toast";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { getDisplayablePlans } from "../lib/plan-visibility";
+import { useWealthfolioConnect } from "../providers/wealthfolio-connect-provider";
+import { getSubscriptionPlans } from "../services/broker-service";
+import type { BillingPeriod, SubscriptionPlan } from "../types";
 
 // Helper to detect if error is an auth/token issue
 function isAuthError(error: Error | null): boolean {
@@ -88,7 +89,9 @@ interface PlanCardProps {
 }
 
 function PlanCard({ plan, billingPeriod, isDefault, isComingSoon }: PlanCardProps) {
+  const connectLink = useConnectUrl("subscription_plans", plan.id);
   const { t } = useTranslation();
+  const { formatAmount } = useAmountFormatting();
   const priceAmount = billingPeriod === "monthly" ? plan.pricing.monthly : plan.pricing.yearly;
   const yearlyPricing = plan.pricing.yearly;
   const monthlyPricing = plan.pricing.monthly;
@@ -101,16 +104,11 @@ function PlanCard({ plan, billingPeriod, isDefault, isComingSoon }: PlanCardProp
       : 0;
 
   const formatPrice = (amount: number) => {
-    return new Intl.NumberFormat("en-US", {
-      style: "currency",
-      currency: "USD",
-      minimumFractionDigits: 0,
-      maximumFractionDigits: 2,
-    }).format(amount);
+    return formatAmount(amount, "USD");
   };
 
   const handleGetStarted = () => {
-    openUrlInBrowser(`${WEALTHFOLIO_CONNECT_PORTAL_URL}/onboarding?plan=${plan.id}`);
+    openUrlInBrowser(connectLink);
   };
 
   // Use isComingSoon from API if available
@@ -230,7 +228,8 @@ export function SubscriptionPlans({
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="h-7 w-7"
+                      className="size-11 sm:size-7"
+                      aria-label={t("connect:subscription.copySupportEmail")}
                       onClick={() => {
                         navigator.clipboard.writeText("support@wealthfolio.app");
                         toast.success(t("connect:subscription.emailCopied"));
@@ -293,7 +292,8 @@ export function SubscriptionPlans({
                     <Button
                       size="icon"
                       variant="ghost"
-                      className="h-7 w-7"
+                      className="size-11 sm:size-7"
+                      aria-label={t("connect:subscription.copySupportEmail")}
                       onClick={() => {
                         navigator.clipboard.writeText("support@wealthfolio.app");
                         toast.success(t("connect:subscription.emailCopied"));

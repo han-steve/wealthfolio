@@ -1,9 +1,16 @@
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 
+import { calculateRebalancePlan as calculateTauriRebalancePlan } from "./tauri";
 import { COMMANDS, invoke } from "./web/core";
+
+const { platformInvokeMock } = vi.hoisted(() => ({
+  platformInvokeMock: vi.fn(),
+}));
+
+vi.mock("#platform", () => ({ invoke: platformInvokeMock }));
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
 const frontendSrcDir = path.resolve(currentDir, "..");
@@ -14,6 +21,12 @@ const TAURI_REGISTERED_COMMAND_RE = /commands::[a-z_]+::([a-zA-Z0-9_]+)/g;
 const RUNTIME_EXPORT_RE =
   /^export\s+(?:const|async\s+function|function|class|enum)\s+([a-zA-Z_$][\w$]*)/gm;
 const NAMED_REEXPORT_RE = /export\s*\{([^{}]*)\}\s*from\s*["']([^"']+)["']/g;
+
+// Adapter tests exercise transport behavior inside an admitted profile.
+beforeEach(async () => {
+  const { installProfileSession } = await import("@/features/profiles/session");
+  installProfileSession({ profileId: "test-profile", scopeId: "test-scope" });
+});
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -107,6 +120,38 @@ function collectNamedReexports(
   return { hasStar, names };
 }
 
+describe("rebalance eligibility transport", () => {
+  it("canonicalizes the Tauri shared request before web transport", async () => {
+    const mock = stubFetch({});
+    platformInvokeMock
+      .mockReset()
+      .mockImplementation((command, payload) => invoke(command, payload));
+
+    await calculateTauriRebalancePlan("target-1", 100, { type: "all" }, "cash_flow_only", [
+      "asset-z",
+      "asset-a",
+      "asset-z",
+    ]);
+
+    const { body } = lastCall(mock);
+    const parsed = JSON.parse(body as string) as { eligibleAssetIds?: unknown };
+    expect(parsed.eligibleAssetIds).toEqual(["asset-a", "asset-z"]);
+  });
+
+  it("omits the allowlist when no restriction is supplied", async () => {
+    const mock = stubFetch({});
+    await invoke("calculate_rebalance_plan", {
+      targetId: "target-1",
+      availableCash: 100,
+      filter: { type: "all" },
+      scenarioMode: "cash_flow_only",
+    });
+
+    const { body } = lastCall(mock);
+    expect(JSON.parse(body as string)).not.toHaveProperty("eligibleAssetIds");
+  });
+});
+
 describe("adapter command parity", () => {
   it("registers every command reachable from the web adapter", () => {
     const files = [
@@ -164,6 +209,23 @@ describe("adapter command parity", () => {
     expect(missing).toEqual([]);
   });
 
+  it("preserves explicit Connect rebind confirmation in the web request", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("null", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    await invoke("store_sync_session", { refreshToken: "candidate", confirmRebind: true });
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/connect/session");
+    expect(JSON.parse(init.body as string)).toEqual({
+      refreshToken: "candidate",
+      confirmRebind: true,
+    });
+  });
+
   it("routes allocation drilldown requests with all required filters", async () => {
     const response = new Response(JSON.stringify({ holdings: [] }), {
       status: 200,
@@ -186,6 +248,25 @@ describe("adapter command parity", () => {
       taxonomyId: "asset_classes",
       categoryId: "EQUITY",
     });
+  });
+
+  it("routes historical exchange-rate batches with the request payload", async () => {
+    const response = new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(response);
+    vi.stubGlobal("fetch", fetchMock);
+    const request = {
+      pairs: [{ fromCurrency: "USD", toCurrency: "EUR", date: "2026-05-18" }],
+    };
+
+    await invoke("get_exchange_rates_for_dates", { request });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/api/v1/exchange-rates/historical");
+    expect(init.method).toBe("POST");
+    expect(JSON.parse(init.body as string)).toEqual(request);
   });
 });
 
@@ -267,6 +348,17 @@ describe("scope-based routing — get_holdings_list", () => {
     expect(method).toBe("GET");
   });
 
+  it("account with closed positions → GET with includeClosed", async () => {
+    const mock = stubFetch();
+    await invoke("get_holdings_list", {
+      filter: { type: "account", accountId: "acc_1" },
+      includeClosed: true,
+    });
+    const { url, method } = lastCall(mock);
+    expect(url).toBe("/api/v1/holdings/list?accountId=acc_1&includeClosed=true");
+    expect(method).toBe("GET");
+  });
+
   it("portfolio → POST /holdings/list/query", async () => {
     const mock = stubFetch();
     await invoke("get_holdings_list", { filter: { type: "portfolio", portfolioId: "pf_1" } });
@@ -288,6 +380,21 @@ describe("scope-based routing — get_holdings_list", () => {
     expect(method).toBe("POST");
     expect(JSON.parse(body as string)).toEqual({
       filter: { type: "accounts", accountIds: ["acc_1", "acc_2"] },
+    });
+  });
+
+  it("all with closed positions → POST with includeClosed", async () => {
+    const mock = stubFetch();
+    await invoke("get_holdings_list", {
+      filter: { type: "all" },
+      includeClosed: true,
+    });
+    const { url, method, body } = lastCall(mock);
+    expect(url).toBe("/api/v1/holdings/list/query");
+    expect(method).toBe("POST");
+    expect(JSON.parse(body as string)).toEqual({
+      filter: { type: "all" },
+      includeClosed: true,
     });
   });
 });

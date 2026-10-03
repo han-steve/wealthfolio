@@ -6,23 +6,33 @@ use crate::{
     main_lib::AppState,
 };
 use axum::{
-    extract::{Path, State},
+    extract::Path,
     http::StatusCode,
-    routing::{delete, get, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
-use wealthfolio_core::fx::{ExchangeRate, NewExchangeRate};
+use wealthfolio_core::fx::{
+    ExchangeRate, ExchangeRateDateBatchRequest, ExchangeRateDateResult, NewExchangeRate,
+};
 use wealthfolio_core::quotes::DATA_SOURCE_MANUAL;
 
 async fn get_latest_exchange_rates(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<Json<Vec<ExchangeRate>>> {
     let rates = state.fx_service.get_latest_exchange_rates()?;
     Ok(Json(rates))
 }
 
+async fn get_exchange_rates_for_dates(
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
+    Json(request): Json<ExchangeRateDateBatchRequest>,
+) -> ApiResult<Json<Vec<ExchangeRateDateResult>>> {
+    let results = state.fx_service.get_exchange_rates_for_dates(request.pairs);
+    Ok(Json(results))
+}
+
 async fn update_exchange_rate(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(rate): Json<ExchangeRate>,
 ) -> ApiResult<Json<ExchangeRate>> {
     let updated = state
@@ -34,7 +44,7 @@ async fn update_exchange_rate(
 }
 
 async fn add_exchange_rate(
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
     Json(new_rate): Json<NewExchangeRate>,
 ) -> ApiResult<Json<ExchangeRate>> {
     let added = state.fx_service.add_exchange_rate(new_rate).await?;
@@ -51,14 +61,14 @@ async fn add_exchange_rate(
 
 async fn delete_exchange_rate(
     Path(id): Path<String>,
-    State(state): State<Arc<AppState>>,
+    axum::Extension(state): axum::Extension<Arc<AppState>>,
 ) -> ApiResult<StatusCode> {
     state.fx_service.delete_exchange_rate(&id).await?;
     trigger_full_portfolio_recalc(state);
     Ok(StatusCode::NO_CONTENT)
 }
 
-pub fn router() -> Router<Arc<AppState>> {
+pub fn router<S: Clone + Send + Sync + 'static>() -> Router<S> {
     Router::new()
         .route("/exchange-rates/latest", get(get_latest_exchange_rates))
         .route(
@@ -66,4 +76,8 @@ pub fn router() -> Router<Arc<AppState>> {
             put(update_exchange_rate).post(add_exchange_rate),
         )
         .route("/exchange-rates/{id}", delete(delete_exchange_rate))
+        .route(
+            "/exchange-rates/historical",
+            post(get_exchange_rates_for_dates),
+        )
 }

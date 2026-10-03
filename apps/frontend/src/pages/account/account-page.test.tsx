@@ -1,6 +1,3 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { useQuery } from "@tanstack/react-query";
 import { getHoldingsList } from "@/adapters";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useRecalculatePortfolioMutation } from "@/hooks/use-calculate-portfolio";
@@ -19,6 +16,9 @@ import type {
 import { AccountType } from "@/lib/types";
 import { useActivitySearch } from "@/pages/activity/hooks/use-activity-search";
 import { useCalculatePerformanceHistory } from "@/pages/performance/hooks/use-performance-data";
+import { useQuery } from "@tanstack/react-query";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import AccountPage from "./account-page";
 
 vi.mock("@/adapters", () => ({
@@ -155,11 +155,14 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: vi.fn(),
 }));
 
-vi.mock("@wealthfolio/ui", () => {
+vi.mock("@wealthfolio/ui", async () => {
+  const { getInitialIntervalData } =
+    await import("@wealthfolio/ui/components/financial/interval-selector");
   const Icon = () => <span>icon</span>;
   const Passthrough = ({ children }: { children?: React.ReactNode }) => <>{children}</>;
 
   return {
+    getInitialIntervalData,
     AnimatedToggleGroup: ({
       items,
       onValueChange,
@@ -495,6 +498,22 @@ describe("AccountPage", () => {
 
     expect(screen.getByText("snapshot-history")).toBeInTheDocument();
   });
+  it("uses the configured calendar day for the initial account range", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-12-31T16:30:00Z"));
+      mockUseSettingsContext.mockReturnValue({
+        settings: { baseCurrency: "USD", timezone: "Asia/Shanghai" },
+      } as ReturnType<typeof useSettingsContext>);
+      render(<AccountPage />);
+      expect(mockUseValuationHistory.mock.calls[0][0]).toEqual({
+        from: new Date(2026, 9, 1),
+        to: new Date(2027, 0, 1),
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 function createSettings(): Settings {
@@ -502,6 +521,7 @@ function createSettings(): Settings {
     theme: "light",
     font: "font-sans",
     language: "en",
+    formattingRegion: "US",
     baseCurrency: "USD",
     defaultReturnMetric: "twr",
     timezone: "America/Chicago",
@@ -578,6 +598,7 @@ function createCurrentAccountValuation(
     accountId: "account-1",
     accountCurrency: "USD",
     baseCurrency: "USD",
+    fxRateToBase: 1,
     cashBalance: 0,
     investmentMarketValue: overrides.totalValue ?? 125,
     totalValue: overrides.totalValue ?? 125,

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { Controller, FormProvider, useForm } from "react-hook-form";
 import { AccountSelect, type AccountSelectOption } from "../account-select";
 
@@ -19,13 +19,20 @@ vi.mock("@wealthfolio/ui", () => ({
   FormMessage: () => null,
   Select: ({
     children,
-    defaultValue: _defaultValue,
-    onValueChange: _onValueChange,
+    value,
+    onValueChange,
   }: {
     children: React.ReactNode;
-    defaultValue?: string;
+    value?: string;
     onValueChange?: (value: string) => void;
-  }) => <div data-testid="account-select">{children}</div>,
+  }) => (
+    <div data-testid="account-select" data-value={value}>
+      <button type="button" onClick={() => onValueChange?.("acc-usd")}>
+        Choose USD account
+      </button>
+      {children}
+    </div>
+  ),
   SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   SelectItem: ({ children, value }: { children: React.ReactNode; value: string }) => (
     <div data-value={value}>{children}</div>
@@ -37,6 +44,7 @@ vi.mock("@wealthfolio/ui", () => ({
 interface FormValues {
   accountId: string;
   currency: string;
+  fxRate?: number | null;
 }
 
 interface TestHarnessProps {
@@ -50,8 +58,12 @@ function TestHarness({ defaultValues, accounts }: TestHarnessProps) {
 
   return (
     <FormProvider {...form}>
-      <AccountSelect<FormValues> name="accountId" accounts={accounts} currencyName="currency" />
+      <AccountSelect<FormValues> name="accountId" accounts={accounts} />
       <div data-testid="currency-value">{currency}</div>
+      <output data-testid="fx-rate">{JSON.stringify(form.watch("fxRate"))}</output>
+      <button type="button" onClick={() => form.setValue("accountId", "acc-usd")}>
+        Select USD account
+      </button>
     </FormProvider>
   );
 }
@@ -62,35 +74,22 @@ const accounts: AccountSelectOption[] = [
 ];
 
 describe("AccountSelect", () => {
-  it("does not overwrite a prefilled currency when editing", async () => {
+  it("changes only the account, leaving currency and FX to the activity form", () => {
     render(
       <TestHarness
         accounts={accounts}
-        defaultValues={{
-          accountId: "acc-eur",
-          currency: "USD",
-        }}
+        defaultValues={{ accountId: "acc-eur", currency: "GBP", fxRate: 1.2 }}
       />,
     );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("currency-value")).toHaveTextContent("USD");
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Choose USD account" }));
+    expect(screen.getByTestId("account-select")).toHaveAttribute("data-value", "acc-usd");
+    expect(screen.getByTestId("currency-value")).toHaveTextContent("GBP");
+    expect(screen.getByTestId("fx-rate")).toHaveTextContent("1.2");
   });
-
-  it("backfills currency when account is preselected and currency is empty", async () => {
+  it("does not fill currency on mount", () => {
     render(
-      <TestHarness
-        accounts={accounts}
-        defaultValues={{
-          accountId: "acc-eur",
-          currency: "",
-        }}
-      />,
+      <TestHarness accounts={accounts} defaultValues={{ accountId: "acc-eur", currency: "" }} />,
     );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("currency-value")).toHaveTextContent("EUR");
-    });
+    expect(screen.getByTestId("currency-value")).toBeEmptyDOMElement();
   });
 });

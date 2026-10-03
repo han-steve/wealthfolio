@@ -408,6 +408,134 @@ fn test_detect_addon_permissions_assets_and_market_data_sdk_categories() {
 }
 
 #[test]
+fn test_detect_addon_permissions_historical_exchange_rates() {
+    let addon_files = vec![AddonFile {
+        name: "addon.js".to_string(),
+        content: r#"
+            export default function enable(ctx) {
+                ctx.api.exchangeRates.getRatesForDates([
+                    { fromCurrency: "USD", toCurrency: "EUR", date: "2026-05-18" }
+                ]);
+            }
+        "#
+        .to_string(),
+        is_main: true,
+    }];
+
+    let detected_permissions = detect_addon_permissions(&addon_files);
+    let currency_permission = detected_permissions
+        .iter()
+        .find(|permission| permission.category == "currency")
+        .expect("currency permissions should be detected");
+
+    assert!(
+        currency_permission
+            .functions
+            .iter()
+            .any(|function| function.name == "getRatesForDates"),
+        "getRatesForDates should be detected under currency"
+    );
+}
+
+#[test]
+fn test_detect_addon_permissions_activities_transfer_functions() {
+    let addon_files = vec![AddonFile {
+        name: "addon.js".to_string(),
+        content: r#"
+            export default function enable(ctx) {
+                ctx.api.activities.getTransferPair('activity-1');
+                ctx.api.activities.findTransferMatchCandidates({ activityId: 'activity-1' });
+                ctx.api.activities.saveTransferPair({ fromAccountId: 'a', toAccountId: 'b' });
+                ctx.api.activities.linkTransfer('activity-a', 'activity-b');
+                ctx.api.activities.unlinkTransfer('activity-a', 'activity-b');
+            }
+        "#
+        .to_string(),
+        is_main: true,
+    }];
+
+    let detected_permissions = detect_addon_permissions(&addon_files);
+
+    let activities_permission = detected_permissions
+        .iter()
+        .find(|p| p.category == "activities")
+        .expect("activities permissions should be detected");
+    let activities_functions: Vec<&str> = activities_permission
+        .functions
+        .iter()
+        .map(|f| f.name.as_str())
+        .collect();
+
+    for function in [
+        "getTransferPair",
+        "findTransferMatchCandidates",
+        "saveTransferPair",
+        "linkTransfer",
+        "unlinkTransfer",
+    ] {
+        assert!(
+            activities_functions.contains(&function),
+            "{} should be detected under activities",
+            function
+        );
+    }
+}
+
+#[test]
+fn test_detect_addon_permissions_spending() {
+    let addon_files = vec![AddonFile {
+        name: "addon.js".to_string(),
+        content: r#"
+            export default async function enable(ctx) {
+                await ctx.api.spending.isEnabled();
+                await ctx.api.spending.searchCashActivities({});
+                await ctx.api.spending.getReport({});
+                await ctx.api.spending.getCategories();
+                await ctx.api.spending.getRules();
+                await ctx.api.spending.saveRule({});
+                await ctx.api.spending.deleteRule("rule-1");
+                await ctx.api.spending.rerunRules();
+            }
+        "#
+        .to_string(),
+        is_main: true,
+    }];
+
+    let detected_permissions = detect_addon_permissions(&addon_files);
+    let spending_permission = detected_permissions
+        .iter()
+        .find(|permission| permission.category == "spending")
+        .expect("spending permissions should be detected");
+    let detected_functions: std::collections::HashSet<&str> = spending_permission
+        .functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .collect();
+
+    assert_eq!(
+        detected_functions,
+        std::collections::HashSet::from([
+            "isEnabled",
+            "getCategories",
+            "getReport",
+            "getRules",
+            "saveRule",
+            "deleteRule",
+            "rerunRules",
+        ])
+    );
+
+    let activities_permission = detected_permissions
+        .iter()
+        .find(|permission| permission.category == "activities")
+        .expect("cash activity search should require activities permission");
+    assert!(activities_permission
+        .functions
+        .iter()
+        .any(|function| function.name == "searchCashActivities"));
+}
+
+#[test]
 fn test_addon_manifest_to_installed() {
     let manifest = AddonManifest {
         id: "test-addon".to_string(),
@@ -1201,6 +1329,58 @@ fn test_extract_addon_zip_accepts_valid_nested_paths() {
 }
 
 #[test]
+fn test_extract_addon_zip_normalizes_wrapped_package_assets() {
+    let zip_data = build_test_addon_zip_owned(vec![
+        (
+            "wrapped/manifest.json".to_string(),
+            br#"{"id":"wrapped-addon","name":"Wrapped","version":"1.0.0","main":"dist/addon.js"}"#
+                .to_vec(),
+        ),
+        (
+            "wrapped/dist/addon.js".to_string(),
+            b"export default function enable() {}".to_vec(),
+        ),
+        ("wrapped/dist/assets/logo.png".to_string(), vec![1, 2, 3]),
+    ]);
+
+    let extracted = extract_addon_zip_internal(zip_data).expect("wrapped zip should extract");
+    assert!(extracted
+        .files
+        .iter()
+        .any(|file| file.name == "dist/addon.js" && file.is_main));
+    assert!(extracted
+        .assets
+        .iter()
+        .any(|asset| asset.path == "dist/assets/logo.png" && asset.size == 3));
+}
+
+#[test]
+fn test_extract_addon_zip_rejects_ambiguous_wrapped_package_roots() {
+    let zip_data = build_test_addon_zip_owned(vec![
+        (
+            "first/manifest.json".to_string(),
+            br#"{"id":"ambiguous-addon","name":"Ambiguous","version":"1.0.0","main":"dist/addon.js"}"#
+                .to_vec(),
+        ),
+        (
+            "first/dist/addon.js".to_string(),
+            b"export default function enable() {}".to_vec(),
+        ),
+        (
+            "second/dist/addon.js".to_string(),
+            b"export default function enable() {}".to_vec(),
+        ),
+    ]);
+
+    let error = match extract_addon_zip_internal(zip_data) {
+        Ok(_) => panic!("multiple wrapped roots must be rejected"),
+        Err(error) => error,
+    };
+
+    assert!(error.contains("Multiple addon files match the declared main file"));
+}
+
+#[test]
 fn test_validate_addon_id_rejects_traversal_and_reserved_names() {
     for addon_id in [
         "",
@@ -1577,6 +1757,57 @@ mod service_tests {
             "legacy addon directory should be removed"
         );
 
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_v3_6_2_addon_package_remains_runtime_compatible() {
+        let temp_dir = env::temp_dir().join("wealthfolio_test_v3_6_2_addon_compatibility");
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir).ok();
+        }
+
+        let zip_data = build_test_addon_zip(&[
+            (
+                "manifest.json",
+                r#"{
+                    "id":"v3-6-addon",
+                    "name":"Version 3.6 Addon",
+                    "version":"1.0.0",
+                    "main":"dist/addon.js",
+                    "sdkVersion":"3.6.2",
+                    "minWealthfolioVersion":"3.6.2"
+                }"#,
+            ),
+            (
+                "dist/addon.js",
+                "export function enable(context) { context.api.portfolio.getSummary(); }",
+            ),
+        ]);
+
+        let service = test_addon_service(&temp_dir);
+        service
+            .install_addon_zip(zip_data, true, vec![])
+            .await
+            .expect("3.6.2 addon should install on Wealthfolio 3.7");
+        let loaded = service
+            .load_addon_for_runtime("v3-6-addon")
+            .expect("3.6.2 addon should load in the 3.7 runtime");
+
+        assert_eq!(loaded.metadata.sdk_version.as_deref(), Some("3.6.2"));
+        assert!(loaded.assets.is_empty());
+        assert!(loaded
+            .files
+            .iter()
+            .any(|file| file.name == "dist/addon.js" && file.is_main));
+
+        service
+            .toggle_addon("v3-6-addon", false)
+            .expect("legacy addon should still disable");
+        service
+            .uninstall_addon("v3-6-addon")
+            .await
+            .expect("legacy addon should still uninstall");
         std::fs::remove_dir_all(&temp_dir).ok();
     }
 
@@ -1959,6 +2190,7 @@ mod service_tests {
                         auth_type: "bearer".to_string(),
                         secret_key: "api-token".to_string(),
                     }),
+                    timeout_secs: None,
                     injected_authorization: Some("Bearer secret-token".to_string()),
                 },
             )
@@ -2025,6 +2257,7 @@ mod service_tests {
                         auth_type: "bearer".to_string(),
                         secret_key: "api-token".to_string(),
                     }),
+                    timeout_secs: None,
                     injected_authorization: Some("Bearer secret-token".to_string()),
                 },
             )
@@ -2040,7 +2273,7 @@ mod service_tests {
     }
 
     #[tokio::test]
-    async fn test_install_and_runtime_load_allow_binary_assets() {
+    async fn test_install_indexes_and_lazily_loads_packaged_assets() {
         let temp_dir = env::temp_dir().join("wealthfolio_test_binary_addon_asset");
         if temp_dir.exists() {
             std::fs::remove_dir_all(&temp_dir).ok();
@@ -2057,6 +2290,19 @@ mod service_tests {
                 b"export default function enable() {}".to_vec(),
             ),
             ("assets/icon.bin".to_string(), vec![0, 159, 146, 150]),
+            (
+                "dist/assets/logo.svg".to_string(),
+                br#"<svg xmlns="http://www.w3.org/2000/svg"/>"#.to_vec(),
+            ),
+            (
+                "dist/assets/lazy-chunk.js".to_string(),
+                b"export const value = 1;".to_vec(),
+            ),
+            (
+                "dist/assets/addon.css".to_string(),
+                b".addon { color: red; }".to_vec(),
+            ),
+            ("assets/.gitkeep".to_string(), Vec::new()),
         ]);
 
         let service = test_addon_service(&temp_dir);
@@ -2067,7 +2313,7 @@ mod service_tests {
 
         let loaded = service
             .load_addon_for_runtime("binary-addon")
-            .expect("runtime load should skip binary assets and keep JS");
+            .expect("runtime load should index assets and keep JS");
 
         assert!(
             loaded
@@ -2077,6 +2323,70 @@ mod service_tests {
             "main JS file should still be available at runtime"
         );
         assert!(
+            loaded
+                .files
+                .iter()
+                .any(|file| file.name == "dist/assets/lazy-chunk.js"),
+            "JavaScript chunks in the generated asset directory should remain runtime modules"
+        );
+        assert!(
+            loaded
+                .files
+                .iter()
+                .any(|file| file.name == "dist/assets/addon.css"),
+            "CSS in the generated asset directory should remain a runtime stylesheet"
+        );
+        assert!(
+            loaded
+                .files
+                .iter()
+                .all(|file| file.name != "assets/icon.bin" && file.name != "dist/assets/logo.svg"),
+            "packaged binary/static assets should not be copied into the executable text bundle"
+        );
+        assert_eq!(loaded.assets.len(), 2);
+        let binary_asset = loaded
+            .assets
+            .iter()
+            .find(|asset| asset.path == "assets/icon.bin")
+            .expect("binary asset should be indexed");
+        assert_eq!(binary_asset.mime_type, "application/octet-stream");
+        assert_eq!(binary_asset.size, 4);
+        assert_eq!(binary_asset.id.len(), 64);
+
+        let content = service
+            .load_addon_asset("binary-addon", &binary_asset.id)
+            .expect("indexed asset should load by opaque id");
+        assert_eq!(content.bytes, vec![0, 159, 146, 150]);
+        assert_eq!(content.mime_type, "application/octet-stream");
+
+        std::fs::write(
+            temp_dir
+                .join("addons")
+                .join("binary-addon")
+                .join("assets")
+                .join("icon.bin"),
+            [9, 9, 9, 9],
+        )
+        .unwrap();
+        let changed_asset_error = service
+            .load_addon_asset("binary-addon", &binary_asset.id)
+            .err()
+            .expect("same-size asset mutations must not pass as the indexed generation");
+        assert_eq!(
+            changed_asset_error,
+            "Addon asset changed after its package was indexed"
+        );
+
+        let svg_asset = loaded
+            .assets
+            .iter()
+            .find(|asset| asset.path == "dist/assets/logo.svg")
+            .expect("UTF-8 SVG should be indexed as an asset");
+        assert_eq!(svg_asset.mime_type, "image/svg+xml");
+        assert!(service
+            .load_addon_asset("binary-addon", "../../manifest.json")
+            .is_err());
+        assert!(
             temp_dir
                 .join("addons")
                 .join("binary-addon")
@@ -2085,6 +2395,121 @@ mod service_tests {
                 .exists(),
             "binary asset should be written to disk"
         );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_installed_wrapped_package_indexes_assets_from_its_package_root() {
+        let temp_dir = env::temp_dir().join("wealthfolio_test_wrapped_addon_asset");
+        if temp_dir.exists() {
+            std::fs::remove_dir_all(&temp_dir).ok();
+        }
+
+        let zip_data = build_test_addon_zip_owned(vec![
+            (
+                "wrapped/manifest.json".to_string(),
+                br#"{"id":"wrapped-addon","name":"Wrapped","version":"1.0.0","main":"dist/addon.js"}"#
+                    .to_vec(),
+            ),
+            (
+                "wrapped/dist/addon.js".to_string(),
+                b"export default function enable() {}".to_vec(),
+            ),
+            (
+                "wrapped/assets/config.bin".to_string(),
+                vec![4, 5, 6],
+            ),
+        ]);
+
+        let service = test_addon_service(&temp_dir);
+        service
+            .install_addon_zip(zip_data, true, vec![])
+            .await
+            .expect("wrapped addon should install");
+
+        let loaded = service
+            .load_addon_for_runtime("wrapped-addon")
+            .expect("wrapped addon should load from its package root");
+        assert!(loaded
+            .files
+            .iter()
+            .any(|file| file.name == "dist/addon.js" && file.is_main));
+        let asset = loaded
+            .assets
+            .iter()
+            .find(|asset| asset.path == "assets/config.bin")
+            .expect("wrapped asset should be indexed without its archive prefix");
+
+        // Asset loads must use the package root cached during runtime loading.
+        // Introducing another matching main file makes a fresh package-root scan
+        // ambiguous, so this catches regressions that rescan for every asset.
+        let duplicate_main = temp_dir
+            .join("addons")
+            .join("wrapped-addon")
+            .join("duplicate")
+            .join("dist")
+            .join("addon.js");
+        std::fs::create_dir_all(duplicate_main.parent().unwrap()).unwrap();
+        std::fs::write(&duplicate_main, "export default function duplicate() {}").unwrap();
+
+        let content = service
+            .load_addon_asset("wrapped-addon", &asset.id)
+            .expect("wrapped asset should load from the cached package index");
+        assert_eq!(content.bytes, vec![4, 5, 6]);
+
+        let uncached_service = test_addon_service(&temp_dir);
+        let invalid_id_error = uncached_service
+            .load_addon_asset("wrapped-addon", "../../manifest.json")
+            .err()
+            .expect("invalid asset ids should be rejected before package discovery");
+        assert_eq!(invalid_id_error, "Invalid addon asset id");
+
+        let error = uncached_service
+            .load_addon_asset("wrapped-addon", &asset.id)
+            .err()
+            .expect("a fresh service should detect the ambiguous package roots");
+        assert!(error.contains("Multiple addon package roots"));
+
+        let replacement_zip = build_test_addon_zip_owned(vec![
+            (
+                "replacement/manifest.json".to_string(),
+                br#"{"id":"wrapped-addon","name":"Wrapped","version":"1.1.0","main":"dist/addon.js"}"#
+                    .to_vec(),
+            ),
+            (
+                "replacement/dist/addon.js".to_string(),
+                b"export default function enable() {}".to_vec(),
+            ),
+            (
+                "replacement/assets/config.bin".to_string(),
+                vec![7, 8, 9],
+            ),
+        ]);
+        service
+            .install_addon_zip(replacement_zip, true, vec![])
+            .await
+            .expect("replacement addon should install");
+
+        let stale_asset_error = service
+            .load_addon_asset("wrapped-addon", &asset.id)
+            .err()
+            .expect("an asset id from the replaced package must not resolve against new bytes");
+        assert_eq!(stale_asset_error, "Addon asset not found");
+
+        let replacement = service
+            .load_addon_for_runtime("wrapped-addon")
+            .expect("replacement runtime should expose its own asset generation");
+        let replacement_asset = replacement
+            .assets
+            .iter()
+            .find(|candidate| candidate.path == "assets/config.bin")
+            .expect("replacement asset should be indexed");
+        assert_ne!(replacement_asset.id, asset.id);
+        let replacement_content = service
+            .load_addon_asset("wrapped-addon", &replacement_asset.id)
+            .expect("replacement asset should load by its new content-addressed id");
+        assert_eq!(replacement_content.bytes, vec![7, 8, 9]);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

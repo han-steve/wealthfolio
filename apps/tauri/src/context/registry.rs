@@ -3,8 +3,8 @@ use wealthfolio_ai::{AiProviderServiceTrait, ChatService};
 use wealthfolio_connect::BrokerSyncServiceTrait;
 use wealthfolio_core::{
     self, accounts, activities,
-    addons::AddonStorageRepositoryTrait,
-    assets::{self, AlternativeAssetServiceTrait},
+    addons::AddonService,
+    assets::{self, AlternativeAssetServiceTrait, AssetLogoServiceTrait},
     events::DomainEventSink,
     fx, goals, health, limits,
     lots::LotRepositoryTrait,
@@ -28,6 +28,13 @@ use super::TauriAiEnvironment;
 use crate::services::ConnectService;
 
 pub struct ServiceContext {
+    pub portfolio_tasks: crate::listeners::PortfolioTasks,
+    pub sync_approvals: crate::commands::device_sync::SyncApprovals,
+    pub sync_lifecycle: tokio::sync::Mutex<()>,
+    pub active: AtomicBool,
+    pub profile_id: uuid::Uuid,
+    pub data_root: std::path::PathBuf,
+    pub secret_store: Arc<dyn wealthfolio_core::secrets::SecretStore>,
     pub base_currency: Arc<RwLock<String>>,
     pub timezone: Arc<RwLock<String>>,
     pub rating_instance_id: Arc<String>,
@@ -65,6 +72,7 @@ pub struct ServiceContext {
     pub net_worth_service: Arc<dyn portfolio::net_worth::NetWorthServiceTrait>,
     pub sync_service: Arc<dyn BrokerSyncServiceTrait>,
     pub alternative_asset_service: Arc<dyn AlternativeAssetServiceTrait>,
+    pub asset_logo_service: Arc<dyn AssetLogoServiceTrait>,
     pub taxonomy_service: Arc<dyn taxonomies::TaxonomyServiceTrait>,
     pub connect_service: Arc<ConnectService>,
     pub ai_provider_service: Arc<dyn AiProviderServiceTrait>,
@@ -72,7 +80,7 @@ pub struct ServiceContext {
     pub agent_environment: Arc<dyn wealthfolio_agent_tools::AgentEnvironment>,
     pub mcp_audit_repository: Arc<McpAuditRepository>,
     pub pat_repository: Arc<PatRepository>,
-    pub addon_storage_repository: Arc<dyn AddonStorageRepositoryTrait>,
+    pub addon_service: Arc<AddonService>,
     pub device_enroll_service: Arc<DeviceEnrollService>,
     pub device_sync_runtime: Arc<DeviceSyncRuntimeState>,
     pub broker_sync_running: Arc<AtomicBool>,
@@ -225,6 +233,10 @@ impl ServiceContext {
         Arc::clone(&self.alternative_asset_service)
     }
 
+    pub fn asset_logo_service(&self) -> Arc<dyn AssetLogoServiceTrait> {
+        Arc::clone(&self.asset_logo_service)
+    }
+
     pub fn taxonomy_service(&self) -> Arc<dyn taxonomies::TaxonomyServiceTrait> {
         Arc::clone(&self.taxonomy_service)
     }
@@ -271,5 +283,11 @@ impl ServiceContext {
 
     pub fn health_service(&self) -> Arc<health::HealthService> {
         Arc::clone(&self.health_service)
+    }
+}
+
+impl ServiceContext {
+    pub fn is_active(&self) -> bool {
+        self.active.load(std::sync::atomic::Ordering::SeqCst)
     }
 }

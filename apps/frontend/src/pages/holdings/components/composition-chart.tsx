@@ -1,10 +1,16 @@
 import { RenderableChartContainer } from "@/components/renderable-chart-container";
+import { useBalancePrivacy } from "@/hooks/use-balance-privacy";
 import { usePersistentState } from "@/hooks/use-persistent-state";
 import { getBaseHoldingPerformancePercentForMode } from "@/lib/holding-performance";
 import { useSettingsContext } from "@/lib/settings-provider";
 import { Holding } from "@/lib/types";
-import { cn, parseLocalDate } from "@/lib/utils";
-import { AnimatedToggleGroup, formatAmount, formatPercent } from "@wealthfolio/ui";
+import { cn } from "@/lib/utils";
+import {
+  AmountDisplay,
+  AnimatedToggleGroup,
+  useDateFormatting,
+  useNumberFormatting,
+} from "@wealthfolio/ui";
 import { Button } from "@wealthfolio/ui/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@wealthfolio/ui/components/ui/card";
 import { EmptyPlaceholder } from "@wealthfolio/ui/components/ui/empty-placeholder";
@@ -14,7 +20,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@wealthfolio/ui/compone
 import { useMemo, useSyncExternalStore, type FC } from "react";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import { Tooltip as ChartTooltip, type TreemapNode, Treemap } from "recharts";
+import { Tooltip as ChartTooltip, Treemap, type TreemapNode } from "recharts";
 
 type ReturnType = "daily" | "pnl" | "return";
 type DisplayMode = "symbol" | "name";
@@ -157,6 +163,7 @@ const CustomizedContent: FC<CustomizedContentProps> = ({
   returnType = "daily",
   isDark = false,
 }) => {
+  const formatting = useNumberFormatting();
   const fontSize = Math.min(width, height) < 80 ? Math.min(width, height) * 0.16 : 13;
   const fontSize2 = Math.min(width, height) < 80 ? Math.min(width, height) * 0.14 : 12;
   const { fill: fillColor, isLightTile } = getTreemapColor(gain, returnType);
@@ -215,7 +222,7 @@ const CustomizedContent: FC<CustomizedContentProps> = ({
               fontSize: fontSize2,
             }}
           >
-            {gain > 0 ? "+" + formatPercent(gain) : formatPercent(gain)}
+            {gain > 0 ? "+" + formatting.formatPercent(gain) : formatting.formatPercent(gain)}
           </text>
         </>
       ) : null}
@@ -246,6 +253,10 @@ interface TooltipProps {
 }
 
 const CompositionTooltip = ({ active, payload, settings }: TooltipProps) => {
+  const numberFormatting = useNumberFormatting();
+  const dateFormatting = useDateFormatting();
+  const { isBalanceHidden } = useBalancePrivacy();
+
   const { t } = useTranslation();
   if (active && payload?.length) {
     const data = payload[0].payload;
@@ -261,7 +272,7 @@ const CompositionTooltip = ({ active, payload, settings }: TooltipProps) => {
             <div className="flex items-center justify-between">
               <span className="text-primary text-sm font-bold">{data.symbol}</span>
               <span className="text-muted-foreground text-xs">
-                {data.asOfDate ? parseLocalDate(data.asOfDate).toLocaleDateString() : ""}
+                {data.asOfDate ? dateFormatting.formatCalendarDate(data.asOfDate) : ""}
               </span>
             </div>
             <p className="text-muted-foreground text-xs leading-tight">{data.name}</p>
@@ -276,9 +287,12 @@ const CompositionTooltip = ({ active, payload, settings }: TooltipProps) => {
               <span className="text-muted-foreground pr-6 text-sm">
                 {t("holdings:market_value_label")}
               </span>
-              <span className="text-sm font-semibold">
-                {formatAmount(value, settings?.baseCurrency ?? "USD")}
-              </span>
+              <AmountDisplay
+                value={value}
+                currency={settings?.baseCurrency ?? "USD"}
+                isHidden={isBalanceHidden}
+                className="text-sm font-semibold"
+              />
             </div>
 
             {/* Gain/Loss */}
@@ -291,7 +305,7 @@ const CompositionTooltip = ({ active, payload, settings }: TooltipProps) => {
                 )}
               >
                 {isPositive ? "+" : ""}
-                {formatPercent(gain)}
+                {numberFormatting.formatPercent(gain)}
                 <span className="text-xs">{isPositive ? "↗" : "↘"}</span>
               </span>
             </div>
@@ -395,7 +409,7 @@ export function PortfolioComposition({ holdings, isLoading }: PortfolioCompositi
 
   return (
     <Card>
-      <CardHeader className="flex flex-row items-center justify-between space-y-0">
+      <CardHeader className="flex shrink-0 flex-row flex-wrap items-center justify-between gap-2 space-y-0">
         <div className="flex items-center space-x-2">
           <CardTitle className="text-muted-foreground text-sm font-medium uppercase tracking-wider">
             {t("holdings:composition")}
