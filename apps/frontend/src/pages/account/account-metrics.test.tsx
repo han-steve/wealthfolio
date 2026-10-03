@@ -131,6 +131,9 @@ describe("AccountMetrics", () => {
           { currency: "USD", valueBase: 50, valueLocal: 50, percentage: 66.67 },
           { currency: "CAD", valueBase: 25, valueLocal: 34, percentage: 33.33 },
         ]}
+        allTimePerformance={createPerformance({
+          summary: { ...createPerformance().summary!, amount: 40, amountStatus: "complete" },
+        })}
       />,
     );
 
@@ -171,6 +174,64 @@ describe("AccountMetrics", () => {
     expect(screen.getAllByText("N/A").length).toBeGreaterThanOrEqual(1);
     expect(screen.queryByText("gain-amount:25")).not.toBeInTheDocument();
     expect(screen.queryByText(/gain-percent:/)).not.toBeInTheDocument();
+  });
+
+  it("gates lifetime fields on all-time diagnostics while retaining complete unrealized P&L", () => {
+    const allTime = createPerformance({
+      dataQuality: {
+        status: "partial",
+        warnings: ["Performance attribution is incomplete for this period."],
+      },
+      summary: { ...createPerformance().summary!, amount: 40, amountStatus: "complete" },
+    });
+    render(
+      <AccountMetrics
+        valuation={createValuation({
+          investmentMarketValue: 125,
+          costBasis: 100,
+          totalValue: 200,
+          netContribution: 160,
+          basisStatus: "complete",
+        })}
+        performance={createPerformance({ dataQuality: { status: "ok" } })}
+        allTimePerformance={allTime}
+      />,
+    );
+    expect(screen.queryByText("value:USD:160")).not.toBeInTheDocument();
+    expect(screen.queryByText("gain-amount:40")).not.toBeInTheDocument();
+    expect(screen.getByText("gain-amount:25")).toBeInTheDocument();
+    expect(screen.getAllByText("N/A")).toHaveLength(2);
+    expect(
+      screen.getByText("Performance attribution is incomplete for this period."),
+    ).toBeInTheDocument();
+  });
+
+  it("does not use selected-period quality as lifetime evidence while the all-time query is pending", () => {
+    render(
+      <AccountMetrics
+        valuation={createValuation({ totalValue: 200, netContribution: 160 })}
+        performance={createPerformance({
+          summary: { ...createPerformance().summary!, amount: 40, amountStatus: "complete" },
+        })}
+      />,
+    );
+    expect(screen.queryByText("value:USD:160")).not.toBeInTheDocument();
+    expect(screen.queryByText("gain-amount:40")).not.toBeInTheDocument();
+  });
+
+  it("does not display stale lifetime values after an all-time query error", () => {
+    render(
+      <AccountMetrics
+        valuation={createValuation({ totalValue: 200, netContribution: 160 })}
+        allTimePerformance={createPerformance({
+          summary: { ...createPerformance().summary!, amount: 40, amountStatus: "complete" },
+        })}
+        allTimePerformanceFailed
+      />,
+    );
+    expect(screen.queryByText("value:USD:160")).not.toBeInTheDocument();
+    expect(screen.queryByText("gain-amount:40")).not.toBeInTheDocument();
+    expect(screen.getByText(/Error calculating performance data/)).toBeInTheDocument();
   });
 
   it("does not derive holdings P&L from raw valuation amounts", () => {

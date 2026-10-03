@@ -1,6 +1,11 @@
 import { parseLocalDate } from "@/lib/utils";
 import { formatZonedDateKey } from "@/features/spending/lib/timezone";
-import { getContributionLimit, getSnapshots, searchActivities } from "@/adapters";
+import {
+  calculatePerformanceSummary,
+  getContributionLimit,
+  getSnapshots,
+  searchActivities,
+} from "@/adapters";
 import { HistoryChart } from "@/components/history-chart";
 import type { ActivityDetails } from "@/lib/types";
 import {
@@ -43,11 +48,7 @@ import {
   HoldingType,
   isLiabilityAccountType,
 } from "@/lib/constants";
-import {
-  performanceSummaryReturn,
-  performancePeriodPnl,
-  simpleReturnFromNetContribution,
-} from "@/lib/performance";
+import { performanceSummaryReturn, simpleReturnFromNetContribution } from "@/lib/performance";
 import { getPerformanceDateRangeForRequest } from "@/lib/performance-date-range";
 import { QueryKeys } from "@/lib/query-keys";
 import { useSettingsContext } from "@/lib/settings-provider";
@@ -55,6 +56,7 @@ import {
   Account,
   AccountValuation,
   ContributionLimit,
+  PerformanceResult,
   SnapshotInfo,
   TimePeriod,
   TrackedItem,
@@ -100,6 +102,8 @@ import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom"
 import { AccountContributionLimit } from "./account-contribution-limit";
 import AccountHoldings from "./account-holdings";
 import AccountMetrics from "./account-metrics";
+import { accountLifetimeValues, accountPerformanceAmount } from "./account-performance-quality";
+import { AccountPerformanceWarnings } from "./account-performance-warnings";
 import {
   buildCashAuditReviewTarget,
   getCurrentNegativeCashRun,
@@ -454,6 +458,23 @@ const AccountPage = () => {
   });
 
   const accountPerformance = performanceResponse?.[0] || null;
+  const supportsLifetimePerformance = Boolean(accountTrackedItem) && !isHoldingsMode;
+
+  const { data: allTimeSummary, isError: allTimePerformanceFailed } = useQuery<
+    PerformanceResult,
+    Error
+  >({
+    queryKey: [QueryKeys.PERFORMANCE_SUMMARY, id, { period: "ALL", profile: "summary" }],
+    queryFn: () =>
+      calculatePerformanceSummary({ itemType: "account", itemId: id, profile: "summary" }),
+    enabled: supportsLifetimePerformance,
+    staleTime: 30 * 1000,
+    retry: false,
+  });
+  const allTimePerformance =
+    supportsLifetimePerformance && !allTimePerformanceFailed && allTimeSummary?.scope.id === id
+      ? allTimeSummary
+      : null;
 
   const { valuationHistory, isLoading: isValuationHistoryLoading } = useValuationHistory(
     dateRange,
@@ -574,14 +595,13 @@ const AccountPage = () => {
     );
   }, [appTimezone, cashAuditActivities, selectedCashAuditTarget]);
 
-  const frontendGainLossAmount = performancePeriodPnl(accountPerformance);
+  const frontendGainLossAmount = accountPerformanceAmount(accountPerformance);
   const frontendSummaryReturn = performanceSummaryReturn(accountPerformance);
-  const allTimeReturnAmount = metricsValuation
-    ? metricsValuation.totalValue - metricsValuation.netContribution
-    : null;
+  const lifetimeValues = accountLifetimeValues(metricsValuation, allTimePerformance);
+  const allTimeReturnAmount = lifetimeValues.returnAmount;
   const allTimeSimpleReturn = simpleReturnFromNetContribution(
     allTimeReturnAmount,
-    metricsValuation?.netContribution,
+    lifetimeValues.netContribution,
   );
   const gainLossAmountToDisplay =
     selectedIntervalCode === "ALL" && !isHoldingsMode
@@ -1084,6 +1104,11 @@ const AccountPage = () => {
                   </div>
                 </CardHeader>
                 <CardContent className="p-0">
+                  <AccountPerformanceWarnings
+                    performance={accountPerformance}
+                    label={selectedIntervalCode}
+                    className="px-6 pb-3"
+                  />
                   <div className="w-full p-0">
                     <div className="flex w-full flex-col">
                       <div className="h-120 w-full">
@@ -1120,6 +1145,8 @@ const AccountPage = () => {
                 <AccountMetrics
                   valuation={metricsValuation}
                   performance={accountPerformance}
+                  allTimePerformance={allTimePerformance}
+                  allTimePerformanceFailed={allTimePerformanceFailed}
                   cashCurrencySplit={liveCurrentValuation?.summary.cashCurrencySplit}
                   className="min-h-0 grow"
                   compact={showContributionLimitCard}

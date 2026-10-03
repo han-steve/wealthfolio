@@ -26,6 +26,8 @@ import React, { useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { useBalanceUpdate } from "./use-balance-update";
+import { accountLifetimeValues } from "./account-performance-quality";
+import { AccountPerformanceWarnings } from "./account-performance-warnings";
 
 interface EditableBalanceProps {
   account: AccountValuation;
@@ -85,6 +87,8 @@ const EditableBalance: React.FC<EditableBalanceProps> = ({ account, initialBalan
 interface AccountMetricsProps {
   valuation?: AccountValuation | null;
   performance?: PerformanceResult | null;
+  allTimePerformance?: PerformanceResult | null;
+  allTimePerformanceFailed?: boolean;
   cashCurrencySplit?: CurrentValuationSplit[];
   className?: string;
   compact?: boolean;
@@ -143,6 +147,8 @@ function CashCurrencyBreakdown({ cashCurrencySplit, displayCurrency }: CashCurre
 const AccountMetrics: React.FC<AccountMetricsProps> = ({
   valuation,
   performance,
+  allTimePerformance,
+  allTimePerformanceFailed,
   cashCurrencySplit,
   className,
   compact = false,
@@ -189,10 +195,23 @@ const AccountMetrics: React.FC<AccountMetricsProps> = ({
   const performanceCurrency = performance?.scope.currency || displayCurrency;
   const performancePnl = performancePeriodPnl(performance);
   const performanceReturn = performanceSummaryReturn(performance);
-  const allTimeReturnAmount = valuation.totalValue - valuation.netContribution;
-  const allTimeReturnValue = (
-    <GainAmount value={allTimeReturnAmount} currency={displayCurrency} className="text-sm" />
+  const lifetimeValues = accountLifetimeValues(
+    valuation,
+    allTimePerformanceFailed ? null : allTimePerformance,
   );
+  const unavailableValue = (
+    <span className="text-muted-foreground text-xs">{t("account:not_available")}</span>
+  );
+  const allTimeReturnValue =
+    lifetimeValues.returnAmount === null ? (
+      unavailableValue
+    ) : (
+      <GainAmount
+        value={lifetimeValues.returnAmount}
+        currency={displayCurrency}
+        className="text-sm"
+      />
+    );
   const unrealizedPnl = valuation.investmentMarketValue - valuation.costBasis;
   const canShowUnrealizedPnl = valuation.basisStatus === "complete";
   const unrealizedPnlValue = canShowUnrealizedPnl ? (
@@ -255,9 +274,12 @@ const AccountMetrics: React.FC<AccountMetricsProps> = ({
         },
         {
           label: t("account:net_contribution"),
-          value: (
-            <PrivacyAmount value={valuation?.netContribution || 0} currency={displayCurrency} />
-          ),
+          value:
+            lifetimeValues.netContribution === null ? (
+              unavailableValue
+            ) : (
+              <PrivacyAmount value={lifetimeValues.netContribution} currency={displayCurrency} />
+            ),
         },
         {
           label: t("account:cost_basis"),
@@ -337,6 +359,13 @@ const AccountMetrics: React.FC<AccountMetricsProps> = ({
             displayCurrency={displayCurrency}
           />
           <Separator />
+          {!isHoldingsMode && (
+            <AccountPerformanceWarnings
+              performance={allTimePerformance}
+              label={t("account:all_time_return")}
+              failed={allTimePerformanceFailed}
+            />
+          )}
           <div className={cn(compact ? "space-y-2.5" : "space-y-4", "text-sm")}>
             {rows.map(({ label, value }, idx) => (
               <div key={idx} className="flex justify-between">

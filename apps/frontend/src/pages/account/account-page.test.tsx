@@ -1,10 +1,11 @@
-import { getHoldingsList } from "@/adapters";
+import { calculatePerformanceSummary, getHoldingsList } from "@/adapters";
 import { useAccounts } from "@/hooks/use-accounts";
 import { useRecalculatePortfolioMutation } from "@/hooks/use-calculate-portfolio";
 import { useCurrentValuation } from "@/hooks/use-current-account-valuations";
 import { useIsMobileViewport } from "@/hooks/use-platform";
 import { useValuationHistory } from "@/hooks/use-valuation-history";
 import { useSettingsContext } from "@/lib/settings-provider";
+import { QueryKeys } from "@/lib/query-keys";
 import type {
   Account,
   AccountValuation,
@@ -20,8 +21,10 @@ import { useQuery } from "@tanstack/react-query";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import AccountPage from "./account-page";
+import AccountMetrics from "./account-metrics";
 
 vi.mock("@/adapters", () => ({
+  calculatePerformanceSummary: vi.fn(),
   getContributionLimit: vi.fn(),
   getHoldingsList: vi.fn(),
   getSnapshots: vi.fn(),
@@ -201,7 +204,12 @@ vi.mock("@wealthfolio/ui", async () => {
       Pencil: Icon,
       Plus: Icon,
     },
-    IntervalSelector: () => <div>interval-selector</div>,
+    IntervalSelector: ({ onIntervalSelect }: { onIntervalSelect: (value: string) => void }) => (
+      <div>
+        <button onClick={() => onIntervalSelect("ALL")}>All</button>
+        <button onClick={() => onIntervalSelect("3M")}>3M</button>
+      </div>
+    ),
     Page: Passthrough,
     PageContent: Passthrough,
     PageHeader: ({ children }: { children?: React.ReactNode }) => <header>{children}</header>,
@@ -213,6 +221,7 @@ vi.mock("@wealthfolio/ui", async () => {
     TooltipContent: Passthrough,
     TooltipProvider: Passthrough,
     TooltipTrigger: Passthrough,
+    useBalancePrivacy: () => ({ isBalanceHidden: false }),
   };
 });
 
@@ -295,7 +304,7 @@ vi.mock("./account-holdings", () => ({
 }));
 
 vi.mock("./account-metrics", () => ({
-  default: () => <div>account-metrics</div>,
+  default: vi.fn(() => <div>account-metrics</div>),
 }));
 
 vi.mock("./account-snapshot-history", () => ({
@@ -311,10 +320,25 @@ const mockUseCalculatePerformanceHistory = vi.mocked(useCalculatePerformanceHist
 const mockUseActivitySearch = vi.mocked(useActivitySearch);
 const mockUseQuery = vi.mocked(useQuery);
 const mockUseRecalculatePortfolioMutation = vi.mocked(useRecalculatePortfolioMutation);
+let allTimeQuery: { data?: PerformanceResult; isError: boolean; isLoading: boolean };
 
 describe("AccountPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    allTimeQuery = { data: createPerformanceResult(), isError: false, isLoading: false };
+
+    mockUseValuationHistory.mockReturnValue({
+      valuationHistory: [createHistoricalValuation({ totalValue: 200, netContribution: 160 })],
+      isLoading: false,
+    } as ReturnType<typeof useValuationHistory>);
+    mockUseCurrentValuation.mockReturnValue({
+      currentValuation: {
+        summary: createCurrentSummary({ totalValueBase: 200 }),
+        accounts: [createCurrentAccountValuation({ totalValue: 200 })],
+      },
+      isLoading: false,
+      error: null,
+    } as unknown as ReturnType<typeof useCurrentValuation>);
 
     mockUseSettingsContext.mockReturnValue({
       settings: createSettings(),
@@ -340,6 +364,9 @@ describe("AccountPage", () => {
 
     mockUseQuery.mockImplementation((options: unknown) => {
       const queryKey = (options as { queryKey?: unknown[] })?.queryKey;
+      if (queryKey?.[0] === QueryKeys.PERFORMANCE_SUMMARY) {
+        return allTimeQuery as ReturnType<typeof useQuery>;
+      }
       if (Array.isArray(queryKey) && queryKey[0] === "holdings") {
         return {
           data: [createCashHolding()],
@@ -356,6 +383,88 @@ describe("AccountPage", () => {
     });
 
     vi.mocked(getHoldingsList).mockResolvedValue([createCashHolding()]);
+  });
+
+  it("requests genuine all-time summary quality without the selected interval's dates", async () => {
+    render(<AccountPage />);
+    const options = mockUseQuery.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[0] === QueryKeys.PERFORMANCE_SUMMARY)!;
+    expect(options.enabled).toBe(true);
+    expect(options.queryKey).toEqual([
+      QueryKeys.PERFORMANCE_SUMMARY,
+      "account-1",
+      { period: "ALL", profile: "summary" },
+    ]);
+    await (options.queryFn as () => Promise<PerformanceResult>)();
+    expect(calculatePerformanceSummary).toHaveBeenCalledExactlyOnceWith({
+      itemType: "account",
+      itemId: "account-1",
+      profile: "summary",
+    });
+  });
+
+  it("keeps all-time quality independent of a healthy selected period and gates the ALL headline", () => {
+    allTimeQuery.data!.dataQuality = {
+      status: "partial",
+      warnings: ["Performance attribution is incomplete for this period."],
+    };
+    render(<AccountPage />);
+    expect(vi.mocked(AccountMetrics).mock.lastCall?.[0].allTimePerformance).toBe(allTimeQuery.data);
+    expect(screen.getByText("gain-amount:40")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.queryByText("gain-amount:40")).not.toBeInTheDocument();
+    expect(screen.queryByText("gain-percent:0.25")).not.toBeInTheDocument();
+    expect(screen.getByText("value:USD:200")).toBeInTheDocument();
+  });
+
+  it("explains incomplete selected-period attribution without suppressing valid TWR or healthy lifetime data", () => {
+    const selected = createPerformanceResult();
+    selected.dataQuality = {
+      status: "partial",
+      warnings: ["Performance attribution is incomplete for this period."],
+    };
+    mockUseCalculatePerformanceHistory.mockReturnValue({
+      data: [selected],
+      isLoading: false,
+      hasErrors: false,
+      errorMessages: [],
+    } as unknown as ReturnType<typeof useCalculatePerformanceHistory>);
+    render(<AccountPage />);
+    expect(screen.queryByText("gain-amount:40")).not.toBeInTheDocument();
+    expect(screen.getByText("gain-percent:0.1")).toBeInTheDocument();
+    expect(
+      screen.getByText("Performance attribution is incomplete for this period."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "All" }));
+    expect(screen.getByText("gain-amount:40")).toBeInTheDocument();
+    expect(screen.getByText("gain-percent:0.25")).toBeInTheDocument();
+  });
+
+  it.each(["loading", "error", "wrong-account"])(
+    "does not reuse lifetime values on %s",
+    (state) => {
+      if (state === "loading") allTimeQuery = { data: undefined, isError: false, isLoading: true };
+      if (state === "error") allTimeQuery.isError = true;
+      if (state === "wrong-account") allTimeQuery.data!.scope.id = "another-account";
+      render(<AccountPage />);
+      expect(vi.mocked(AccountMetrics).mock.lastCall?.[0].allTimePerformance).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "All" }));
+      expect(screen.queryByText("gain-amount:40")).not.toBeInTheDocument();
+      expect(screen.getByText("value:USD:200")).toBeInTheDocument();
+    },
+  );
+
+  it("does not request transaction lifetime quality for holdings-mode accounts", () => {
+    mockUseAccounts.mockReturnValue({
+      accounts: [{ ...createAccount(), trackingMode: "HOLDINGS" }],
+      isLoading: false,
+    } as unknown as ReturnType<typeof useAccounts>);
+    render(<AccountPage />);
+    const options = mockUseQuery.mock.calls
+      .map(([options]) => options)
+      .find((options) => options.queryKey[0] === QueryKeys.PERFORMANCE_SUMMARY)!;
+    expect(options.enabled).toBe(false);
   });
 
   it("displays live current account valuation instead of stale historical valuation", () => {
@@ -651,6 +760,17 @@ function createPerformanceResult(): PerformanceResult {
     },
     risk: {},
     dataQuality: { status: "ok", warnings: [] },
+    summary: {
+      amount: 40,
+      percent: 0.1,
+      method: "timeWeighted",
+      basis: "marketValue",
+      quality: "ok",
+      amountStatus: "complete",
+      percentStatus: "complete",
+      basisStatus: "notApplicable",
+      reasons: [],
+    },
     series: [],
     period: { startDate: null, endDate: null },
   };
