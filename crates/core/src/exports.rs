@@ -320,25 +320,27 @@ fn records_to_csv<T: Serialize>(records: &[T]) -> Result<String> {
                 key.as_str()
             }
         })
-        .map(json_string)
-        .collect::<Result<Vec<_>>>()?;
-
-    let data_rows = rows
-        .iter()
-        .map(|row| {
-            source_keys
-                .iter()
-                .map(|key| cell_value(row.get(key)))
-                .map(|cell| cell.and_then(|value| json_string(&value)))
-                .collect::<Result<Vec<_>>>()
-                .map(|fields| fields.join(","))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    Ok(std::iter::once(headers.join(","))
-        .chain(data_rows)
-        .collect::<Vec<_>>()
-        .join("\n"))
+        .collect::<Vec<_>>();
+    let mut writer = csv::WriterBuilder::new()
+        .quote_style(csv::QuoteStyle::Always)
+        .from_writer(Vec::new());
+    writer
+        .write_record(headers)
+        .map_err(|e| Error::Unexpected(format!("Failed to write export CSV header: {}", e)))?;
+    for row in &rows {
+        let fields = source_keys
+            .iter()
+            .map(|key| cell_value(row.get(key)))
+            .collect::<Result<Vec<_>>>()?;
+        writer
+            .write_record(fields)
+            .map_err(|e| Error::Unexpected(format!("Failed to write export CSV row: {}", e)))?;
+    }
+    let content = writer
+        .into_inner()
+        .map_err(|e| Error::Unexpected(format!("Failed to finish export CSV: {}", e)))?;
+    String::from_utf8(content)
+        .map_err(|e| Error::Unexpected(format!("Invalid UTF-8 in export CSV: {}", e)))
 }
 
 struct OrderedRow(Vec<(String, Value)>);
@@ -417,11 +419,6 @@ fn cell_value(value: Option<&Value>) -> Result<String> {
                 .map_err(|e| Error::Unexpected(format!("Failed to serialize export cell: {}", e)))
         }
     }
-}
-
-fn json_string(value: &str) -> Result<String> {
-    serde_json::to_string(value)
-        .map_err(|e| Error::Unexpected(format!("Failed to serialize export CSV field: {}", e)))
 }
 
 #[cfg(test)]
@@ -569,12 +566,12 @@ mod tests {
 
         assert_eq!(
             csv,
-            "\"symbol\",\"name\",\"quantity\"\n\"AAPL\",\"Apple Inc.\",\"10\""
+            "\"symbol\",\"name\",\"quantity\"\n\"AAPL\",\"Apple Inc.\",\"10\"\n"
         );
     }
 
     #[test]
-    fn csv_export_uses_json_string_escaping() {
+    fn csv_export_round_trips_quotes_commas_and_newlines() {
         let rows = vec![NoteRow {
             id: 1,
             description: "Item with \"quotes\"".to_string(),
@@ -585,8 +582,37 @@ mod tests {
 
         assert_eq!(
             csv,
-            "\"id\",\"description\",\"notes\"\n\"1\",\"Item with \\\"quotes\\\"\",\"Comma, and new\\nline\""
+            "\"id\",\"description\",\"notes\"\n\"1\",\"Item with \"\"quotes\"\"\",\"Comma, and new\nline\"\n"
         );
+        let parsed = csv::Reader::from_reader(csv.as_bytes())
+            .deserialize::<std::collections::HashMap<String, String>>()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["description"], rows[0].description);
+        assert_eq!(parsed[0]["notes"], rows[0].notes);
+    }
+
+    #[test]
+    fn csv_export_round_trips_structured_metadata_and_missing_fields() {
+        let rows = vec![
+            serde_json::json!({"id": "one", "metadata": {"description": "quoted \"item\", with comma", "tags": ["x", "y"]}, "notes": "CR\r\nLF and \\slash"}),
+            serde_json::json!({"id": "two", "metadata": null, "enabled": true}),
+        ];
+        let content = records_to_csv(&rows).unwrap();
+        let parsed = csv::Reader::from_reader(content.as_bytes())
+            .deserialize::<std::collections::HashMap<String, String>>()
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<Value>(&parsed[0]["metadata"]).unwrap(),
+            rows[0]["metadata"]
+        );
+        assert_eq!(parsed[0]["notes"], rows[0]["notes"]);
+        assert_eq!(parsed[1]["metadata"], "");
+        assert_eq!(parsed[1]["notes"], "");
+        assert_eq!(parsed[1]["enabled"], "true");
     }
 
     #[test]
