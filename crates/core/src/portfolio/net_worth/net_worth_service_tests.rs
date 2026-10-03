@@ -1142,6 +1142,30 @@ async fn test_single_investment_account() {
 }
 
 #[tokio::test]
+async fn test_net_worth_uses_latest_timestamp_within_quote_day() {
+    let date = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
+    let early = create_test_quote("FUND", dec!(50), date, "USD");
+    let mut late = create_test_quote("FUND", dec!(51), date, "USD");
+    late.timestamp = early.timestamp + chrono::Duration::milliseconds(10);
+    let future = create_test_quote("FUND", dec!(99), date.succ_opt().unwrap(), "USD");
+
+    for quotes in [
+        vec![early.clone(), late.clone(), future.clone()],
+        vec![future, late, early],
+    ] {
+        let account = create_test_account("acc1", "SECURITIES", "USD");
+        let asset = create_test_asset("FUND", AssetKind::Investment, "USD");
+        let position = create_test_position("acc1", "FUND", dec!(10), dec!(400), "USD");
+        let snapshot = create_test_snapshot("acc1", vec![position], HashMap::new());
+        let service = create_net_worth_service(vec![account], vec![asset], vec![snapshot], quotes);
+
+        let result = service.get_net_worth(date).await.unwrap();
+        assert_eq!(result.assets.total, dec!(510));
+        assert_eq!(result.net_worth, dec!(510));
+    }
+}
+
+#[tokio::test]
 async fn test_net_worth_uses_stored_investment_valuation_and_keeps_alternatives() {
     let date = NaiveDate::from_ymd_opt(2024, 1, 15).unwrap();
     let account = create_test_account("account-1", "SECURITIES", "USD");

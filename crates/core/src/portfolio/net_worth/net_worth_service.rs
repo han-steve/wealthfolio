@@ -121,7 +121,7 @@ impl NetWorthService {
         quotes
             .iter()
             .filter(|q| q.timestamp.date_naive() <= date)
-            .max_by_key(|q| q.timestamp.date_naive())
+            .max_by_key(|q| q.timestamp)
             .map(|q| (q.close, q.currency.clone(), q.timestamp.date_naive()))
     }
 
