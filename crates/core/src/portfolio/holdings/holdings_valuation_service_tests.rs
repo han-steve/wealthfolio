@@ -1090,6 +1090,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn security_valuation_same_currency_ignores_stale_seeded_base_basis() {
+        for (quantity, local_basis, stale_base_basis) in [
+            (dec!(10), dec!(1000), dec!(600)),
+            (dec!(10), Decimal::ZERO, dec!(600)),
+            (dec!(-10), dec!(-1000), dec!(-600)),
+        ] {
+            let (_fx_service, market_data_service, valuation_service) = setup_test_env();
+            market_data_service.add_quote_pair(
+                "BASIS",
+                create_quote("2024-01-10", dec!(110), "USD"),
+                None,
+            );
+            let mut holdings = vec![create_holding(
+                "h-same-currency",
+                HoldingType::Security,
+                "BASIS",
+                quantity,
+                "USD",
+                "USD",
+                Some(local_basis),
+                None,
+            )];
+            holdings[0].cost_basis.as_mut().unwrap().base = stale_base_basis;
+
+            valuation_service
+                .calculate_holdings_live_valuation(&mut holdings)
+                .await
+                .unwrap();
+
+            let holding = &holdings[0];
+            let basis = holding.cost_basis.as_ref().unwrap();
+            assert_eq!(basis.local, local_basis);
+            assert_eq!(basis.base, local_basis);
+            let gain = holding.unrealized_gain.as_ref().unwrap();
+            assert_eq!(gain.base, gain.local);
+            assert_eq!(gain.local, quantity * dec!(110) - local_basis);
+        }
+    }
+
+    #[tokio::test]
     async fn issue_408_preserves_historical_base_cost_basis() {
         let (fx_service, market_data_service, valuation_service) = setup_test_env();
         fx_service.add_rate("USD", "EUR", dec!(0.8));

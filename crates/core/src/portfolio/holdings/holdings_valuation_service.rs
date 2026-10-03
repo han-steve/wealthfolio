@@ -233,7 +233,11 @@ impl HoldingsValuationService {
 
         // --- Calculate Base Cost Basis (If applicable) ---
         if let Some(cost_basis) = &mut holding.cost_basis {
-            if cost_basis.base.is_zero() && !cost_basis.local.is_zero() {
+            // Historical FX basis is meaningful only across different currencies.
+            // A stale lot seed must not override the current same-currency basis.
+            if pos_currency == base_currency {
+                cost_basis.base = cost_basis.local;
+            } else if cost_basis.base.is_zero() && !cost_basis.local.is_zero() {
                 cost_basis.base = cost_basis.local * fx_rate_local_to_base;
             }
         } else {
