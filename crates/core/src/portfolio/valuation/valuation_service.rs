@@ -670,6 +670,28 @@ impl ValuationService {
             .insert(date, rate);
     }
 
+    fn group_scoped_valuation_histories(
+        account_ids: &[String],
+        records: Vec<DailyAccountValuation>,
+    ) -> CoreResult<HashMap<String, Vec<DailyAccountValuation>>> {
+        let mut by_account: HashMap<String, Vec<DailyAccountValuation>> = HashMap::new();
+        for record in records {
+            by_account
+                .entry(record.account_id.clone())
+                .or_default()
+                .push(record);
+        }
+        let histories: Vec<_> = account_ids
+            .iter()
+            .map(|account_id| by_account.remove(account_id).unwrap_or_default())
+            .collect();
+
+        // Mixed tracking modes and scoped FX attribution need the same coverage
+        // gate as aggregated performance; gaps are not zero-valued positions.
+        Self::validate_scoped_history_completeness(account_ids, &histories)?;
+        Ok(account_ids.iter().cloned().zip(histories).collect())
+    }
+
     fn aggregate_scoped_valuations(
         scope_id: &str,
         account_ids: &[String],
@@ -3068,18 +3090,7 @@ impl ValuationServiceTrait for ValuationService {
             .valuation_repository
             .get_historical_valuations_for_accounts(account_ids, start_date_opt, end_date_opt)?;
 
-        let mut histories = HashMap::with_capacity(account_ids.len());
-        for account_id in account_ids {
-            histories.insert(account_id.clone(), Vec::new());
-        }
-        for record in records {
-            histories
-                .entry(record.account_id.clone())
-                .or_default()
-                .push(record);
-        }
-
-        Ok(histories)
+        Self::group_scoped_valuation_histories(account_ids, records)
     }
 
     fn get_latest_valuations(
@@ -6710,6 +6721,94 @@ mod tests {
             Decimal::ZERO,
             Decimal::ZERO,
         )
+    }
+
+    #[test]
+    fn per_account_history_rejects_interior_gaps_for_mixed_performance() {
+        let error = ValuationService::group_scoped_valuation_histories(
+            &["transactions".into(), "holdings".into()],
+            vec![
+                chart_row("transactions", 1, dec!(100)),
+                chart_row("holdings", 1, dec!(50)),
+                chart_row("holdings", 2, dec!(55)),
+                chart_row("transactions", 3, dec!(110)),
+                chart_row("holdings", 3, dec!(60)),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("account 'transactions'"));
+        assert!(error.to_string().contains("2026-05-02"));
+    }
+
+    #[test]
+    fn per_account_history_rejects_stale_nonzero_tails() {
+        let error = ValuationService::group_scoped_valuation_histories(
+            &["holdings".into(), "transactions".into()],
+            vec![
+                chart_row("holdings", 1, dec!(50)),
+                chart_row("transactions", 1, dec!(100)),
+                chart_row("transactions", 2, dec!(110)),
+            ],
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("account 'holdings'"));
+    }
+
+    #[test]
+    fn per_account_history_preserves_complete_values_and_flow_provenance() {
+        let mut posted = chart_row("transactions", 2, dec!(110));
+        posted.external_inflow_base = dec!(10);
+        posted.external_flow_source = ExternalFlowSource::CashAmount;
+        let histories = ValuationService::group_scoped_valuation_histories(
+            &["holdings".into(), "transactions".into()],
+            vec![
+                chart_row("transactions", 1, dec!(100)),
+                chart_row("holdings", 1, dec!(50)),
+                posted,
+                chart_row("holdings", 2, dec!(60)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(histories["transactions"].len(), 2);
+        assert_eq!(histories["holdings"].len(), 2);
+        assert_eq!(histories["transactions"][1].total_value_base, dec!(110));
+        assert_eq!(histories["transactions"][1].external_inflow_base, dec!(10));
+        assert_eq!(
+            histories["transactions"][1].external_flow_source,
+            ExternalFlowSource::CashAmount
+        );
+    }
+
+    #[test]
+    fn per_account_history_allows_pre_inception_and_zero_closed_tails() {
+        let histories = ValuationService::group_scoped_valuation_histories(
+            &["closed".into(), "new".into()],
+            vec![
+                chart_row("closed", 1, dec!(100)),
+                chart_row("closed", 2, Decimal::ZERO),
+                chart_row("new", 2, dec!(50)),
+                chart_row("new", 3, dec!(60)),
+            ],
+        )
+        .unwrap();
+        assert_eq!(histories["closed"].len(), 2);
+        assert_eq!(histories["new"].len(), 2);
+    }
+
+    #[test]
+    fn per_account_history_preserves_empty_accounts_without_fabricating_values() {
+        let histories = ValuationService::group_scoped_valuation_histories(
+            &["empty".into(), "valued".into()],
+            vec![chart_row("valued", 1, dec!(100))],
+        )
+        .unwrap();
+        assert!(histories["empty"].is_empty());
+        assert_eq!(histories["valued"].len(), 1);
+        assert!(
+            ValuationService::group_scoped_valuation_histories(&[], vec![])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     fn chart_totals(histories: Vec<Vec<DailyAccountValuation>>) -> Vec<DailyAccountValuation> {
