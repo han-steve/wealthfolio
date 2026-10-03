@@ -1844,6 +1844,20 @@ export default function PerformancePage() {
             </CardHeader>
             <CardContent className={cn("min-h-0 flex-1", isMobile ? "p-2" : "p-3 sm:p-6")}>
               <div className="flex h-full min-h-0 flex-col gap-2">
+                {Boolean(selectedItemData?.warnings.length) && (
+                  <details className="border-warning/40 bg-warning/5 rounded-md border px-3 py-2 text-xs">
+                    <summary className="text-warning cursor-pointer font-medium">
+                      {t("common:component.issue_warning", {
+                        count: selectedItemData?.warnings.length,
+                      })}
+                    </summary>
+                    <ul className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                      {selectedItemData?.warnings.map((warning) => (
+                        <li key={warning}>{warning}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
                 {comparisonNotice && (
                   <div className="border-border/70 bg-muted/20 flex items-start gap-2 rounded-md border border-dashed px-3 py-2 text-xs">
                     <div className="border-border bg-background mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full">

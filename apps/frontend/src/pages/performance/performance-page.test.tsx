@@ -372,9 +372,13 @@ describe("PerformancePage shared scope", () => {
     const trigger = await screen.findByRole("button", {
       name: /calculation note for/i,
     });
-    expect(screen.queryByText(TWR_WARNING)).toBeNull();
+    const warningSummary = screen.getByText("1 warning");
+    expect(warningSummary).toBeVisible();
+    await userEvent.click(warningSummary);
+    expect(screen.getByText(TWR_WARNING)).toBeVisible();
+    await userEvent.click(warningSummary);
     await userEvent.click(trigger);
-    expect(await screen.findByText(TWR_WARNING)).toBeInTheDocument();
+    expect(screen.getAllByText(TWR_WARNING)).toHaveLength(2);
   });
 
   it("does not request unvalidated persisted scopes during a cold load", async () => {

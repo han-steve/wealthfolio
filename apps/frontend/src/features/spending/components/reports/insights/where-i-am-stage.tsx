@@ -23,7 +23,7 @@ import {
 
 import { useSpendingSettings } from "../../../hooks/use-spending-settings";
 import { rollUpToTopLevel, topCategoryId } from "../../../lib/category-rollup";
-import { getZonedDateParts } from "../../../lib/timezone";
+import { addCalendarMonths, getZonedDateParts } from "../../../lib/timezone";
 import type { ReportsRange } from "../../../lib/reports-period";
 import type { BudgetCategoryRow, BudgetSnapshot } from "../../../types/budget";
 import type { PaceState } from "../../../types/insight";
@@ -525,7 +525,8 @@ const SpentThisPeriodCard: FC<SpentThisPeriodCardProps> = ({
     [breakdown, taxonomyCategories, spent, t],
   );
 
-  const periodLabel = priorRange
+  const startsAtMonthBoundary = getZonedDateParts(range.start, timezone).day === 1;
+  const periodLabel = priorRange || !startsAtMonthBoundary
     ? t("spending:whereIAm.spentThisPeriod")
     : range.months <= 1
       ? t("spending:whereIAm.spentThisMonth")
@@ -550,10 +551,9 @@ const SpentThisPeriodCard: FC<SpentThisPeriodCardProps> = ({
       });
     }
     if (range.months <= 1) {
-      const prev = new Date(range.start);
-      prev.setMonth(prev.getMonth() - 1);
+      const prev = addCalendarMonths(getZonedDateParts(range.start, timezone), -1);
       return t("spending:whereIAm.vsMonth", {
-        month: formatMonthName(prev, dateFormatting).slice(0, 3),
+        month: dateFormatting.formatCalendarDate(prev, { month: "short" }),
       });
     }
     return t("spending:whereIAm.vsPrior");
@@ -1120,6 +1120,20 @@ function BreakdownCanvas({
   );
 
   const totalCats = counts.all;
+  const filteredContext = useMemo(() => {
+    if (filter === "all") return { priorBreakdown, budgetRows, groupRows };
+    const meta = new Map(taxonomyCategories.map((category) => [category.id, category]));
+    const allowed = new Set(filteredBreakdown.map((row) => topCategoryId(row.categoryId, meta)));
+    const includes = (row: { categoryId: string }) =>
+      allowed.has(topCategoryId(row.categoryId, meta));
+    return {
+      priorBreakdown: priorBreakdown.filter(includes),
+      budgetRows: budgetRows.filter(includes),
+      groupRows: groupRows
+        .map((row) => ({ ...row, categories: row.categories.filter(includes) }))
+        .filter((row) => row.categories.length > 0),
+    };
+  }, [filter, filteredBreakdown, priorBreakdown, budgetRows, groupRows, taxonomyCategories]);
   const shownCats = useMemo(
     () => countTopLevel(filteredBreakdown, taxonomyCategories),
     [filteredBreakdown, taxonomyCategories],
@@ -1220,9 +1234,9 @@ function BreakdownCanvas({
       <div className="md:border-border/60 md:bg-card/40 md:overflow-hidden md:rounded-2xl md:border md:backdrop-blur-xl">
         <CategoryHierarchyTable
           breakdown={filteredBreakdown}
-          priorBreakdown={priorBreakdown}
-          budgetRows={budgetRows}
-          groupRows={groupRows}
+          priorBreakdown={filteredContext.priorBreakdown}
+          budgetRows={filteredContext.budgetRows}
+          groupRows={filteredContext.groupRows}
           taxonomyCategories={taxonomyCategories}
           sort={sort}
           currency={currency}
