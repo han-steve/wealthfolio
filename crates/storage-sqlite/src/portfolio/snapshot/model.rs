@@ -80,6 +80,17 @@ impl TryFrom<AccountStateSnapshotDB> for AccountStateSnapshot {
                     db.snapshot_date, db.account_id, error
                 ))
             })?;
+        let calculated_at = chrono::DateTime::parse_from_rfc3339(&db.calculated_at)
+            .map(|date| date.naive_utc())
+            .or_else(|_| {
+                NaiveDateTime::parse_from_str(&db.calculated_at, "%Y-%m-%d %H:%M:%S%.f")
+            })
+            .map_err(|error| {
+                StorageError::SerializationError(format!(
+                    "Invalid snapshot calculated_at '{}' for account '{}': {}",
+                    db.calculated_at, db.account_id, error
+                ))
+            })?;
 
         Ok(AccountStateSnapshot {
             id: db.id,
@@ -95,18 +106,7 @@ impl TryFrom<AccountStateSnapshotDB> for AccountStateSnapshot {
                 .unwrap_or_default(),
             cash_total_base_currency: Decimal::from_str(&db.cash_total_base_currency)
                 .unwrap_or_default(),
-            calculated_at: NaiveDateTime::parse_from_str(
-                &db.calculated_at,
-                "%Y-%m-%dT%H:%M:%S%.fZ",
-            )
-            .unwrap_or_else(|e| {
-                log::error!(
-                    "Failed to parse DB calculated_at '{}': {}",
-                    db.calculated_at,
-                    e
-                );
-                Utc::now().naive_utc()
-            }),
+            calculated_at,
             source: serde_json::from_str(&format!("\"{}\"", db.source))
                 .unwrap_or(SnapshotSource::Calculated),
         })
@@ -268,6 +268,38 @@ mod tests {
             .to_string()
             .contains("Invalid snapshot date 'not-a-date'"));
         assert!(error.to_string().contains("account-1"));
+    }
+
+    #[test]
+    fn snapshot_calculated_at_preserves_offsets_and_legacy_utc_dates() {
+        let expected = NaiveDateTime::parse_from_str(
+            "2025-04-12 17:30:25.123456",
+            "%Y-%m-%d %H:%M:%S%.f",
+        )
+        .unwrap();
+        for date in [
+            "2025-04-12T17:30:25.123456Z",
+            "2025-04-12T17:30:25.123456+00:00",
+            "2025-04-12T10:30:25.123456-07:00",
+            "2025-04-12 17:30:25.123456",
+        ] {
+            let mut row = AccountStateSnapshotDB::from(AccountStateSnapshot::default());
+            row.calculated_at = date.to_string();
+            assert_eq!(
+                AccountStateSnapshot::try_from(row).unwrap().calculated_at,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn invalid_snapshot_calculated_at_is_not_replaced_with_now() {
+        let mut row = AccountStateSnapshotDB::from(AccountStateSnapshot::default());
+        row.calculated_at = "not-a-timestamp".to_string();
+        assert!(AccountStateSnapshot::try_from(row)
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid snapshot calculated_at"));
     }
 }
 
