@@ -10,6 +10,22 @@ const meta = (overrides: Record<string, CategoryMeta> = {}) =>
   ]);
 
 describe("buildWhereItWentRows", () => {
+  it("retains refunds so displayed rows reconcile to net spending", () => {
+    const rows = buildWhereItWentRows({
+      spendingBreakdown: [
+        { categoryId: "cat_groceries", amount: 100, count: 2 },
+        { categoryId: "cat_rent", amount: -150, count: 1 },
+      ],
+      priorSpendingBreakdown: [],
+      categoriesMeta: meta(),
+      totalSaved: 0,
+      priorSaved: 0,
+      uncategorizedLabel: "Uncategorized",
+      savingsLabel: "Saving",
+    });
+    expect(rows.reduce((sum, row) => sum + row.amount, 0)).toBe(-50);
+    expect(rows.find((row) => row.id === "cat_rent")?.amount).toBe(-150);
+  });
   it("appends a savings row when money was set aside this period", () => {
     const rows = buildWhereItWentRows({
       spendingBreakdown: [{ categoryId: "cat_groceries", amount: 100, count: 2 }],

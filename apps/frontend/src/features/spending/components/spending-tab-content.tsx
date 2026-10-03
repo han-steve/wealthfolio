@@ -181,7 +181,7 @@ function spendingIntervalData(code: SpendingDashboardPeriod, timezone?: string |
       case "YTD":
         return { start: { year: today.year, month: 1, day: 1 }, end: today };
       case "1Y":
-        return { start: { ...today, year: today.year - 1 }, end: today };
+        return { start: addCalendarMonths(today, -12), end: today };
     }
   })();
 
@@ -1405,7 +1405,6 @@ interface CategoryTreemapNodeMonoProps extends CategoryTreemapNodeProps {
 
 function CategoryTreemapMono({
   rows,
-  total,
   currency,
   themeColor,
   hasNoIncludedAccounts,
@@ -1422,15 +1421,18 @@ function CategoryTreemapMono({
   const numberFormatting = useNumberFormatting();
   const navigate = useNavigate();
 
-  if (rows.length === 0 || total <= 0) {
+  if (rows.length === 0) {
     return <WhereItWentEmptyState hasNoIncludedAccounts={hasNoIncludedAccounts} />;
   }
 
-  const top = rows.slice(0, 8);
-  const restAmount = rows.slice(8).reduce((s, r) => s + r.amount, 0);
+  const positiveRows = rows.filter((row) => row.amount > 0);
+  const top = [...positiveRows.slice(0, 8), ...rows.filter((row) => row.amount < 0)];
+  const restAmount = positiveRows.slice(8).reduce((s, r) => s + r.amount, 0);
+  const magnitude = rows.reduce((sum, row) => sum + Math.abs(row.amount), 0);
   const data: {
     name: string;
     amount: number;
+    weight: number;
     fill: string;
     accent: string | null;
     id: string;
@@ -1438,19 +1440,21 @@ function CategoryTreemapMono({
   }[] = top.map((r) => ({
     name: r.name,
     amount: r.amount,
+    weight: Math.abs(r.amount),
     fill: themeColor,
     accent: r.color,
     id: r.id,
-    pct: total > 0 ? (r.amount / total) * 100 : 0,
+    pct: magnitude > 0 ? (Math.abs(r.amount) / magnitude) * 100 : 0,
   }));
   if (restAmount > 0) {
     data.push({
       name: t("spending:hero.other"),
       amount: restAmount,
+      weight: restAmount,
       fill: themeColor,
       accent: null,
       id: "__other__",
-      pct: total > 0 ? (restAmount / total) * 100 : 0,
+      pct: magnitude > 0 ? (restAmount / magnitude) * 100 : 0,
     });
   }
 
@@ -1460,7 +1464,7 @@ function CategoryTreemapMono({
         <ResponsiveContainer width="100%" height="100%">
           <Treemap
             data={data}
-            dataKey="amount"
+            dataKey="weight"
             aspectRatio={4 / 3}
             stroke="transparent"
             content={
@@ -1671,8 +1675,9 @@ function CategoryRankedBar({
     const categorizedSum = rows.reduce((s, r) => s + r.amount, 0);
     const uncategorizedAmount = Math.max(0, total - categorizedSum);
 
-    const top = rows.slice(0, 7);
-    const restAmount = rows.slice(7).reduce((s, r) => s + r.amount, 0);
+    const positiveRows = rows.filter((row) => row.amount > 0);
+    const top = [...positiveRows.slice(0, 7), ...rows.filter((row) => row.amount < 0)];
+    const restAmount = positiveRows.slice(7).reduce((s, r) => s + r.amount, 0);
     const barSegments: CategoryRow[] = [...top];
     if (restAmount > 0) {
       barSegments.push({
@@ -1686,16 +1691,17 @@ function CategoryRankedBar({
     return { categoryGroup, hasAnyGroup, uncategorizedAmount, top, restAmount, barSegments };
   }, [rows, total, groupRows, t]);
 
-  if (rows.length === 0 || total <= 0) {
+  if (rows.length === 0) {
     return <WhereItWentEmptyState hasNoIncludedAccounts={hasNoIncludedAccounts} />;
   }
 
   const { categoryGroup, hasAnyGroup, uncategorizedAmount, top, restAmount, barSegments } = derived;
+  const barMagnitude = barSegments.reduce((sum, row) => sum + Math.abs(row.amount), 0);
 
   const StackedBar = (
     <div className="bg-foreground/10 relative flex h-3 w-full overflow-hidden rounded-full">
       {barSegments.map((s, i) => {
-        const share = (s.amount / total) * 100;
+        const share = barMagnitude > 0 ? (Math.abs(s.amount) / barMagnitude) * 100 : 0;
         const color = s.color ?? themeColor;
         return (
           <div
@@ -1774,7 +1780,7 @@ function CategoryRankedBar({
     // Preserve insertion order: declared groups follow the user's `sortOrder`
     // from the backend (mockup convention), and the synthetic "Other" bucket
     // naturally lands last because it's only created on demand.
-    const orderedBuckets = Array.from(buckets.values()).filter((b) => b.total > 0);
+    const orderedBuckets = Array.from(buckets.values()).filter((b) => b.categories.length > 0);
 
     return (
       <div>
@@ -1803,7 +1809,7 @@ function CategoryRankedBar({
 
       <div className="mt-3 space-y-1.5">
         {top.map((r, i) => {
-          const share = (r.amount / total) * 100;
+          const share = total !== 0 ? (r.amount / total) * 100 : 0;
           const color = r.color ?? themeColor;
           return (
             <Link

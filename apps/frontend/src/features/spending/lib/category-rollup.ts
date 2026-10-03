@@ -98,8 +98,7 @@ export function descendantCategoryIds(
 
 /**
  * Sum a list of `{ categoryId, amount }` rows by their top-level parent.
- * Returns a `Map<topId, total>` with rows whose total is `<= 0` filtered out
- * (matches the prior `where-i-am-stage` behavior; the no-budget case).
+ * Returns a `Map<topId, total>`, preserving net refunds and zero-net categories.
  *
  * Use `rollUpAmountsWithCount` instead if you also need the count of rows
  * contributing to each top.
@@ -113,16 +112,13 @@ export function rollUpToTopLevel<T extends { categoryId: string; amount: number 
     const top = topCategoryId(r.categoryId, meta);
     out.set(top, (out.get(top) ?? 0) + r.amount);
   }
-  for (const [id, amount] of out) {
-    if (amount <= 0) out.delete(id);
-  }
   return out;
 }
 
 /**
  * Same as `rollUpToTopLevel`, but also accumulates a `count` per top. Useful
  * when rows carry transaction counts (e.g. `CategoryBreakdownRow`).
- * Unlike `rollUpToTopLevel`, this variant keeps zero-amount tops — callers
+ * Like `rollUpToTopLevel`, this variant keeps zero-amount tops — callers
  * doing union-by-key need the entry present even if the magnitude is 0.
  */
 export function rollUpAmountsWithCount<
@@ -249,5 +245,5 @@ export function buildWhereItWentRows(params: {
         deltaPct,
       };
     })
-    .filter((row) => row.amount > 0);
+    .filter((row) => row.amount !== 0);
 }

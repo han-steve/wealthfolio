@@ -74,19 +74,19 @@ export function periodToReportsRange(
       }
       case "3M":
         return {
-          start: addCalendarMonths({ year: today.year, month: today.month, day: 1 }, -2),
+          start: addCalendarMonths(today, -3),
           end: today,
         };
       case "6M":
         return {
-          start: addCalendarMonths({ year: today.year, month: today.month, day: 1 }, -5),
+          start: addCalendarMonths(today, -6),
           end: today,
         };
       case "YTD":
         return { start: { year: today.year, month: 1, day: 1 }, end: today };
       case "1Y":
         return {
-          start: addCalendarMonths({ year: today.year, month: today.month, day: 1 }, -11),
+          start: addCalendarMonths(today, -12),
           end: today,
         };
     }

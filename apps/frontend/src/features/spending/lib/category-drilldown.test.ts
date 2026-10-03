@@ -116,15 +116,19 @@ describe("computeCategoryDrilldown", () => {
     ]);
   });
 
-  it("clamps a refund-dominated category to zero and drops its negative rows", () => {
+  it("preserves refunds in totals and shows their magnitude in the mix", () => {
     const { spent, mix } = computeCategoryDrilldown({
       categoryId: "housing",
       buckets: [bucket("rent", 100), bucket("utilities", -400)],
       meta,
     });
 
-    expect(spent).toBe(0);
-    expect(mix).toEqual([{ id: "rent", amount: 100, share: 100 }]);
+    expect(spent).toBe(-300);
+    expect(mix).toEqual([
+      { id: "rent", amount: 100, share: 20 },
+      { id: "utilities", amount: -400, share: 80 },
+    ]);
+    expect(mix.reduce((sum, row) => sum + row.amount, 0)).toBe(spent);
   });
 
   it("terminates on a cyclic parent chain", () => {

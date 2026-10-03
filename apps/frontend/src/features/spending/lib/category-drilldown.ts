@@ -38,12 +38,9 @@ export interface CategoryMixRow {
 }
 
 export interface CategoryDrilldown {
-  /** Total for the category and everything beneath it, clamped at 0 to match
-   *  the breakdown table (`buildTree` clamps the same way). */
+  /** Signed net spending, including refunds, matching the report headline. */
   spent: number;
-  /** Composition by immediate child, descending. Non-positive rows are
-   *  dropped and `share` is relative to what remains, matching how the
-   *  breakdown table treats refund-dominated categories. */
+  /** Signed amounts; visual shares use magnitude so refund bars have valid widths. */
   mix: CategoryMixRow[];
 }
 
@@ -78,15 +75,15 @@ export function computeCategoryDrilldown(params: {
     byChild.set(childId, (byChild.get(childId) ?? 0) + bucket.amount);
   }
 
-  const mixTotal = Array.from(byChild.values()).reduce((sum, a) => (a > 0 ? sum + a : sum), 0);
+  const mixTotal = Array.from(byChild.values()).reduce((sum, a) => sum + Math.abs(a), 0);
   const mix = Array.from(byChild.entries())
-    .filter(([, amount]) => amount > 0)
+    .filter(([, amount]) => amount !== 0)
     .sort(([, a], [, b]) => b - a)
     .map(([id, amount]) => ({
       id,
       amount,
-      share: mixTotal > 0 ? (amount / mixTotal) * 100 : 0,
+      share: mixTotal > 0 ? (Math.abs(amount) / mixTotal) * 100 : 0,
     }));
 
-  return { spent: Math.max(0, total), mix };
+  return { spent: total, mix };
 }
