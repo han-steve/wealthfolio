@@ -11,6 +11,7 @@ use crate::activity_allocations::{AssignmentsByActivity, SplitsByActivity};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SpendingClassification {
     Income,
+    IncomeCorrection,
     Expense,
     ExpenseRefund,
     /// Money moved out to investing/savings — its own bucket, parallel to
@@ -24,6 +25,7 @@ impl SpendingClassification {
     pub(crate) fn income_amount(self, amount: Decimal) -> Decimal {
         match self {
             Self::Income => amount,
+            Self::IncomeCorrection => -amount,
             _ => Decimal::ZERO,
         }
     }
@@ -132,14 +134,86 @@ pub(crate) fn classify_activity(activity: &Activity, account_type: &str) -> Spen
     }
 }
 
-/// Categories can resolve a missing cash-credit subtype, but never override an
-/// explicit activity meaning. Conflicting flow taxonomies remain unresolved.
+/// Explicit income-tax withdrawals may correct income. Recovering a hidden row
+/// additionally requires the legacy real-payment cleanup contract. Neither path
+/// changes ledger economics or infers intent from category names.
+fn is_income_correction(
+    activity: &Activity,
+    account_type: &str,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
+) -> bool {
+    if !matches!(
+        account_type,
+        account_types::CASH | account_types::CREDIT_CARD
+    ) || !activity.is_posted()
+        || activity.activity_type != "WITHDRAWAL"
+        || !matches!(activity.effective_type(), "WITHDRAWAL" | "UNKNOWN")
+        || activity.subtype.as_deref() != Some("TAX_PAYMENT")
+        || activity.source_group_id.is_some()
+        || matches!(
+            activity.source_system.as_deref(),
+            Some("INCOME_TAX_PAYMENT_CORRECTION" | "TAX_RETURN_INCOME_TRUEUP")
+        )
+        || !activity.amount.is_some_and(|amount| amount > Decimal::ZERO)
+    {
+        return false;
+    }
+    let Some(metadata) = activity.metadata.as_ref() else {
+        return false;
+    };
+    if metadata.get("income_correction").and_then(|v| v.as_bool()) != Some(true) {
+        return false;
+    }
+    let is_flow = |taxonomy: &str| {
+        matches!(
+            taxonomy,
+            "income_sources" | "spending_categories" | "savings_categories"
+        )
+    };
+    // Splits can supersede an assignment: reject them until correction split
+    // semantics are explicit, rather than admitting a conflicting/partial row.
+    if splits
+        .get(&activity.id)
+        .into_iter()
+        .flatten()
+        .any(|s| is_flow(&s.taxonomy_id))
+    {
+        return false;
+    }
+    let mut flow_assignments = assignments
+        .get(&activity.id)
+        .into_iter()
+        .flatten()
+        .filter(|a| is_flow(&a.taxonomy_id));
+    let Some(assignment) = flow_assignments.next() else {
+        return false;
+    };
+    let unambiguous_income = flow_assignments.next().is_none()
+        && assignment.taxonomy_id == "income_sources"
+        && !assignment.category_id.trim().is_empty()
+        && assignment.weight == 10_000;
+    unambiguous_income
+        && (activity.effective_type() == "WITHDRAWAL"
+            || (activity.source_system.as_deref() == Some("SIMPLEFIN_SYNC")
+                && assignment.source == "real_tax_payment_cleanup"
+                && metadata
+                    .get("real_ledger_tax_payment")
+                    .and_then(|v| v.as_bool())
+                    == Some(true)))
+}
+
+/// Categories resolve untyped cash credits and explicitly marked corrections;
+/// otherwise they do not override the activity's meaning.
 pub(crate) fn classify_categorized_activity(
     activity: &Activity,
     account_type: &str,
     assignments: &AssignmentsByActivity,
     splits: &SplitsByActivity,
 ) -> SpendingClassification {
+    if is_income_correction(activity, account_type, assignments, splits) {
+        return SpendingClassification::IncomeCorrection;
+    }
     let classification = classify_activity(activity, account_type);
     if account_type != account_types::CASH
         || activity.effective_type() != "CREDIT"
@@ -219,6 +293,61 @@ pub(crate) fn net_amount(activity: &Activity, account_types: &HashMap<String, St
     )
     .signed_cash_effect
     .unwrap_or(Decimal::ZERO)
+}
+
+#[cfg(test)]
+pub(crate) fn income_correction_fixture() -> (
+    Activity,
+    crate::activity_assignments::ActivityTaxonomyAssignment,
+) {
+    use chrono::{TimeZone, Utc};
+    use wealthfolio_core::activities::ActivityStatus;
+
+    let date = Utc.with_ymd_and_hms(2024, 1, 10, 12, 0, 0).unwrap();
+    let activity = Activity {
+        id: "correction".to_string(),
+        account_id: "account-1".to_string(),
+        asset_id: None,
+        activity_type: "WITHDRAWAL".to_string(),
+        activity_type_override: Some("UNKNOWN".to_string()),
+        source_type: None,
+        subtype: Some("TAX_PAYMENT".to_string()),
+        status: ActivityStatus::Posted,
+        activity_date: date,
+        settlement_date: None,
+        quantity: None,
+        unit_price: None,
+        amount: Some(Decimal::new(100, 0)),
+        fee: None,
+        tax: None,
+        currency: "USD".to_string(),
+        fx_rate: None,
+        notes: None,
+        metadata: Some(serde_json::json!({
+            "real_ledger_tax_payment": true,
+            "income_correction": true,
+        })),
+        source_system: Some("SIMPLEFIN_SYNC".to_string()),
+        source_record_id: None,
+        source_group_id: None,
+        idempotency_key: None,
+        import_run_id: None,
+        is_user_modified: true,
+        needs_review: false,
+        created_at: date,
+        updated_at: date,
+    };
+    let assignment = crate::activity_assignments::ActivityTaxonomyAssignment {
+        id: "assignment-correction".to_string(),
+        activity_id: activity.id.clone(),
+        taxonomy_id: "income_sources".to_string(),
+        category_id: "example-income-correction".to_string(),
+        weight: 10_000,
+        source: "real_tax_payment_cleanup".to_string(),
+        created_at: date.naive_utc(),
+        updated_at: date.naive_utc(),
+    };
+    (activity, assignment)
 }
 
 #[cfg(test)]
@@ -555,6 +684,295 @@ mod tests {
             }
         }
         (assignments, splits)
+    }
+
+    #[test]
+    fn income_correction_is_signed_income_only_without_mutating_ledger_semantics() {
+        let (mut row, assignment) = income_correction_fixture();
+        let assignments = HashMap::from([(row.id.clone(), vec![assignment])]);
+        for account in [account_types::CASH, account_types::CREDIT_CARD] {
+            for override_type in [None, Some("WITHDRAWAL"), Some("UNKNOWN")] {
+                row.activity_type_override = override_type.map(str::to_string);
+                let original = serde_json::to_value(&row).unwrap();
+                for groups in [HashSet::new(), HashSet::from(["unrelated".to_string()])] {
+                    let classification = classify_categorized_activity_for_aggregation(
+                        &row,
+                        account,
+                        &groups,
+                        &assignments,
+                        &HashMap::new(),
+                    );
+                    assert_eq!(
+                        classification.income_amount(activity_abs_amount(&row)),
+                        Decimal::new(-100, 0)
+                    );
+                    assert_eq!(
+                        classification.spending_amount(activity_abs_amount(&row)),
+                        Decimal::ZERO
+                    );
+                    assert_eq!(
+                        classification.saving_amount(activity_abs_amount(&row)),
+                        Decimal::ZERO
+                    );
+                }
+                assert_eq!(serde_json::to_value(&row).unwrap(), original);
+                if override_type == Some("UNKNOWN") {
+                    assert_eq!(
+                        net_amount(
+                            &row,
+                            &HashMap::from([(row.account_id.clone(), account.to_string())])
+                        ),
+                        Decimal::ZERO
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn income_correction_requires_exact_markers_provenance_and_posted_ungrouped_withdrawal() {
+        let (row, assignment) = income_correction_fixture();
+        let assignments = HashMap::from([(row.id.clone(), vec![assignment])]);
+        let mut rejected = vec![];
+        for metadata in [
+            None,
+            Some(serde_json::json!({"real_ledger_tax_payment": true})),
+            Some(serde_json::json!({"income_correction": true})),
+            Some(serde_json::json!({"real_ledger_tax_payment": true, "income_correction": "true"})),
+            Some(serde_json::json!({"real_ledger_tax_payment": "true", "income_correction": true})),
+            Some(serde_json::json!({"real_ledger_tax_payment": true, "income_correction": false})),
+        ] {
+            rejected.push(Activity {
+                metadata,
+                ..row.clone()
+            });
+        }
+        for source in [
+            None,
+            Some("manual"),
+            Some("INCOME_TAX_PAYMENT_CORRECTION"),
+            Some("TAX_RETURN_INCOME_TRUEUP"),
+            Some("MANUAL_LEDGER_SPLIT"),
+        ] {
+            rejected.push(Activity {
+                source_system: source.map(str::to_string),
+                ..row.clone()
+            });
+        }
+        for kind in [
+            "UNKNOWN",
+            "DEPOSIT",
+            "CREDIT",
+            "TRANSFER_IN",
+            "TRANSFER_OUT",
+            "FEE",
+            "TAX",
+        ] {
+            rejected.push(Activity {
+                activity_type: kind.to_string(),
+                ..row.clone()
+            });
+        }
+        for subtype in [
+            None,
+            Some("REFUND"),
+            Some("TAX_PAYMENT_OFFSET"),
+            Some("TAX_PAYMENT_INCOME_CORRECTION"),
+        ] {
+            rejected.push(Activity {
+                subtype: subtype.map(str::to_string),
+                ..row.clone()
+            });
+        }
+        rejected.push(Activity {
+            status: ActivityStatus::Draft,
+            ..row.clone()
+        });
+        rejected.push(Activity {
+            source_group_id: Some("transfer-pair".to_string()),
+            ..row.clone()
+        });
+        for amount in [None, Some(Decimal::ZERO), Some(Decimal::NEGATIVE_ONE)] {
+            rejected.push(Activity {
+                amount,
+                ..row.clone()
+            });
+        }
+        for account in [account_types::CASH, account_types::CREDIT_CARD] {
+            for bad in &rejected {
+                assert_eq!(
+                    classify_categorized_activity(bad, account, &assignments, &HashMap::new()),
+                    SpendingClassification::Ignored
+                );
+            }
+        }
+        assert_eq!(
+            classify_categorized_activity(&row, "SECURITIES", &assignments, &HashMap::new()),
+            SpendingClassification::Ignored
+        );
+    }
+
+    #[test]
+    fn income_correction_rejects_ambiguous_categories_and_splits() {
+        let (row, assignment) = income_correction_fixture();
+        let mut cases = vec![vec![]];
+        for taxonomy in ["spending_categories", "savings_categories", "custom_tags"] {
+            let mut other = assignment.clone();
+            other.taxonomy_id = taxonomy.to_string();
+            cases.push(vec![other.clone()]);
+            if taxonomy != "custom_tags" {
+                cases.push(vec![assignment.clone(), other]);
+            }
+        }
+        cases.push(vec![assignment.clone(), assignment.clone()]);
+        for source in ["manual", "", "real_tax_payment_cleanup_other"] {
+            let mut other = assignment.clone();
+            other.source = source.to_string();
+            cases.push(vec![other]);
+        }
+        let mut partial = assignment.clone();
+        partial.weight = 5_000;
+        cases.push(vec![partial]);
+        let mut empty = assignment.clone();
+        empty.category_id.clear();
+        cases.push(vec![empty]);
+        for case in cases {
+            assert_eq!(
+                classify_categorized_activity(
+                    &row,
+                    account_types::CREDIT_CARD,
+                    &HashMap::from([(row.id.clone(), case)]),
+                    &HashMap::new()
+                ),
+                SpendingClassification::Ignored
+            );
+        }
+        for taxonomy in [
+            "income_sources",
+            "spending_categories",
+            "savings_categories",
+        ] {
+            let (_, splits) = category_context(&[taxonomy], true);
+            let mut split = splits["activity-1"][0].clone();
+            split.activity_id = row.id.clone();
+            assert_eq!(
+                classify_categorized_activity(
+                    &row,
+                    account_types::CREDIT_CARD,
+                    &HashMap::from([(row.id.clone(), vec![assignment.clone()])]),
+                    &HashMap::from([(row.id.clone(), vec![split])])
+                ),
+                SpendingClassification::Ignored
+            );
+        }
+    }
+
+    #[test]
+    fn ordinary_income_correction_uses_explicit_intent_without_legacy_provenance() {
+        let (mut row, mut assignment) = income_correction_fixture();
+        row.activity_type_override = None;
+        row.metadata = Some(serde_json::json!({"income_correction": true}));
+        assignment.source = "manual".to_string();
+        let assignments = HashMap::from([(row.id.clone(), vec![assignment])]);
+        for account in [account_types::CASH, account_types::CREDIT_CARD] {
+            for source in [None, Some("manual"), Some("example-import")] {
+                row.source_system = source.map(str::to_string);
+                assert_eq!(
+                    classify_categorized_activity(&row, account, &assignments, &HashMap::new()),
+                    SpendingClassification::IncomeCorrection
+                );
+                // The same semantics cannot resurrect an arbitrary hidden row.
+                let hidden = Activity {
+                    activity_type_override: Some("UNKNOWN".to_string()),
+                    ..row.clone()
+                };
+                assert_eq!(
+                    classify_categorized_activity(&hidden, account, &assignments, &HashMap::new()),
+                    SpendingClassification::Ignored
+                );
+            }
+            for source in ["INCOME_TAX_PAYMENT_CORRECTION", "TAX_RETURN_INCOME_TRUEUP"] {
+                let synthetic = Activity {
+                    source_system: Some(source.to_string()),
+                    ..row.clone()
+                };
+                assert_eq!(
+                    classify_categorized_activity(
+                        &synthetic,
+                        account,
+                        &assignments,
+                        &HashMap::new()
+                    ),
+                    SpendingClassification::Expense
+                );
+            }
+            // An income label alone is not an income-correction declaration.
+            let no_intent = Activity {
+                metadata: None,
+                ..row.clone()
+            };
+            assert_eq!(
+                classify_categorized_activity(&no_intent, account, &assignments, &HashMap::new()),
+                SpendingClassification::Expense
+            );
+            let not_tax = Activity {
+                subtype: None,
+                ..row.clone()
+            };
+            assert_eq!(
+                classify_categorized_activity(&not_tax, account, &assignments, &HashMap::new()),
+                SpendingClassification::Expense
+            );
+        }
+    }
+
+    #[test]
+    fn income_correction_does_not_reinterpret_transfers_refunds_or_other_overrides() {
+        let (row, assignment) = income_correction_fixture();
+        let assignments = HashMap::from([(row.id.clone(), vec![assignment])]);
+        for account in [account_types::CASH, account_types::CREDIT_CARD] {
+            for kind in [
+                "DEPOSIT",
+                "TRANSFER_IN",
+                "TRANSFER_OUT",
+                "CREDIT",
+                "BUY",
+                "SELL",
+            ] {
+                let changed = Activity {
+                    activity_type_override: Some(kind.to_string()),
+                    ..row.clone()
+                };
+                for groups in [HashSet::new(), HashSet::from(["transfer-pair".to_string()])] {
+                    for group in [None, Some("transfer-pair".to_string())] {
+                        let changed = Activity {
+                            source_group_id: group,
+                            ..changed.clone()
+                        };
+                        assert_eq!(
+                            classify_categorized_activity_for_aggregation(
+                                &changed,
+                                account,
+                                &groups,
+                                &assignments,
+                                &HashMap::new()
+                            ),
+                            classify_activity_for_aggregation(&changed, account, &groups)
+                        );
+                    }
+                }
+            }
+            let ordinary = Activity {
+                activity_type_override: None,
+                metadata: None,
+                subtype: None,
+                ..row.clone()
+            };
+            assert_eq!(
+                classify_categorized_activity(&ordinary, account, &assignments, &HashMap::new()),
+                SpendingClassification::Expense
+            );
+        }
     }
 
     #[test]

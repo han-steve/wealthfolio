@@ -1647,6 +1647,98 @@ mod tests {
         Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap()
     }
 
+    #[test]
+    fn income_correction_reconciles_headline_category_daily_and_monthly_trend() {
+        use crate::activity_classification::income_correction_fixture;
+        use wealthfolio_core::accounts::account_types;
+
+        let (correction, assignment) = income_correction_fixture();
+        let assignments = HashMap::from([(correction.id.clone(), vec![assignment.clone()])]);
+        let splits = SplitsByActivity::new();
+        let end = NaiveDate::from_ymd_opt(2024, 1, 31).unwrap();
+        for account in [account_types::CASH, account_types::CREDIT_CARD] {
+            let accounts = HashMap::from([
+                (correction.account_id.clone(), account.to_string()),
+                (
+                    "income-account".to_string(),
+                    account_types::CASH.to_string(),
+                ),
+            ]);
+            // Include both positive-net and negative-net reporting periods.
+            for salary in [50, 200] {
+                let income = Activity {
+                    id: "income".to_string(),
+                    account_id: "income-account".to_string(),
+                    activity_type: "DEPOSIT".to_string(),
+                    activity_type_override: None,
+                    subtype: None,
+                    metadata: None,
+                    amount: Some(Decimal::new(salary, 0)),
+                    ..correction.clone()
+                };
+                let acts = vec![&correction, &income];
+                let agg = aggregate_spend_with_splits(
+                    &acts,
+                    &accounts,
+                    &HashSet::new(),
+                    &assignments,
+                    &splits,
+                    &HashMap::new(),
+                    &ExclusionIndex::empty(),
+                    &fx(),
+                    "USD",
+                    end,
+                );
+                assert_eq!(agg.total_income, Decimal::new(salary - 100, 0));
+                assert_eq!(agg.total_outflow, Decimal::ZERO);
+                assert_eq!(agg.total_saved, Decimal::ZERO);
+                assert_eq!(
+                    agg.income_by_category[&assignment.category_id],
+                    (Decimal::new(-100, 0), 1)
+                );
+                assert_eq!(
+                    agg.income_by_category
+                        .values()
+                        .map(|(amount, _)| *amount)
+                        .sum::<Decimal>(),
+                    agg.total_income
+                );
+                let daily = compute_by_day(
+                    &acts,
+                    &accounts,
+                    &assignments,
+                    &splits,
+                    &ExclusionIndex::empty(),
+                    "UTC",
+                    &fx(),
+                    "USD",
+                    end,
+                );
+                assert_eq!(
+                    daily.iter().map(|day| day.income).sum::<f64>(),
+                    (salary - 100) as f64
+                );
+                assert_eq!(daily.iter().map(|day| day.spent).sum::<f64>(), 0.0);
+                let monthly = compute_by_month(
+                    &acts,
+                    &accounts,
+                    &HashSet::new(),
+                    &assignments,
+                    &splits,
+                    &ExclusionIndex::empty(),
+                    &["2024-01".to_string()],
+                    "UTC",
+                    &fx(),
+                    "USD",
+                    end,
+                );
+                assert_eq!(monthly[0].income, (salary - 100) as f64);
+                assert_eq!(monthly[0].spent, 0.0);
+                assert_eq!(monthly[0].saved, 0.0);
+            }
+        }
+    }
+
     /// No-op FX stub: pass-through (rate = 1, regardless of pair). Lets unit
     /// tests cover the same-currency happy path without standing up the real
     /// FxService + DB. Cross-currency conversion is exercised by integration

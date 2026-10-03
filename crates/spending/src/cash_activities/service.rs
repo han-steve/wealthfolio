@@ -174,7 +174,6 @@ impl CashActivityService {
         let allowed_types: Vec<String> = filter
             .activity_types
             .unwrap_or_else(|| CASH_ACTIVITY_TYPES.iter().map(|s| s.to_string()).collect());
-        activities.retain(|a| allowed_types.iter().any(|t| t == a.effective_type()));
         retain_by_date_range(
             &mut activities,
             filter.start_date.as_deref(),
@@ -195,6 +194,7 @@ impl CashActivityService {
             &account_types,
             &by_activity,
             &splits_by_activity,
+            Some(&allowed_types),
         );
         let mut tag_map = self.activity_events.list_for_activities(&ids).await?;
         let exclusions = self.spending_exclusions(&s.excluded_category_ids)?;
@@ -216,11 +216,16 @@ impl CashActivityService {
                     &by_activity,
                     &splits_by_activity,
                 );
+                let net_amount = decimal_to_f64(reporting_net_amount(
+                    &a,
+                    &account_types,
+                    &by_activity,
+                    &splits_by_activity,
+                ));
                 let assignments = by_activity.remove(&a.id).unwrap_or_default();
                 let splits = splits_by_activity.remove(&a.id).unwrap_or_default();
                 let event_id = tag_map.remove(&a.id);
                 let transfer_link_status = transfer_link_status_for(&a, &transfer_link_resolution);
-                let net_amount = decimal_to_f64(net_amount(&a, &account_types));
                 CashActivity {
                     activity: a,
                     cash_flow_bucket,
@@ -282,11 +287,14 @@ impl CashActivityService {
     ///
     /// Rows that move no cash contribute nothing and never introduce a currency
     /// of their own. Currencies that net to nothing are dropped.
+    #[allow(clippy::too_many_arguments)]
     fn net_summary(
         &self,
         activities: &[Activity],
         account_types: &HashMap<String, String>,
         account_currencies: &HashMap<String, String>,
+        assignments: &AssignmentsByActivity,
+        splits: &SplitsByActivity,
         base_currency: Option<&str>,
         timezone: Tz,
     ) -> NetSummary {
@@ -295,7 +303,7 @@ impl CashActivityService {
         let mut tallies: Vec<CurrencyTally> = Vec::new();
 
         for activity in activities {
-            let net = net_amount(activity, account_types);
+            let net = reporting_net_amount(activity, account_types, assignments, splits);
             if net.is_zero() {
                 continue;
             }
@@ -434,7 +442,6 @@ impl CashActivityService {
         let allowed_types: Vec<String> = req
             .activity_types
             .unwrap_or_else(|| CASH_ACTIVITY_TYPES.iter().map(|s| s.to_string()).collect());
-        activities.retain(|a| allowed_types.iter().any(|t| t == a.effective_type()));
         retain_by_date_range(
             &mut activities,
             req.start_date.as_deref(),
@@ -495,6 +502,7 @@ impl CashActivityService {
             &account_types,
             &by_activity,
             &splits_by_activity,
+            Some(&allowed_types),
         );
 
         let needs_assignments_for_filter = req.status != CashActivityStatusFilter::All
@@ -632,6 +640,8 @@ impl CashActivityService {
                 &activities,
                 &account_types,
                 &account_currencies,
+                &by_activity,
+                &splits_by_activity,
                 base_currency,
                 timezone,
             )
@@ -668,11 +678,12 @@ impl CashActivityService {
                     &by_activity,
                     &splits_by_activity,
                 );
+                let net =
+                    reporting_net_amount(&a, &account_types, &by_activity, &splits_by_activity);
                 let assignments = by_activity.remove(&a.id).unwrap_or_default();
                 let splits = splits_by_activity.remove(&a.id).unwrap_or_default();
                 let event_id = tag_map.remove(&a.id);
                 let transfer_link_status = transfer_link_status_for(&a, &transfer_link_resolution);
-                let net = net_amount(&a, &account_types);
                 let net_amount_base = base_currency
                     .and_then(|base| {
                         let account_currency =
@@ -746,6 +757,7 @@ impl CashActivityService {
             &account_types,
             &by_activity,
             &splits_by_activity,
+            None,
         );
         let mut tag_map = self.activity_events.list_for_activities(&ids).await?;
         let exclusions = self.spending_exclusions(&s.excluded_category_ids)?;
@@ -767,12 +779,17 @@ impl CashActivityService {
                     &by_activity,
                     &splits_by_activity,
                 );
+                let net_amount = decimal_to_f64(reporting_net_amount(
+                    &activity,
+                    &account_types,
+                    &by_activity,
+                    &splits_by_activity,
+                ));
                 let assignments = by_activity.remove(&activity.id).unwrap_or_default();
                 let splits = splits_by_activity.remove(&activity.id).unwrap_or_default();
                 let event_id = tag_map.remove(&activity.id);
                 let transfer_link_status =
                     transfer_link_status_for(&activity, &transfer_link_resolution);
-                let net_amount = decimal_to_f64(net_amount(&activity, &account_types));
                 CashActivity {
                     activity,
                     cash_flow_bucket,
@@ -1144,16 +1161,49 @@ fn retain_classified_cash_activities(
     account_types: &HashMap<String, String>,
     assignments: &AssignmentsByActivity,
     splits: &SplitsByActivity,
+    allowed_types: Option<&[String]>,
 ) {
     activities.retain(|activity| {
         account_types
             .get(&activity.account_id)
             .is_some_and(|account_type| {
-                is_visible_cash_activity(activity, account_type)
-                    || classify_categorized_activity(activity, account_type, assignments, splits)
-                        == SpendingClassification::ExpenseRefund
+                let classification =
+                    classify_categorized_activity(activity, account_type, assignments, splits);
+                let reporting_type = if classification == SpendingClassification::IncomeCorrection {
+                    "WITHDRAWAL"
+                } else {
+                    activity.effective_type()
+                };
+                allowed_types.is_none_or(|types| types.iter().any(|t| t == reporting_type))
+                    && (is_visible_cash_activity(activity, account_type)
+                        || matches!(
+                            classification,
+                            SpendingClassification::ExpenseRefund
+                                | SpendingClassification::IncomeCorrection
+                        ))
             })
     });
+}
+
+/// Signed reporting movement. The narrowly recognized legacy correction is
+/// visible here even though its UNKNOWN override remains neutral in the ledger.
+fn reporting_net_amount(
+    activity: &Activity,
+    account_types: &HashMap<String, String>,
+    assignments: &AssignmentsByActivity,
+    splits: &SplitsByActivity,
+) -> Decimal {
+    if account_types
+        .get(&activity.account_id)
+        .is_some_and(|account_type| {
+            classify_categorized_activity(activity, account_type, assignments, splits)
+                == SpendingClassification::IncomeCorrection
+        })
+    {
+        -activity_abs_amount(activity)
+    } else {
+        net_amount(activity, account_types)
+    }
 }
 
 fn cash_flow_bucket_for(
@@ -1212,7 +1262,9 @@ fn visible_spending_amount(
 
 fn cash_flow_bucket_from_classification(classification: SpendingClassification) -> CashFlowBucket {
     match classification {
-        SpendingClassification::Income => CashFlowBucket::Income,
+        SpendingClassification::Income | SpendingClassification::IncomeCorrection => {
+            CashFlowBucket::Income
+        }
         SpendingClassification::Expense | SpendingClassification::ExpenseRefund => {
             CashFlowBucket::Spending
         }
@@ -2579,6 +2631,98 @@ mod tests {
         let bonus = rows.iter().find(|r| r.activity.id == "bonus").unwrap();
         assert_eq!(bonus.cash_flow_bucket, CashFlowBucket::Income);
         assert_eq!(bonus.visible_spending_amount, 0.0);
+    }
+
+    #[tokio::test]
+    async fn income_correction_reconciles_list_search_drilldown_and_filtered_net() {
+        use crate::activity_classification::income_correction_fixture;
+
+        for account_type in [account_types::CASH, account_types::CREDIT_CARD] {
+            let (row, assignment) = income_correction_fixture();
+            let original = serde_json::to_value(&row).unwrap();
+            let mut hidden = row.clone();
+            hidden.id = "unapproved-hidden".to_string();
+            hidden.metadata = None;
+            let mut synthetic = row.clone();
+            synthetic.id = "synthetic".to_string();
+            synthetic.source_system = Some("INCOME_TAX_PAYMENT_CORRECTION".to_string());
+            let mut conflict = row.clone();
+            conflict.id = "conflict".to_string();
+            let (mut service, repo, _) =
+                make_service_with(vec![row.clone(), hidden, synthetic, conflict]);
+            service.account_repo = Arc::new(MockAccountRepo {
+                account: account(account_type),
+            });
+            let mut assignments = vec![assignment.clone()];
+            for id in ["unapproved-hidden", "synthetic", "conflict"] {
+                assignments.push(ActivityTaxonomyAssignment {
+                    activity_id: id.to_string(),
+                    id: format!("asg-{id}"),
+                    ..assignment.clone()
+                });
+            }
+            assignments.push(spending_assignment("conflict", "expense"));
+            *repo.assignments.lock().unwrap() = assignments;
+
+            let listed = service.list(CashActivityFilter::default()).await.unwrap();
+            let explicit = service
+                .get_by_activity_ids(&[
+                    row.id.clone(),
+                    "unapproved-hidden".to_string(),
+                    "synthetic".to_string(),
+                    "conflict".to_string(),
+                ])
+                .await
+                .unwrap();
+            for items in [listed, explicit] {
+                assert_eq!(items.len(), 1);
+                assert_eq!(items[0].cash_flow_bucket, CashFlowBucket::Income);
+                assert_eq!(items[0].net_amount, -100.0);
+                assert_eq!(items[0].visible_spending_amount, 0.0);
+                assert_eq!(serde_json::to_value(&items[0].activity).unwrap(), original);
+            }
+            for types in [None, Some(vec!["WITHDRAWAL".to_string()])] {
+                let response = service
+                    .search(
+                        CashActivitySearchRequest {
+                            category_ids: Some(vec![assignment.category_id.clone()]),
+                            status: CashActivityStatusFilter::Categorized,
+                            activity_types: types,
+                            limit: 50,
+                            ..Default::default()
+                        },
+                        Some("USD"),
+                        "UTC",
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.total_count, 1);
+                assert_eq!(response.items[0].cash_flow_bucket, CashFlowBucket::Income);
+                assert_eq!(response.items[0].net_amount, -100.0);
+                assert_eq!(response.items[0].net_amount_base, Some(-100.0));
+                assert_eq!(
+                    response.net.unwrap().by_currency,
+                    vec![CurrencyNet {
+                        currency: "USD".to_string(),
+                        amount: -100.0
+                    }]
+                );
+            }
+            for kind in ["DEPOSIT", "TRANSFER_OUT", "CREDIT", "UNKNOWN"] {
+                let filtered = service
+                    .list(CashActivityFilter {
+                        activity_types: Some(vec![kind.to_string()]),
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+                assert!(filtered.is_empty());
+            }
+            assert_eq!(
+                taxonomy_for_bucket(CashFlowBucket::Income),
+                Some(INCOME_TAXONOMY)
+            );
+        }
     }
 
     async fn search_net(service: &CashActivityService, base: Option<&str>) -> NetSummary {

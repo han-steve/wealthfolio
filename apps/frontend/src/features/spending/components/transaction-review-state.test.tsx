@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { CashActivity } from "../types/cash-activity";
+import type { TaxonomyCategory } from "@/lib/types";
 
 // The inline category and event popovers fetch on mount. Nothing here depends
 // on what they return, but without a stand-in they reach for a Tauri bridge
@@ -119,6 +120,58 @@ function renderCard(needsReview: boolean) {
  * amber from the row behind it. Both layouts have to say it in text as well.
  */
 describe("needs-review state", () => {
+  it.each(["table", "card"])(
+    "renders a signed income correction and its source on the %s",
+    (layout) => {
+      const correction = activity({
+        activityTypeOverride: "UNKNOWN",
+        subtype: "TAX_PAYMENT",
+        cashFlowBucket: "income",
+        amount: "100",
+        netAmount: -100,
+        visibleSpendingAmount: 0,
+        notes: "Example tax payment",
+        assignments: [
+          {
+            id: "assignment-correction",
+            activityId: "activity-1",
+            taxonomyId: "income_sources",
+            categoryId: "correction",
+            weight: 10000,
+            source: "real_tax_payment_cleanup",
+            createdAt: "2024-01-10T12:00:00Z",
+            updatedAt: "2024-01-10T12:00:00Z",
+          },
+        ],
+      });
+      const original = JSON.stringify(correction);
+      const category = {
+        id: "correction",
+        name: "Income tax correction",
+        parentId: null,
+      } as TaxonomyCategory;
+      const row = toRowVM(correction, new Map([[category.id, category]]));
+      render(
+        layout === "table" ? (
+          <Table>
+            <TableBody>
+              <TransactionRow row={row} {...shared} />
+            </TableBody>
+          </Table>
+        ) : (
+          <TransactionCard row={row} selectionMode={false} {...shared} />
+        ),
+        { wrapper: withProviders },
+      );
+      expect(screen.getByText("Income tax correction")).toBeInTheDocument();
+      expect(screen.getByText("Example tax payment")).toBeInTheDocument();
+      const amount = screen.getByText("$100.00");
+      expect(amount.parentElement).toHaveTextContent("-$100.00");
+      expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
+      expect(JSON.stringify(correction)).toBe(original);
+    },
+  );
+
   it("announces review state on a table row that needs it", () => {
     renderRow(true);
 

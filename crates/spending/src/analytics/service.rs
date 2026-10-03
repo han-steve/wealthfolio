@@ -2083,6 +2083,60 @@ mod tests {
         assert_eq!(excluded_summary.count, 0);
     }
 
+    #[test]
+    fn income_correction_reconciles_period_and_signed_category_without_spending() {
+        use crate::activity_classification::income_correction_fixture;
+
+        let (correction, assignment) = income_correction_fixture();
+        let assignments = group_assignments(vec![assignment.clone()]);
+        let splits = SplitsByActivity::new();
+        let end = NaiveDate::from_ymd_opt(2024, 1, 31).unwrap();
+        for account in [account_types::CASH, account_types::CREDIT_CARD] {
+            let accounts = HashMap::from([(correction.account_id.clone(), account.to_string())]);
+            let acts = vec![&correction];
+            let summary = summarize(
+                &acts,
+                &accounts,
+                &HashSet::new(),
+                &assignments,
+                &splits,
+                &ExclusionIndex::empty(),
+                &PassthroughFx,
+                "USD",
+                end,
+            );
+            assert_eq!(summary.income, -100.0);
+            assert_eq!(summary.outflow, 0.0);
+            assert_eq!(summary.saved, 0.0);
+            assert_eq!(summary.net, -100.0);
+            assert_eq!(summary.count, 1);
+
+            let mut categories = HashMap::new();
+            let mut daily_spending_categories = HashMap::new();
+            add_report_breakdown_allocations(
+                &mut categories,
+                &mut daily_spending_categories,
+                &correction.id,
+                INCOME_TAXONOMY,
+                Decimal::new(-100, 0),
+                &assignments,
+                &splits,
+                &ExclusionIndex::empty(),
+                &PassthroughFx,
+                "USD",
+                "USD",
+                end,
+                "2024-01-10",
+                false,
+            );
+            assert_eq!(
+                categories[&(INCOME_TAXONOMY.to_string(), assignment.category_id.clone())],
+                (Decimal::new(-100, 0), 1)
+            );
+            assert!(daily_spending_categories.is_empty());
+        }
+    }
+
     fn build_credit_card_summary(activities: &[Activity]) -> SpendingSummary {
         build_credit_card_summary_in_timezone(activities, "")
     }

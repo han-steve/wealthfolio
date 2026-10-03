@@ -146,9 +146,10 @@ pub struct CashActivity {
     /// entered the account, negative when it left, zero when the row moves no
     /// cash (an unposted row, for instance).
     ///
-    /// Produced by the same resolver that builds account cash balances, so a
-    /// client can sum these directly rather than re-deriving a sign, and the
-    /// figures it shows agree with the account page by construction.
+    /// Normally follows the account cash resolver. Explicitly recognized legacy
+    /// income corrections project their withdrawal here without changing the
+    /// underlying Activity or portfolio cash calculation. Clients should sum
+    /// these reporting amounts rather than infer a sign from the raw type.
     pub net_amount: f64,
     /// `net_amount` in the caller's base currency, converted at this row's own
     /// date. `None` when the caller asked for no conversion, or when this row's

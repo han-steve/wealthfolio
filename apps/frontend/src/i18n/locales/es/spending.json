@@ -753,6 +753,7 @@
     "incomeSaving": "Ingresos y ahorro",
     "nonSpendingCashflow": "Flujo de caja no relacionado con gastos para {{period}}.",
     "moneyIn": "Dinero entrante",
+    "netIncome": "Ingresos netos",
     "incomeSources": "Fuentes de ingresos",
     "setAside": "Reservado",
     "savingDestinations": "Destinos de ahorro",

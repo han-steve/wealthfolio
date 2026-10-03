@@ -84,8 +84,9 @@ export interface CashActivity extends Activity {
   /**
    * Signed cash movement in this row's own currency — positive when money
    * entered the account, negative when it left, zero when the row moved none.
-   * Never converted. Produced by the same resolver that builds account cash
-   * balances, so summing these agrees with the account page.
+   * Never converted. Normally follows the account cash resolver; recognized
+   * legacy income corrections project their withdrawal for reporting only.
+   * The underlying Activity and portfolio cash calculation remain unchanged.
    */
   netAmount: number;
   /**

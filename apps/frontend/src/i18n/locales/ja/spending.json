@@ -707,6 +707,7 @@
     "incomeSaving": "収入と貯蓄",
     "nonSpendingCashflow": "{{period}}の支出以外のキャッシュフロー。",
     "moneyIn": "入金",
+    "netIncome": "純収入",
     "incomeSources": "収入源",
     "setAside": "積立",
     "savingDestinations": "貯蓄先",

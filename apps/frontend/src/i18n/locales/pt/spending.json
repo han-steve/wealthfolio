@@ -753,6 +753,7 @@
     "incomeSaving": "Receitas e poupança",
     "nonSpendingCashflow": "Fluxo de caixa não relacionado a gastos para {{period}}.",
     "moneyIn": "Dinheiro entrando",
+    "netIncome": "Rendimento líquido",
     "incomeSources": "Fontes de receita",
     "setAside": "Reservado",
     "savingDestinations": "Destinos de poupança",

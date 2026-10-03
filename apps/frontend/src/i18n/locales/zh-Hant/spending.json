@@ -717,6 +717,7 @@
     "incomeSaving": "收入與儲蓄",
     "nonSpendingCashflow": "{{period}} 的非支出現金流。",
     "moneyIn": "流入",
+    "netIncome": "淨收入",
     "incomeSources": "收入來源",
     "setAside": "預留",
     "savingDestinations": "儲蓄去向",

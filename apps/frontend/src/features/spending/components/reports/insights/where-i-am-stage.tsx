@@ -105,7 +105,14 @@ export function WhereIAmStage({
           currency={currency}
           isLoading={isLoading}
         />
-        <NetCashflowCard months={months} currency={currency} isLoading={isLoading} />
+        <NetCashflowCard
+          months={months}
+          currency={currency}
+          isLoading={isLoading}
+          hasIncomeActivity={(currentReport?.incomeBreakdown ?? []).some(
+            (row) => row.count > 0 || row.amount !== 0,
+          )}
+        />
       </div>
       <CashflowOverview
         range={range}
@@ -717,9 +724,15 @@ interface NetCashflowCardProps {
   months: MonthBucket[];
   currency: string;
   isLoading: boolean;
+  hasIncomeActivity: boolean;
 }
 
-const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading }) => {
+const NetCashflowCard: FC<NetCashflowCardProps> = ({
+  months,
+  currency,
+  isLoading,
+  hasIncomeActivity,
+}) => {
   const formatting = useNumberFormatting();
   const { t } = useTranslation();
   const totals = useMemo(() => {
@@ -747,8 +760,8 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
     );
   }
 
-  const denom = Math.max(totals.income, totals.spent, totals.saved, 1);
-  const incomePct = (totals.income / denom) * 100;
+  const denom = Math.max(Math.abs(totals.income), totals.spent, totals.saved, 1);
+  const incomePct = (Math.abs(totals.income) / denom) * 100;
   const spentPct = (totals.spent / denom) * 100;
   const savedPct = (totals.saved / denom) * 100;
   const netToneClass = totals.net >= 0 ? "text-success" : "text-destructive";
@@ -804,7 +817,10 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
           </span>
           <div className="bg-foreground/5 h-1.5 flex-1 overflow-hidden rounded-full">
             <div
-              className="bg-success/65 h-full rounded-full transition-all"
+              className={cn(
+                "h-full rounded-full transition-all",
+                totals.income < 0 ? "bg-destructive/65" : "bg-success/65",
+              )}
               style={{ width: `${incomePct}%` }}
             />
           </div>
@@ -812,7 +828,7 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({ months, currency, isLoading
             <PrivacyAmount value={totals.income} currency={currency} />
           </span>
         </div>
-        {totals.income === 0 && (
+        {totals.income === 0 && !hasIncomeActivity && (
           <p className="text-muted-foreground/70 pl-14 text-[10px] leading-snug">
             {t("spending:whereIAm.noIncome")}
           </p>
@@ -881,7 +897,7 @@ function CashflowOverview({
     [range, dateFormatting],
   );
   const incomeRows = useMemo(
-    () => buildCashflowRows(currentReport?.incomeBreakdown ?? [], incomeCategories, t),
+    () => buildCashflowRows(currentReport?.incomeBreakdown ?? [], incomeCategories, t, true),
     [currentReport?.incomeBreakdown, incomeCategories, t],
   );
   const savingsRows = useMemo(
@@ -889,6 +905,7 @@ function CashflowOverview({
     [currentReport?.savingsBreakdown, savingsCategories, t],
   );
   const hasIncome = incomeRows.length > 0;
+  const hasIncomeCorrections = incomeRows.some((row) => row.amount < 0);
   const hasSaving = savingsRows.length > 0;
 
   if (!isLoading && !hasIncome && !hasSaving) return null;
@@ -925,10 +942,15 @@ function CashflowOverview({
           >
             {hasIncome && (
               <CashflowGroup
-                label={t("spending:whereIAm.moneyIn")}
+                label={t(
+                  hasIncomeCorrections
+                    ? "spending:whereIAm.netIncome"
+                    : "spending:whereIAm.moneyIn",
+                )}
                 sublabel={t("spending:whereIAm.incomeSources")}
                 rows={incomeRows}
                 currency={currency}
+                netIncome={hasIncomeCorrections ? currentReport?.current.income : undefined}
               />
             )}
             {hasSaving && (
@@ -951,18 +973,24 @@ interface CashflowGroupProps {
   sublabel: string;
   rows: CashflowRow[];
   currency: string;
+  netIncome?: number;
 }
 
-function CashflowGroup({ label, sublabel, rows, currency }: CashflowGroupProps) {
+function CashflowGroup({ label, sublabel, rows, currency, netIncome }: CashflowGroupProps) {
   const { t } = useTranslation();
   const numberFormatting = useNumberFormatting();
-  const visibleRows = rows.slice(0, 4);
+  const visibleRows = netIncome !== undefined ? rows : rows.slice(0, 4);
   const hiddenCount = Math.max(0, rows.length - visibleRows.length);
 
   return (
     <div className="p-4">
       <div className="mb-3">
         <div className={LABEL_CLASS}>{label}</div>
+        {netIncome !== undefined && (
+          <div className="text-lg font-semibold tabular-nums">
+            <PrivacyAmount value={netIncome} currency={currency} />
+          </div>
+        )}
         <div className="text-muted-foreground/70 mt-0.5 text-xs">{sublabel}</div>
       </div>
       <div className="space-y-2">
@@ -985,7 +1013,7 @@ function CashflowGroup({ label, sublabel, rows, currency }: CashflowGroupProps) 
                 <PrivacyAmount value={row.amount} currency={currency} />
               </span>
             </div>
-            {visibleRows.length > 1 && (
+            {netIncome === undefined && visibleRows.length > 1 && (
               <div className="mt-2 flex items-center gap-2">
                 <div className="bg-foreground/5 h-1 flex-1 overflow-hidden rounded-full">
                   <div
@@ -1027,13 +1055,18 @@ function buildCashflowRows(
   breakdown: CategoryBreakdownRow[],
   taxonomyCategories: TaxonomyCategory[],
   t: TFunction,
+  preserveCorrections = false,
 ): CashflowRow[] {
   const meta = new Map(taxonomyCategories.map((c) => [c.id, c]));
+  // Do not hide a signed income correction inside its positive parent total.
+  const itemize = preserveCorrections && breakdown.some((row) => row.amount < 0);
   const byTop = new Map<string, CashflowRow>();
   for (const row of breakdown) {
     if (row.amount === 0) continue;
     const topId =
-      row.categoryId === "__uncategorized__" ? row.categoryId : topCategoryId(row.categoryId, meta);
+      itemize || row.categoryId === "__uncategorized__"
+        ? row.categoryId
+        : topCategoryId(row.categoryId, meta);
     const top = meta.get(topId);
     const existing = byTop.get(topId) ?? {
       id: topId,

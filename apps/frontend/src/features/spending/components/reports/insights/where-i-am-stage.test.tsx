@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps } from "react";
 import type { TaxonomyCategory } from "@/lib/types";
@@ -66,6 +66,65 @@ function setup(custom: boolean, overrides: Partial<ComponentProps<typeof WhereIA
 }
 
 describe("Where I am comparison labels", () => {
+  it.each([0, 50, -50])(
+    "itemizes signed income corrections with net income %s, without positive-only shares",
+    (net) => {
+      const categories = [
+        { id: "parent", name: "Employment", parentId: null },
+        ...Array.from({ length: 5 }, (_, i) => ({
+          id: `source-${i}`,
+          name: `Source ${i}`,
+          parentId: "parent",
+        })),
+        { id: "correction", name: "Income tax correction", parentId: "parent" },
+      ] as TaxonomyCategory[];
+      const amounts = [100, 80, 60, 40, 20];
+      setup(false, {
+        incomeCategories: categories,
+        months: [
+          {
+            iso: "2025-03-01",
+            label: "Mar",
+            isLoading: false,
+            report: {
+              ...report(30),
+              current: { income: net, outflow: 30, saved: 0, net: net - 30, count: 6 },
+            },
+          },
+        ],
+        currentReport: {
+          ...report(30),
+          current: { income: net, outflow: 30, saved: 0, net: net - 30, count: 6 },
+          incomeBreakdown: [
+            ...amounts.map((amount, i) => ({
+              categoryId: `source-${i}`,
+              taxonomyId: "income_sources",
+              amount,
+              count: 1,
+            })),
+            { categoryId: "correction", taxonomyId: "income_sources", amount: net - 300, count: 1 },
+          ],
+        },
+      });
+      const cashflow = within(screen.getByText("Net income").closest("section")!);
+      expect(cashflow.getByText("Income tax correction")).toBeInTheDocument();
+      expect(cashflow.getByText(`-$${300 - net}.00`)).toBeInTheDocument();
+      expect(cashflow.getByText(net < 0 ? `-$${-net}.00` : `$${net}.00`)).toBeInTheDocument();
+      for (let i = 0; i < 5; i++) expect(cashflow.getByText(`Source ${i}`)).toBeInTheDocument();
+      expect(cashflow.queryByText("Employment")).not.toBeInTheDocument();
+      expect(cashflow.queryByText("Money in")).not.toBeInTheDocument();
+      expect(cashflow.queryByText(/%/)).not.toBeInTheDocument();
+      expect(
+        screen.queryByText("No income in selected accounts for this period."),
+      ).not.toBeInTheDocument();
+      const headline = screen.getByText("NET CASHFLOW").closest("div[class*='rounded']")!;
+      for (const bar of headline.querySelectorAll<HTMLElement>("[style*='width']")) {
+        expect(parseFloat(bar.style.width)).toBeGreaterThanOrEqual(0);
+        expect(parseFloat(bar.style.width)).toBeLessThanOrEqual(100);
+      }
+    },
+  );
+
   it("counts visible prior-only and budget-only categories as well as current spending", () => {
     setup(false, {
       currentReport: {
