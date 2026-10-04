@@ -224,6 +224,8 @@ export function formatDelta(
   formatting: Pick<FormattingApi, "formatPercent">,
 ): string {
   if (delta === 0) return "—";
+  // A net-credit period is not a meaningful spending percentage baseline.
+  if (baseline < 0) return "—";
   // No prior period spend — label as "new" instead of restating current amount.
   if (baseline === 0) return delta > 0 ? "new" : "—";
   const arrow = delta > 0 ? "↑" : "↓";

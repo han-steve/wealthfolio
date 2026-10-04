@@ -1,6 +1,27 @@
 import { describe, expect, it } from "vitest";
 import type { TaxonomyCategory } from "@/lib/types";
-import { buildTree } from "./builders";
+import { buildTree, formatDelta } from "./builders";
+
+describe("spending category comparison labels", () => {
+  const formatting = {
+    formatPercent: (value: number | null | undefined) => `${Math.round((value ?? 0) * 100)}%`,
+  };
+
+  it.each([
+    [-50, 120],
+    [-50, -20],
+  ])("does not report a percentage against net-credit baseline %s", (baseline, delta) => {
+    expect(formatDelta(delta, baseline, formatting)).toBe("—");
+  });
+
+  it("keeps the direction and magnitude for positive prior spending", () => {
+    expect(formatDelta(20, 100, formatting)).toBe("↑ 20%");
+    expect(formatDelta(-120, 100, formatting)).toBe("↓ 120%");
+    expect(formatDelta(0, 100, formatting)).toBe("—");
+    expect(formatDelta(20, 0, formatting)).toBe("new");
+    expect(formatDelta(-20, 0, formatting)).toBe("—");
+  });
+});
 
 describe("spending category totals", () => {
   it("labels prior-only uncategorized activity without exposing the internal id", () => {
