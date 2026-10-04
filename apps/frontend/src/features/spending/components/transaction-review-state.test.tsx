@@ -167,10 +167,43 @@ describe("needs-review state", () => {
       expect(screen.getByText("Example tax payment")).toBeInTheDocument();
       const amount = screen.getByText("$100.00");
       expect(amount.parentElement).toHaveTextContent("-$100.00");
+      expect(amount.parentElement).toHaveClass("text-destructive");
+      expect(amount.parentElement).not.toHaveClass("text-success");
       expect(screen.queryByText("$0.00")).not.toBeInTheDocument();
       expect(JSON.stringify(correction)).toBe(original);
     },
   );
+
+  describe.each(["table", "card"])("%s amount colors", (layout) => {
+    it.each([
+      { name: "income", activityType: "DEPOSIT", cashFlowBucket: "income", netAmount: 100 },
+      {
+        name: "refund",
+        activityType: "CREDIT",
+        subtype: "REFUND",
+        cashFlowBucket: "spending",
+        netAmount: 100,
+      },
+    ] as const)("keeps positive $name green", (fixture) => {
+      const row = toRowVM(activity({ ...fixture, amount: "100" }), new Map());
+      render(
+        layout === "table" ? (
+          <Table>
+            <TableBody>
+              <TransactionRow row={row} {...shared} />
+            </TableBody>
+          </Table>
+        ) : (
+          <TransactionCard row={row} selectionMode={false} {...shared} />
+        ),
+        { wrapper: withProviders },
+      );
+      const amount = screen.getByText("$100.00");
+      expect(amount.parentElement).toHaveTextContent("+$100.00");
+      expect(amount.parentElement).toHaveClass("text-success");
+      expect(amount.parentElement).not.toHaveClass("text-destructive");
+    });
+  });
 
   it("announces review state on a table row that needs it", () => {
     renderRow(true);

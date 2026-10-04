@@ -140,7 +140,7 @@ function TransactionCardImpl({
                 "shrink-0 text-sm font-medium tabular-nums",
                 isSaving
                   ? "text-[#6B8E54]"
-                  : isOutflow
+                  : isOutflow || (isIncome && sign === "-")
                     ? "text-destructive"
                     : isNeutral
                       ? "text-muted-foreground"

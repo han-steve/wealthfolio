@@ -246,7 +246,7 @@ function TransactionRowImpl({
           "w-28 whitespace-nowrap px-3 py-2 text-right text-sm font-medium tabular-nums",
           isSaving
             ? "text-[#6B8E54]"
-            : isOutflow
+            : isOutflow || (isIncome && sign === "-")
               ? "text-destructive"
               : isNeutral
                 ? "text-muted-foreground"
