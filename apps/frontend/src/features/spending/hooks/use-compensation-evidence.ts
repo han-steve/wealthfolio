@@ -6,7 +6,6 @@ export function useCompensationEvidence(request: { startDate: string; endDate: s
   return useQuery<CompensationEvidence, Error>({
     queryKey: ["compensation-evidence", request],
     queryFn: () => getCompensationEvidence(request),
-    refetchInterval: 5 * 60 * 1000,
     refetchOnWindowFocus: true,
   });
 }
