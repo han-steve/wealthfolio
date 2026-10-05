@@ -29,6 +29,7 @@ import { SpendingPeriodSelector } from "../components/spending-period-toggle";
 import { useCashActivities } from "../hooks/use-cash-activities";
 import { useEventSpendingSummaries } from "../hooks/use-spending-events";
 import { useSpendingInsight } from "../hooks/use-spending-insight";
+import { useCompensationEvidence } from "../hooks/use-compensation-evidence";
 import { useSpendingSettings } from "../hooks/use-spending-settings";
 import { getActivitySpendingAmount, getVisibleSpendingAmount } from "../lib/constants";
 import { insightToReportProjection, UNCATEGORIZED_CATEGORY_ID } from "../lib/insight-projection";
@@ -332,6 +333,14 @@ export default function SpendingInsightsPage() {
     isError: insightErrored,
     refetch: refetchInsight,
   } = useSpendingInsight(insightRequest);
+  const compensationRequest = useMemo(() => {
+    const calendarDate = (date: Date) => {
+      const { year, month, day } = getZonedDateParts(date, appTimezone);
+      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+    };
+    return { startDate: calendarDate(range.start), endDate: calendarDate(range.end) };
+  }, [range, appTimezone]);
+  const compensation = useCompensationEvidence(compensationRequest);
   const whatChangedRequest = useMemo(() => {
     if (!whatChangedWindow) return null;
     return {
@@ -594,6 +603,9 @@ export default function SpendingInsightsPage() {
 
         {stage === "where" && (
           <WhereIAmStage
+            compensation={compensation.data}
+            compensationLoading={compensation.isLoading}
+            compensationError={compensation.isError}
             range={range}
             priorRange={customPriorRange ?? undefined}
             currentReport={insightProjection?.currentReport}

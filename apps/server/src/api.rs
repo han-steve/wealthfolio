@@ -36,6 +36,7 @@ mod ai_providers;
 mod allocation_targets;
 mod alternative_assets;
 mod assets;
+mod compensation;
 #[cfg(any(feature = "connect-sync", feature = "device-sync"))]
 pub mod connect;
 mod custom_providers;
@@ -189,6 +190,7 @@ fn app_router_with_profiles(
         .merge(health::router())
         .merge(custom_providers::router())
         .merge(spending::router())
+        .merge(compensation::router())
         .merge(allocation_targets::router())
         .merge(agent_access::router());
 

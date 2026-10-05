@@ -29,6 +29,8 @@ import type { BudgetCategoryRow, BudgetSnapshot } from "../../../types/budget";
 import type { PaceState } from "../../../types/insight";
 import type { CategoryBreakdownRow, MonthBucket, MonthlyReport } from "../../../types/report";
 import { CategoryIcon } from "../../category-chips";
+import { CompensationOverview } from "./compensation-overview";
+import type { CompensationEvidence } from "../../../types/compensation";
 import { CategoryHierarchyTable, type CategorySort } from "../category-hierarchy-table";
 import { buildTree } from "../category-hierarchy/builders";
 import { formatMonthDay, formatMonthName, formatPercentValue } from "./format";
@@ -57,6 +59,9 @@ export interface WhereIAmStageProps {
   budget: BudgetSnapshot | undefined;
   currency: string;
   isLoading: boolean;
+  compensation?: CompensationEvidence;
+  compensationLoading?: boolean;
+  compensationError?: boolean;
   /**
    * Reconciled pace shipped by the backend. When provided, the pace card uses
    * it verbatim instead of re-deriving daysElapsed/dailyAvg/projection locally
@@ -82,6 +87,9 @@ export function WhereIAmStage({
   currency,
   isLoading,
   reconciledPace,
+  compensation,
+  compensationLoading,
+  compensationError,
   onCategoryClick,
 }: WhereIAmStageProps) {
   return (
@@ -115,6 +123,9 @@ export function WhereIAmStage({
         />
       </div>
       <CashflowOverview
+        compensation={compensation}
+        compensationLoading={compensationLoading}
+        compensationError={compensationError}
         range={range}
         currentReport={currentReport}
         incomeCategories={incomeCategories}
@@ -873,6 +884,9 @@ const NetCashflowCard: FC<NetCashflowCardProps> = ({
 // ═════════════════════════════════════════════════════════════════════════
 
 interface CashflowOverviewProps {
+  compensation?: CompensationEvidence;
+  compensationLoading?: boolean;
+  compensationError?: boolean;
   range: ReportsRange;
   currentReport: MonthlyReport | undefined;
   incomeCategories: TaxonomyCategory[];
@@ -882,6 +896,9 @@ interface CashflowOverviewProps {
 }
 
 function CashflowOverview({
+  compensation,
+  compensationLoading,
+  compensationError,
   range,
   currentReport,
   incomeCategories,
@@ -908,7 +925,15 @@ function CashflowOverview({
   const hasIncomeCorrections = incomeRows.some((row) => row.amount < 0);
   const hasSaving = savingsRows.length > 0;
 
-  if (!isLoading && !hasIncome && !hasSaving) return null;
+  if (
+    !isLoading &&
+    !hasIncome &&
+    !hasSaving &&
+    !compensation &&
+    !compensationLoading &&
+    !compensationError
+  )
+    return null;
 
   return (
     <section id="cashflow">
@@ -964,6 +989,11 @@ function CashflowOverview({
           </div>
         )}
       </div>
+      <CompensationOverview
+        evidence={compensation}
+        isLoading={compensationLoading}
+        isError={compensationError}
+      />
     </section>
   );
 }

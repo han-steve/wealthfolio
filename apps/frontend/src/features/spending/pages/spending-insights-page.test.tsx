@@ -4,10 +4,17 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import SpendingInsightsPage from "./spending-insights-page";
 
-const { insightQuery, eventsQuery, cashQuery } = vi.hoisted(() => ({
+const { insightQuery, eventsQuery, cashQuery, compensationQuery } = vi.hoisted(() => ({
   insightQuery: vi.fn(),
   eventsQuery: vi.fn(),
   cashQuery: vi.fn(),
+  compensationQuery: vi.fn(),
+}));
+vi.mock("../hooks/use-compensation-evidence", () => ({
+  useCompensationEvidence: (request: unknown) => {
+    compensationQuery(request);
+    return {};
+  },
 }));
 vi.mock("@/lib/settings-provider", () => ({
   useSettingsContext: () => ({ settings: { baseCurrency: "USD", timezone: "America/Toronto" } }),
@@ -80,6 +87,10 @@ describe("custom range in Spending Insights", () => {
     "retains exact custom dates and calendar-day comparison in %s",
     (stage) => {
       setup(stage);
+      expect(compensationQuery).toHaveBeenCalledWith({
+        startDate: "2025-03-08",
+        endDate: "2025-03-10",
+      });
       expect(insightQuery).toHaveBeenCalledWith(
         {
           startDate: "2025-03-08T05:00:00.000Z",

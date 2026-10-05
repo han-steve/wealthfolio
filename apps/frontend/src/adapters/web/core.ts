@@ -251,6 +251,7 @@ export const COMMANDS: CommandMap = {
   // Spending analytics
   get_spending_report: { method: "POST", path: "/spending/report" },
   get_spending_insight: { method: "POST", path: "/spending/insight" },
+  get_compensation_evidence: { method: "POST", path: "/spending/compensation-evidence" },
   // Health Center
   get_health_status: { method: "GET", path: "/health/status" },
   run_health_checks: { method: "POST", path: "/health/check" },
@@ -1541,6 +1542,7 @@ export const invoke = async <T>(command: string, payload?: Record<string, unknow
     }
     // Spending analytics
     case "get_spending_report":
+    case "get_compensation_evidence":
     case "get_spending_insight": {
       const { request } = payload as { request: Record<string, unknown> };
       body = JSON.stringify(request);

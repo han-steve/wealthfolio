@@ -428,6 +428,14 @@ async fn build_context(
         fx_service.clone(),
     ));
 
+    let compensation_evidence_service = Arc::new(
+        wealthfolio_core::compensation::CompensationEvidenceService::new(Arc::new(
+            wealthfolio_storage_sqlite::compensation::CompensationEvidenceRepository::new(
+                pool.clone(),
+            ),
+        )),
+    );
+
     // Import run repository for tracking CSV imports
     let import_run_repository: Arc<dyn ImportRunRepositoryTrait> =
         Arc::new(ImportRunRepository::new(pool.clone(), writer.clone()));
@@ -785,6 +793,7 @@ async fn build_context(
             budget_service,
             spending_analytics_service,
             spending_insight_service,
+            compensation_evidence_service,
         },
         event_receiver,
         final_cash_rebuild,

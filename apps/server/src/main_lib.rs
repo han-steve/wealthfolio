@@ -144,6 +144,8 @@ pub struct AppState {
     pub budget_service: Arc<wealthfolio_spending::budget::BudgetService>,
     pub spending_analytics_service: Arc<wealthfolio_spending::analytics::AnalyticsService>,
     pub spending_insight_service: Arc<wealthfolio_spending::insight::InsightService>,
+    pub compensation_evidence_service:
+        Arc<wealthfolio_core::compensation::CompensationEvidenceService>,
     pub allocation_target_service: Arc<
         dyn wealthfolio_core::portfolio::allocation_targets::AllocationTargetServiceTrait
             + Send
@@ -920,6 +922,14 @@ pub(crate) async fn build_profile_state(
         fx_service.clone(),
     ));
 
+    let compensation_evidence_service = Arc::new(
+        wealthfolio_core::compensation::CompensationEvidenceService::new(Arc::new(
+            wealthfolio_storage_sqlite::compensation::CompensationEvidenceRepository::new(
+                pool.clone(),
+            ),
+        )),
+    );
+
     // Alternative asset repository for alternative assets operations
     let alternative_asset_repository: Arc<dyn AlternativeAssetRepositoryTrait + Send + Sync> =
         Arc::new(AlternativeAssetRepository::new(
@@ -1170,6 +1180,7 @@ pub(crate) async fn build_profile_state(
         budget_service,
         spending_analytics_service,
         spending_insight_service,
+        compensation_evidence_service,
         allocation_target_service,
         drift_service,
         rebalance_service,

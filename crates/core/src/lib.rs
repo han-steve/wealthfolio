@@ -8,6 +8,7 @@ pub mod accounts;
 pub mod activities;
 pub mod addons;
 pub mod assets;
+pub mod compensation;
 pub mod constants;
 pub mod custom_provider;
 pub mod errors;

@@ -94,6 +94,8 @@ pub struct ServiceContext {
     pub budget_service: Arc<BudgetService>,
     pub spending_analytics_service: Arc<AnalyticsService>,
     pub spending_insight_service: Arc<InsightService>,
+    pub compensation_evidence_service:
+        Arc<wealthfolio_core::compensation::CompensationEvidenceService>,
 }
 
 impl ServiceContext {
@@ -143,6 +145,12 @@ impl ServiceContext {
 
     pub fn spending_insight_service(&self) -> Arc<InsightService> {
         Arc::clone(&self.spending_insight_service)
+    }
+
+    pub fn compensation_evidence_service(
+        &self,
+    ) -> Arc<wealthfolio_core::compensation::CompensationEvidenceService> {
+        Arc::clone(&self.compensation_evidence_service)
     }
 
     pub fn account_service(&self) -> Arc<dyn accounts::AccountServiceTrait> {

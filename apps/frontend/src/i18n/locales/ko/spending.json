@@ -1,4 +1,29 @@
 {
+  "compensation": {
+    "title": "Gross compensation",
+    "separate": "Documented earnings and deductions, separate from cash income and spending. RSUs are not added again to bank deposits.",
+    "error": "Compensation evidence could not be loaded. Cash income is unchanged.",
+    "unavailable": "No compensation document is available for these tax years as of the selected end date.",
+    "asOf": "Document dated {{date}}",
+    "coverageMismatch": "Document coverage differs from the selected range; this is not gross income for that range.",
+    "gross": "Gross pay · includes RSUs",
+    "basis": {
+      "annual": "Annual documented wages",
+      "ytd": "Year-to-date compensation",
+      "event": "Dated compensation event",
+      "unknown": "Undocumented period"
+    },
+    "groups": {
+      "gross_income": "Earnings · salary and RSUs",
+      "tax": "Employee taxes",
+      "pre_tax_deduction": "Pre-tax retirement and benefits",
+      "post_tax_savings": "Post-tax contributions and RSU offset",
+      "employer_paid_benefit": "Employer benefits · not employee cash pay",
+      "imputed_income": "Imputed noncash income",
+      "taxable_wages": "Taxable wage bases · overlapping, not additive",
+      "net_pay": "Net pay · already included in cash income"
+    }
+  },
   "common": {
     "amount": "금액",
     "min": "최소",
