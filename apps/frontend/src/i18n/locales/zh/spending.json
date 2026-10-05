@@ -7,6 +7,7 @@
     "asOf": "Document dated {{date}}",
     "coverageMismatch": "Document coverage differs from the selected range; this is not gross income for that range.",
     "gross": "Gross pay · includes RSUs",
+    "taxNote": "工资预扣税款不等于最终年度应纳税额。单独的缴税和退税按入账日期记录为现金流，可能涉及其他纳税年度。",
     "basis": {
       "annual": "Annual documented wages",
       "ytd": "Year-to-date compensation",
@@ -15,7 +16,7 @@
     },
     "groups": {
       "gross_income": "Earnings · salary and RSUs",
-      "tax": "Employee taxes",
+      "tax": "工资税款扣除",
       "pre_tax_deduction": "Pre-tax retirement and benefits",
       "post_tax_savings": "Post-tax contributions and RSU offset",
       "employer_paid_benefit": "Employer benefits · not employee cash pay",

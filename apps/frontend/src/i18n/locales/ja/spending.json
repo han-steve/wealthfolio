@@ -7,6 +7,7 @@
     "asOf": "Document dated {{date}}",
     "coverageMismatch": "Document coverage differs from the selected range; this is not gross income for that range.",
     "gross": "Gross pay · includes RSUs",
+    "taxNote": "給与からの源泉徴収額は、最終的な年間税額ではありません。別途の納税や還付は、計上日の資金の動きとして記録され、別の課税年度に関係する場合があります。",
     "basis": {
       "annual": "Annual documented wages",
       "ytd": "Year-to-date compensation",
@@ -15,7 +16,7 @@
     },
     "groups": {
       "gross_income": "Earnings · salary and RSUs",
-      "tax": "Employee taxes",
+      "tax": "給与から差し引かれた税金",
       "pre_tax_deduction": "Pre-tax retirement and benefits",
       "post_tax_savings": "Post-tax contributions and RSU offset",
       "employer_paid_benefit": "Employer benefits · not employee cash pay",

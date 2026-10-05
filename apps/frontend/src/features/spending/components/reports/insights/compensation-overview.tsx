@@ -80,6 +80,11 @@ export function CompensationOverview({ evidence, isLoading, isError }: Props) {
                       defaultValue: group.replaceAll("_", " "),
                     })}
                   </summary>
+                  {group === "tax" && (
+                    <p className="text-muted-foreground mt-2 pl-4 text-xs">
+                      {t("spending:compensation.taxNote")}
+                    </p>
+                  )}
                   <dl className="mt-2 space-y-1 pl-4">
                     {document.components
                       .filter((row) => row.componentGroup === group)

@@ -7,6 +7,7 @@
     "asOf": "Document dated {{date}}",
     "coverageMismatch": "Document coverage differs from the selected range; this is not gross income for that range.",
     "gross": "Gross pay · includes RSUs",
+    "taxNote": "급여 원천징수액은 최종 연간 세액이 아닙니다. 별도의 세금 납부와 환급은 거래가 반영된 날짜의 현금 흐름으로 기록되며 다른 과세 연도와 관련될 수 있습니다.",
     "basis": {
       "annual": "Annual documented wages",
       "ytd": "Year-to-date compensation",
@@ -15,7 +16,7 @@
     },
     "groups": {
       "gross_income": "Earnings · salary and RSUs",
-      "tax": "Employee taxes",
+      "tax": "급여 세금 공제",
       "pre_tax_deduction": "Pre-tax retirement and benefits",
       "post_tax_savings": "Post-tax contributions and RSU offset",
       "employer_paid_benefit": "Employer benefits · not employee cash pay",

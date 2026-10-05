@@ -7,6 +7,7 @@
     "asOf": "Document dated {{date}}",
     "coverageMismatch": "Document coverage differs from the selected range; this is not gross income for that range.",
     "gross": "Gross pay · includes RSUs",
+    "taxNote": "Payroll withholding is not final annual tax. Separate tax payments and refunds are cash flows recorded on their posting dates and may relate to a different tax year.",
     "basis": {
       "annual": "Annual documented wages",
       "ytd": "Year-to-date compensation",
@@ -15,7 +16,7 @@
     },
     "groups": {
       "gross_income": "Earnings · salary and RSUs",
-      "tax": "Employee taxes",
+      "tax": "Payroll tax deductions",
       "pre_tax_deduction": "Pre-tax retirement and benefits",
       "post_tax_savings": "Post-tax contributions and RSU offset",
       "employer_paid_benefit": "Employer benefits · not employee cash pay",

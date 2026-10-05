@@ -1,6 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import { FormattingProvider } from "@wealthfolio/ui";
+import { createInstance } from "i18next";
+import { I18nextProvider } from "react-i18next";
 import { beforeEach, describe, expect, it } from "vitest";
+import { SUPPORTED_LOCALE_CODES } from "@/i18n/locales";
 import { CompensationOverview } from "./compensation-overview";
 import { documentedGross } from "../../../lib/compensation";
 import type { CompensationDocument, CompensationEvidence } from "../../../types/compensation";
@@ -65,6 +68,10 @@ const evidence: CompensationEvidence = {
   selectionPolicy: "As-of documents",
   documents: [document],
 };
+const spendingCatalogs = import.meta.glob<{
+  compensation: { taxNote: string; groups: { tax: string } };
+}>("/src/i18n/locales/*/spending.json", { eager: true, import: "default" });
+
 function setup(props: Parameters<typeof CompensationOverview>[0]) {
   render(
     <FormattingProvider locale="en-US" timezone="America/Toronto">
@@ -94,7 +101,12 @@ describe("Native spending compensation", () => {
     expect(within(section).queryByText("$23,000.00")).not.toBeInTheDocument();
   });
   it("does not fabricate gross wages from annual taxable wages or conflicting evidence", () => {
-    expect(documentedGross({ ...document, components: document.components.map((row) => ({ ...row, metadata: null })) })).toBeNull();
+    expect(
+      documentedGross({
+        ...document,
+        components: document.components.map((row) => ({ ...row, metadata: null })),
+      }),
+    ).toBeNull();
     expect(
       documentedGross({
         ...document,
@@ -111,6 +123,87 @@ describe("Native spending compensation", () => {
       }),
     ).toBeNull();
   });
+  it("clarifies payroll taxes separately from final annual tax and posted cash", () => {
+    setup({
+      evidence: {
+        ...evidence,
+        documents: [
+          {
+            ...document,
+            components: [
+              ...document.components,
+              {
+                ...document.components[3],
+                id: "oasdi",
+                componentName: "OASDI",
+                amountSigned: "-75",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const summary = screen.getByText("Payroll tax deductions");
+    const details = summary.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+    expect(within(details!).getByText("Income tax")).toBeInTheDocument();
+    expect(within(details!).getByText("OASDI")).toBeInTheDocument();
+    expect(within(details!).getByText("-$75.00")).toBeInTheDocument();
+    expect(within(details!).getByText("-$2,000.00")).toBeInTheDocument();
+    expect(
+      within(details!).getByText(
+        "Payroll withholding is not final annual tax. Separate tax payments and refunds are cash flows recorded on their posting dates and may relate to a different tax year.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByText("$10,000.00")).toBeInTheDocument();
+  });
+  it("does not show the tax note in other compensation groups", () => {
+    setup({
+      evidence: {
+        ...evidence,
+        documents: [
+          {
+            ...document,
+            components: document.components.filter((row) => row.componentGroup !== "tax"),
+          },
+        ],
+      },
+    });
+    expect(
+      screen.queryByText(/Payroll withholding is not final annual tax/),
+    ).not.toBeInTheDocument();
+  });
+  it.each(SUPPORTED_LOCALE_CODES)(
+    "localizes the tax label and note in %s without fallback",
+    async (locale) => {
+      const catalog = spendingCatalogs[`/src/i18n/locales/${locale}/spending.json`];
+      const i18n = createInstance();
+      await i18n.init({
+        lng: locale,
+        fallbackLng: false,
+        resources: { [locale]: { spending: catalog } },
+        interpolation: { escapeValue: false },
+        react: { useSuspense: false },
+      });
+      render(
+        <I18nextProvider i18n={i18n}>
+          <FormattingProvider locale="en-US" timezone="America/Toronto">
+            <CompensationOverview evidence={evidence} />
+          </FormattingProvider>
+        </I18nextProvider>,
+      );
+      const details = screen.getByText(catalog.compensation.groups.tax).closest("details");
+      expect(details).not.toBeNull();
+      expect(within(details!).getByText(catalog.compensation.taxNote)).toBeInTheDocument();
+      if (locale !== "en") {
+        expect(catalog.compensation.taxNote).not.toBe(
+          spendingCatalogs["/src/i18n/locales/en/spending.json"].compensation.taxNote,
+        );
+        expect(catalog.compensation.groups.tax).not.toBe("Payroll tax deductions");
+      }
+    },
+  );
   it("shows missing evidence rather than zero salary", () => {
     setup({ evidence: { ...evidence, status: "unavailable", documents: [] } });
     expect(screen.getByText(/No compensation document is available/)).toBeInTheDocument();

@@ -7,6 +7,7 @@
     "asOf": "Document dated {{date}}",
     "coverageMismatch": "Document coverage differs from the selected range; this is not gross income for that range.",
     "gross": "Gross pay · includes RSUs",
+    "taxNote": "As retenções na folha de pagamento não são o imposto anual definitivo. Pagamentos e restituições de impostos separados são fluxos de caixa registrados na data de lançamento e podem se referir a outro ano fiscal.",
     "basis": {
       "annual": "Annual documented wages",
       "ytd": "Year-to-date compensation",
@@ -15,7 +16,7 @@
     },
     "groups": {
       "gross_income": "Earnings · salary and RSUs",
-      "tax": "Employee taxes",
+      "tax": "Deduções tributárias da folha de pagamento",
       "pre_tax_deduction": "Pre-tax retirement and benefits",
       "post_tax_savings": "Post-tax contributions and RSU offset",
       "employer_paid_benefit": "Employer benefits · not employee cash pay",
