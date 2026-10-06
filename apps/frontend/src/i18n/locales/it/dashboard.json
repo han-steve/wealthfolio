@@ -14,6 +14,11 @@
   "top_holdings": "Posizioni principali",
   "asset_allocation": "Allocazione degli asset",
   "performance_chart": "Grafico delle performance",
+  "history": {
+    "empty": "Nessuna valutazione completa del portafoglio per questo periodo.",
+    "through": "Storico completo fino al {{date}}. ",
+    "view_available": "Visualizza lo storico disponibile"
+  },
   "view_all": "Visualizza tutto",
   "no_data": "Nessun dato disponibile",
   "sync_portfolio": "Sincronizza portafoglio",

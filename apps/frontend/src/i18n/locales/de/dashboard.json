@@ -33,6 +33,11 @@
   "recent_activities": "Letzte Aktivitäten",
   "asset_allocation": "Vermögensaufteilung",
   "performance_chart": "Wertentwicklungsdiagramm",
+  "history": {
+    "empty": "Keine vollständigen Portfoliobewertungen für diesen Zeitraum.",
+    "through": "Vollständiger Verlauf bis {{date}}. ",
+    "view_available": "Verfügbaren Verlauf anzeigen"
+  },
   "no_data": "Keine Daten verfügbar",
   "sync_portfolio": "Portfolio synchronisieren",
   "loading_portfolio": "Portfoliodaten werden geladen...",

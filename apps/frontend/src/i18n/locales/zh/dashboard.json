@@ -14,6 +14,11 @@
   "top_holdings": "主要持仓",
   "asset_allocation": "资产配置",
   "performance_chart": "业绩图表",
+  "history": {
+    "empty": "此期间没有完整的投资组合估值。",
+    "through": "完整历史数据截至 {{date}}。 ",
+    "view_available": "查看可用历史数据"
+  },
   "view_all": "查看全部",
   "no_data": "暂无数据",
   "sync_portfolio": "同步投资组合",

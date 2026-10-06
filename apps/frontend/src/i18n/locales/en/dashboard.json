@@ -18,6 +18,7 @@
     "loading": "Loading portfolio history...",
     "error": "Portfolio history could not be loaded.",
     "empty": "No complete portfolio valuations for this period.",
+    "view_available": "View available history",
     "refresh_error": "History refresh failed; showing previously loaded data. ",
     "through": "Complete history through {{date}}. ",
     "gaps": "Gaps indicate missing account valuations."

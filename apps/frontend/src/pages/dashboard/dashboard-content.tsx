@@ -17,9 +17,12 @@ import type { TimePeriod as UITimePeriod } from "@wealthfolio/ui";
 import { GainAmount, GainPercent, getInitialIntervalData, IntervalSelector } from "@wealthfolio/ui";
 import { usePersistentState } from "@/hooks/use-persistent-state";
 import { Skeleton } from "@wealthfolio/ui/components/ui/skeleton";
+import { Button } from "@wealthfolio/ui/components/ui/button";
 import { format } from "date-fns";
+import { History, TriangleAlert } from "lucide-react";
 import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
+import { Link } from "react-router-dom";
 import { AccountsSummary } from "./accounts-summary";
 import Balance from "./balance";
 import SavingGoals from "./goals";
@@ -27,6 +30,47 @@ import TopHoldings from "./top-holdings";
 
 const DEFAULT_INTERVAL: UITimePeriod = "3M";
 const INTERVAL_STORAGE_KEY = "dashboard-interval";
+
+function EmptyPortfolioHistory({
+  isAllTime,
+  onViewHistory,
+}: {
+  isAllTime: boolean;
+  onViewHistory: () => void;
+}) {
+  const { t } = useTranslation();
+  // Read the same complete-date series, without widening the selected chart or its returns.
+  const { valuationHistory, isLoading, error } = useValuationHistory(
+    undefined,
+    { type: "all" },
+    { enabled: !isAllTime },
+  );
+  const lastCompleteDate =
+    !isLoading && !error ? valuationHistory?.at(-1)?.valuationDate : undefined;
+
+  return (
+    <div className="flex flex-col items-center gap-3">
+      <p>{t("dashboard:history.empty")}</p>
+      {!isAllTime && lastCompleteDate && (
+        <p className="text-xs">{t("dashboard:history.through", { date: lastCompleteDate })}</p>
+      )}
+      <div className="flex flex-wrap justify-center gap-2">
+        {!isAllTime && lastCompleteDate && (
+          <Button variant="outline" size="sm" onClick={onViewHistory}>
+            <History className="mr-2 size-4" aria-hidden="true" />
+            {t("dashboard:history.view_available")}
+          </Button>
+        )}
+        <Button variant="ghost" size="sm" asChild>
+          <Link to="/health">
+            <TriangleAlert className="mr-2 size-4" aria-hidden="true" />
+            {t("common:component.data_status")}
+          </Link>
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 function getDashboardChartMinDomainSpanRatio(period: UITimePeriod): number {
   switch (period) {
@@ -262,14 +306,16 @@ export function DashboardContent() {
                 role="status"
                 className="text-muted-foreground flex h-full items-center justify-center px-4 text-center text-sm"
               >
-                {isValuationHistoryLoading
-                  ? t("dashboard:history.loading", "Loading portfolio history...")
-                  : valuationHistoryError
-                    ? t("dashboard:history.error", "Portfolio history could not be loaded.")
-                    : t(
-                        "dashboard:history.empty",
-                        "No complete portfolio valuations for this period.",
-                      )}
+                {isValuationHistoryLoading ? (
+                  t("dashboard:history.loading", "Loading portfolio history...")
+                ) : valuationHistoryError ? (
+                  t("dashboard:history.error", "Portfolio history could not be loaded.")
+                ) : (
+                  <EmptyPortfolioHistory
+                    isAllTime={isAllTime}
+                    onViewHistory={() => setSelectedInterval("ALL")}
+                  />
+                )}
               </div>
             )}
           </div>
@@ -299,7 +345,7 @@ export function DashboardContent() {
               onIntervalSelect={setSelectedInterval}
               onHaptic={triggerHaptic}
               isLoading={isValuationHistoryLoading}
-              storageKey={INTERVAL_STORAGE_KEY}
+              value={selectedInterval}
               defaultValue={DEFAULT_INTERVAL}
             />
           </div>

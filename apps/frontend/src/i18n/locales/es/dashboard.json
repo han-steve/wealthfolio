@@ -14,6 +14,11 @@
   "top_holdings": "Principales posiciones",
   "asset_allocation": "Asignación de activos",
   "performance_chart": "Gráfico de rentabilidad",
+  "history": {
+    "empty": "No hay valoraciones completas de la cartera para este período.",
+    "through": "Historial completo hasta {{date}}. ",
+    "view_available": "Ver historial disponible"
+  },
   "view_all": "Ver todo",
   "no_data": "No hay datos disponibles",
   "sync_portfolio": "Sincronizar cartera",

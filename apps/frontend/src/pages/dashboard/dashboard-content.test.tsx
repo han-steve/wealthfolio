@@ -1,5 +1,6 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render as renderUI, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useCurrentValuation } from "@/hooks/use-current-account-valuations";
@@ -11,6 +12,7 @@ import { DashboardContent } from "./dashboard-content";
 const uiMocks = vi.hoisted(() => ({
   realIntervals: false,
   intervalCode: "3M" as "3M" | "ALL",
+  setInterval: vi.fn(),
 }));
 
 vi.mock("@/adapters", () => ({
@@ -70,8 +72,10 @@ vi.mock("@wealthfolio/ui", async () => {
               },
               description: "3M",
             },
-    IntervalSelector: () => <div>interval-selector</div>,
-    usePersistentState: () => [uiMocks.intervalCode, vi.fn()],
+    IntervalSelector: ({ value }: { value: string }) => (
+      <div data-value={value}>interval-selector</div>
+    ),
+    usePersistentState: () => [uiMocks.intervalCode, uiMocks.setInterval],
   };
 });
 
@@ -120,6 +124,10 @@ const mockUseCurrentValuation = vi.mocked(useCurrentValuation);
 const mockUseHoldings = vi.mocked(useHoldings);
 const mockUseValuationHistory = vi.mocked(useValuationHistory);
 const mockUseSettingsContext = vi.mocked(useSettingsContext);
+
+function render(node: ReactNode) {
+  return renderUI(node, { wrapper: MemoryRouter });
+}
 
 describe("DashboardContent", () => {
   beforeEach(() => {
@@ -480,7 +488,7 @@ describe("DashboardContent", () => {
         typeof useQuery
       >);
       render(<DashboardContent />);
-      expect(mockUseValuationHistory).toHaveBeenLastCalledWith({
+      expect(mockUseValuationHistory).toHaveBeenCalledWith({
         from: new Date(2026, 9, 1),
         to: new Date(2027, 0, 1),
       });
@@ -488,4 +496,58 @@ describe("DashboardContent", () => {
       vi.useRealTimers();
     }
   });
+
+  it("offers only verified all-time history without silently changing the selected period", () => {
+    mockCurrentValuation();
+    mockUseHoldings.mockReturnValue({ holdings: [], isLoading: false } as unknown as ReturnType<
+      typeof useHoldings
+    >);
+    mockUseSettingsContext.mockReturnValue({ settings: { baseCurrency: "USD" } } as ReturnType<
+      typeof useSettingsContext
+    >);
+    mockUseQuery.mockReturnValue({ data: null, isLoading: false } as ReturnType<typeof useQuery>);
+    mockUseValuationHistory.mockImplementation((range) => ({
+      valuationHistory: range ? [] : ([{ valuationDate: "2026-02-20" }] as never),
+      isLoading: false,
+      error: null,
+    }));
+
+    render(<DashboardContent />);
+    expect(screen.getByText(/Complete history through 2026-02-20/)).toBeInTheDocument();
+    expect(screen.queryByText("history-chart")).not.toBeInTheDocument();
+    expect(uiMocks.setInterval).not.toHaveBeenCalled();
+    expect(screen.getByText("interval-selector")).toHaveAttribute("data-value", "3M");
+    expect(screen.getByRole("link", { name: "Data Status" })).toHaveAttribute("href", "/health");
+    fireEvent.click(screen.getByRole("button", { name: "View available history" }));
+    expect(uiMocks.setInterval).toHaveBeenCalledWith("ALL");
+  });
+
+  it.each(["loading", "error", "empty", "all-time"])(
+    "does not promise available history when the lookup is %s",
+    (state) => {
+      mockCurrentValuation();
+      uiMocks.intervalCode = state === "all-time" ? "ALL" : "3M";
+      mockUseHoldings.mockReturnValue({ holdings: [], isLoading: false } as unknown as ReturnType<
+        typeof useHoldings
+      >);
+      mockUseSettingsContext.mockReturnValue({ settings: { baseCurrency: "USD" } } as ReturnType<
+        typeof useSettingsContext
+      >);
+      mockUseQuery.mockReturnValue({ data: null, isLoading: false } as ReturnType<typeof useQuery>);
+      mockUseValuationHistory.mockImplementation((range) => ({
+        valuationHistory:
+          range || state === "empty" || state === "all-time"
+            ? []
+            : ([{ valuationDate: "2026-02-20" }] as never),
+        isLoading: !range && state === "loading",
+        error: !range && state === "error" ? new Error("unavailable") : null,
+      }));
+      render(<DashboardContent />);
+      expect(
+        screen.queryByRole("button", { name: "View available history" }),
+      ).not.toBeInTheDocument();
+      expect(screen.queryByText(/Complete history through/)).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Data Status" })).toBeInTheDocument();
+    },
+  );
 });
